@@ -163,6 +163,7 @@ func resolveJoinTLS(ctx context.Context, t *metalTarget, explicit string, assume
 	if err != nil {
 		return nil, "", fmt.Errorf("parse server %q: %w", t.Server, err)
 	}
+	probed := t.Server
 	chain, err := fetchServerChain(ctx, t.Server, explicit, t.CAs)
 	if err != nil && t.KubeServer != "" && t.KubeServer != t.Server {
 		var dialErr *net.OpError
@@ -176,6 +177,7 @@ func resolveJoinTLS(ctx context.Context, t *metalTarget, explicit string, assume
 		}
 		_, _ = fmt.Fprintf(log, "cannot reach %s from here (%v); checking the certificate %s presents instead "+
 			"(--assume-same-server: not verified that %s serves it)\n", t.Server, err, t.KubeServer, t.Server)
+		probed = t.KubeServer
 		chain, err = fetchServerChain(ctx, t.KubeServer, explicit, t.CAs)
 	}
 	if err != nil {
@@ -186,6 +188,13 @@ func resolveJoinTLS(ctx context.Context, t *metalTarget, explicit string, assume
 		return nil, "", err
 	}
 	if name != "" && explicit == "" {
+		// The certificate came from a handshake that sent the server's host
+		// (or no name at all); the Mac will send name. An API server with
+		// --tls-sni-cert-key, or a proxy that routes by SNI, can present
+		// another certificate for it, so check what the Mac will get.
+		if err := verifyJoinTLS(ctx, probed, name, ca); err != nil {
+			return nil, "", err
+		}
 		_, _ = fmt.Fprintf(log, "the API server's certificate does not cover %s; "+
 			"the Mac will verify it as %q (tls-server-name)\n",
 			u.Hostname(), name)
@@ -200,25 +209,11 @@ func resolveJoinTLS(ctx context.Context, t *metalTarget, explicit string, assume
 // certificate does cover); any other failure is an error. No request is sent,
 // so no credential crosses this connection.
 func fetchServerChain(ctx context.Context, server, sni string, cas []*x509.Certificate) ([]*x509.Certificate, error) {
-	u, err := url.Parse(server)
-	if err != nil {
-		return nil, fmt.Errorf("parse server %q: %w", server, err)
-	}
-	port := u.Port()
-	if port == "" {
-		port = "443"
-	}
 	roots := x509.NewCertPool()
 	for _, c := range cas {
 		roots.AddCert(c)
 	}
-	d := &tls.Dialer{
-		NetDialer: &net.Dialer{Timeout: metalProbeTimeout},
-		Config:    &tls.Config{RootCAs: roots, ServerName: sni, MinVersion: tls.VersionTLS12},
-	}
-	ctx, cancel := context.WithTimeout(ctx, metalProbeTimeout)
-	defer cancel()
-	conn, err := d.DialContext(ctx, "tcp", net.JoinHostPort(u.Hostname(), port))
+	conn, err := dialServerTLS(ctx, server, &tls.Config{RootCAs: roots, ServerName: sni, MinVersion: tls.VersionTLS12})
 	if err != nil {
 		var verr *tls.CertificateVerificationError
 		var herr x509.HostnameError
@@ -239,11 +234,55 @@ func fetchServerChain(ctx context.Context, server, sni string, cas []*x509.Certi
 		return nil, fmt.Errorf("TLS handshake with %s against the kubeconfig's certificate authority: %w", server, err)
 	}
 	defer func() { _ = conn.Close() }()
+	return conn.ConnectionState().PeerCertificates, nil
+}
+
+// verifyJoinTLS completes a TLS handshake with server the way the Mac will:
+// sending sni as the server name and trusting only ca, the one CA the join
+// string carries. Like fetchServerChain, it sends no request.
+func verifyJoinTLS(ctx context.Context, server, sni string, ca *x509.Certificate) error {
+	roots := x509.NewCertPool()
+	roots.AddCert(ca)
+	conn, err := dialServerTLS(ctx, server, &tls.Config{RootCAs: roots, ServerName: sni, MinVersion: tls.VersionTLS12})
+	if err == nil {
+		_ = conn.Close()
+		return nil
+	}
+	var verr *tls.CertificateVerificationError
+	if errors.As(err, &verr) {
+		return fmt.Errorf("%s presents a different certificate when asked for TLS server name %q, as the Mac "+
+			"will ask, and it does not verify for that name against the certificate authority the join string "+
+			"would carry (%w), so the Mac could not join. Pass --tls-server-name with a name the API server "+
+			"presents a matching certificate for, or --server with an address its certificate covers",
+			server, sni, err)
+	}
+	return fmt.Errorf("TLS handshake with %s sending server name %q, as the Mac will: %w", server, sni, err)
+}
+
+// dialServerTLS completes a TLS handshake with server's host and port (443
+// when the URL has none) within metalProbeTimeout.
+func dialServerTLS(ctx context.Context, server string, cfg *tls.Config) (*tls.Conn, error) {
+	u, err := url.Parse(server)
+	if err != nil {
+		return nil, fmt.Errorf("parse server %q: %w", server, err)
+	}
+	port := u.Port()
+	if port == "" {
+		port = "443"
+	}
+	d := &tls.Dialer{NetDialer: &net.Dialer{Timeout: metalProbeTimeout}, Config: cfg}
+	ctx, cancel := context.WithTimeout(ctx, metalProbeTimeout)
+	defer cancel()
+	conn, err := d.DialContext(ctx, "tcp", net.JoinHostPort(u.Hostname(), port))
+	if err != nil {
+		return nil, err
+	}
 	tlsConn, ok := conn.(*tls.Conn)
 	if !ok {
+		_ = conn.Close()
 		return nil, fmt.Errorf("connect to %s: not a TLS connection", server)
 	}
-	return tlsConn.ConnectionState().PeerCertificates, nil
+	return tlsConn, nil
 }
 
 // chooseJoinTLS picks the kubeconfig CA certificate that verifies the
