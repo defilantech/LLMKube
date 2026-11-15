@@ -62,7 +62,19 @@ var priorityValues = map[string]int32{
 // pkg/agent/agent.go, start refusals in pkg/agent/refusal.go) and StartFailed,
 // for a start that failed and is being retried on the restart backoff
 // (pkg/agent/start_failure.go). The agent clears them itself once an engine
-// runs (#777); a stale heartbeat still replaces them.
+// runs (#777).
+//
+// A stale or unparseable slice heartbeat replaces them only when the Mac's
+// MetalNode reports a stale heartbeat too (#2457). A refusal re-stamps only
+// the slice the agent registers itself, so any other slice listed for the
+// service (another name, no port, no managed-by label, or the legacy slice of
+// an agent since switched to relay mode) stays stale while the agent is alive,
+// and replacing the refusal had the two rewriting status in a loop. The
+// MetalNode is found by the ingress pin the relay uses. Legacy mode has no
+// pin and nothing else ties a service to a Mac, so there the refusal stays.
+// That changes only the message: phase, ready replicas and the slice
+// withdrawal are the same either way, and a dead agent's refusal reads less
+// precisely than AgentHeartbeatStale.
 //
 // Built from inferencev1alpha1.MetalAgentRefusalReasons rather than
 // hand-listed here: this map and the agent's own list used to be two
@@ -129,6 +141,14 @@ func (r *InferenceServiceReconciler) determinePhase(ctx context.Context, isvc *i
 		}
 	}
 	if isMetal {
+		// A refused service never registers an endpoint, so it always lands
+		// here. Overwriting the agent's refusal hid it from status and bumped
+		// the resourceVersion, which the agent's poll saw as a change and
+		// refused again every few seconds. A stale heartbeat overwrites it only
+		// once the MetalNode is stale too; see agentRefusalReasons.
+		if agentRefusalReasons[isvc.Status.SchedulingStatus] && (snap == nil || !snap.metalNodeStale) {
+			return PhaseCreating, nil
+		}
 		if snap != nil {
 			switch snap.Kind {
 			case metalHBStale:
@@ -142,13 +162,6 @@ func (r *InferenceServiceReconciler) determinePhase(ctx context.Context, isvc *i
 					Message: fmt.Sprintf("metal-agent heartbeat unparseable (value %q); host may be offline", snap.RawHeartbeat),
 				}
 			}
-		}
-		// A refused service never registers an endpoint, so it always lands
-		// here. Overwriting the agent's refusal hid it from status and bumped
-		// the resourceVersion, which the agent's poll saw as a change and
-		// refused again every few seconds.
-		if agentRefusalReasons[isvc.Status.SchedulingStatus] {
-			return PhaseCreating, nil
 		}
 		return PhaseCreating, &SchedulingInfo{
 			Status:  "WaitingForMetalAgent",

@@ -199,6 +199,7 @@ func initContainerSecurityContext(isvc *inferencev1alpha1.InferenceService) *cor
 // +kubebuilder:rbac:groups=inference.llmkube.dev,resources=inferenceservices/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=inference.llmkube.dev,resources=inferenceservices/finalizers,verbs=update
 // +kubebuilder:rbac:groups=inference.llmkube.dev,resources=models,verbs=get;list;watch
+// +kubebuilder:rbac:groups=inference.llmkube.dev,resources=metalnodes,verbs=get;list;watch
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;delete
 // +kubebuilder:rbac:groups=core,resources=services,verbs=get;list;watch;create;update;patch;delete
@@ -580,6 +581,10 @@ func (r *InferenceServiceReconciler) reconcileMetal(ctx context.Context, isvc *i
 			r.withdrawStaleMetalEndpoints(ctx, snap.staleSlices)
 		}
 		r.warnAgentVersionSkew(isvc, snap)
+		if (snap.Kind == metalHBStale || snap.Kind == metalHBUnparseable) && agentRefusalReasons[isvc.Status.SchedulingStatus] {
+			snap.metalNodeStale = r.metalNodeHeartbeatStale(ctx, isvc.Namespace, pin)
+			snap.refusalHeld = !snap.metalNodeStale
+		}
 		available, err := r.reconcileRelay(ctx, isvc, pin)
 		if apierrors.IsConflict(err) {
 			logf.FromContext(ctx).V(1).Info("Relay object changed under the reconcile; requeueing", "reason", err.Error())
@@ -1478,6 +1483,13 @@ type metalSnapshot struct {
 	// AgentVersion is the agent's llmkube.ai/agent-version annotation on the
 	// first metal-agent slice that carries one; empty when none does.
 	AgentVersion string
+	// metalNodeStale and refusalHeld are set by reconcileMetal in relay mode,
+	// for a refused service on a stale or unparseable snapshot. metalNodeStale
+	// means the MetalNode reporting the relay's pin has a stale heartbeat too:
+	// the Mac is gone, not only the slice. refusalHeld means it does not, so
+	// the refusal stays until it does.
+	metalNodeStale bool
+	refusalHeld    bool
 }
 
 // metalEndpointSnapshot lists the EndpointSlices of the Service name (the
@@ -1677,6 +1689,34 @@ func metalSliceNeedsWithdrawal(slice *discoveryv1.EndpointSlice, now time.Time) 
 	return false
 }
 
+// metalNodeHeartbeatStale reports whether the Mac behind the ingress pin has
+// stopped renewing its Lease: a MetalNode in namespace (a joined agent's
+// MetalNode is in the namespace it serves) reports pin as its ingress SPKI and
+// says HeartbeatStale. It reports false when no MetalNode reports pin, when
+// one that does is not stale, and on a List error.
+func (r *InferenceServiceReconciler) metalNodeHeartbeatStale(ctx context.Context, namespace, pin string) bool {
+	if pin == "" {
+		return false
+	}
+	nodes := &inferencev1alpha1.MetalNodeList{}
+	if err := r.List(ctx, nodes, client.InNamespace(namespace)); err != nil {
+		logf.FromContext(ctx).Error(err, "Failed to list MetalNodes", "namespace", namespace)
+		return false
+	}
+	stale := false
+	for i := range nodes.Items {
+		if nodes.Items[i].Status.IngressSPKI != pin {
+			continue
+		}
+		cond := meta.FindStatusCondition(nodes.Items[i].Status.Conditions, inferencev1alpha1.MetalNodeConditionAgentConnected)
+		if cond == nil || cond.Reason != inferencev1alpha1.MetalNodeReasonHeartbeatStale {
+			return false
+		}
+		stale = true
+	}
+	return stale
+}
+
 // metalHeartbeatRequeueDuration returns the RequeueAfter duration to use after
 // a successful metal reconcile. It operates on the already-fetched metalSnapshot
 // so no additional API call is needed.
@@ -1685,7 +1725,9 @@ func metalSliceNeedsWithdrawal(slice *discoveryv1.EndpointSlice, now time.Time) 
 // reconciler must periodically re-check staleness because no watch event fires
 // when a heartbeat simply ages out. We return half the timeout so we notice
 // expiry within one extra interval. Legacy agents (no annotation) and
-// not-yet-registered services (no slices) need no forced requeue.
+// not-yet-registered services (no slices) need no forced requeue. Nor does an
+// unparseable heartbeat, unless it holds back a refusal: that waits on the
+// MetalNode, which this controller does not watch (#2457).
 func metalHeartbeatRequeueDuration(snap *metalSnapshot) time.Duration {
 	if snap == nil {
 		return 0
@@ -1693,6 +1735,11 @@ func metalHeartbeatRequeueDuration(snap *metalSnapshot) time.Duration {
 	switch snap.Kind {
 	case metalHBFresh, metalHBStale:
 		return inferencev1alpha1.DefaultAgentHeartbeatTimeout / 2
+	case metalHBUnparseable:
+		if snap.refusalHeld {
+			return inferencev1alpha1.DefaultAgentHeartbeatTimeout / 2
+		}
+		return 0
 	default:
 		return 0
 	}
