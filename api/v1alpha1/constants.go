@@ -279,6 +279,12 @@ const (
 	// it streamed.
 	ReasonModelDownloadTooLarge string = "ModelDownloadTooLarge"
 
+	// ReasonModelDownloadNoSpace is set when the model store's filesystem
+	// does not have room for a model download plus the agent's
+	// --download-free-space-headroom, checked before the download, or ran out
+	// of space during it (#2409).
+	ReasonModelDownloadNoSpace string = "ModelDownloadNoSpace"
+
 	// ReasonSourceSecretNotAllowed is set when a Model's spec.sourceSecretRef
 	// names a Secret the agent will not read: one without the
 	// LabelModelSourceCredentials marker, one that does not exist or that
@@ -323,6 +329,7 @@ var MetalAgentRefusalReasons = []string{
 	ReasonServiceNameTooLong,
 	ReasonModelDigestMismatch,
 	ReasonModelDownloadTooLarge,
+	ReasonModelDownloadNoSpace,
 	ReasonSourceSecretNotAllowed,
 	ReasonRuntimeNotAvailable,
 	ReasonStartFailed,

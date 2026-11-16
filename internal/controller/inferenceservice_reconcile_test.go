@@ -378,6 +378,7 @@ var _ = Describe("determinePhase", func() {
 		Entry("relay service name too long", inferencev1alpha1.ReasonServiceNameTooLong),
 		Entry("model digest mismatch", inferencev1alpha1.ReasonModelDigestMismatch),
 		Entry("model download over the agent's cap", inferencev1alpha1.ReasonModelDownloadTooLarge),
+		Entry("model download without disk space", inferencev1alpha1.ReasonModelDownloadNoSpace),
 		Entry("sourceSecretRef Secret not allowed", inferencev1alpha1.ReasonSourceSecretNotAllowed),
 		Entry("runtime with no executor on the agent", inferencev1alpha1.ReasonRuntimeNotAvailable),
 		Entry("a start that failed and is being retried", inferencev1alpha1.ReasonStartFailed),

@@ -98,6 +98,7 @@ type AgentConfig struct {
 	AllowedModelRoots         string
 	AllowedDownloadHosts      string
 	MaxDownloadSize           string
+	DownloadFreeSpaceHeadroom string
 	AllowUnsafeExtraArgs      bool
 	EngineEnvPassthrough      string
 	IngressPort               int
@@ -457,6 +458,32 @@ func resolveMaxDownloadBytes(flagValue string, totalMemory func() (uint64, error
 	return n, nil
 }
 
+// resolveDownloadLimits resolves --max-download-size and
+// --download-free-space-headroom. Each error names its flag.
+func resolveDownloadLimits(cfg *AgentConfig, totalMemory func() (uint64, error)) (maxBytes, headroom int64, err error) {
+	if maxBytes, err = resolveMaxDownloadBytes(cfg.MaxDownloadSize, totalMemory); err != nil {
+		return 0, 0, err
+	}
+	if headroom, err = parseByteQuantity("--download-free-space-headroom", cfg.DownloadFreeSpaceHeadroom); err != nil {
+		return 0, 0, err
+	}
+	return maxBytes, headroom, nil
+}
+
+// parseByteQuantity parses a flag holding a byte count or a Kubernetes quantity
+// (10Gi, 500M, 1073741824) into a whole, non-negative number of bytes.
+func parseByteQuantity(flagName, value string) (int64, error) {
+	qty, err := resource.ParseQuantity(value)
+	if err != nil {
+		return 0, fmt.Errorf("%s %q is not a byte count or a quantity such as 10Gi: %w", flagName, value, err)
+	}
+	n, ok := qty.AsInt64()
+	if !ok || n < 0 {
+		return 0, fmt.Errorf("%s %q must be a whole, non-negative number of bytes", flagName, value)
+	}
+	return n, nil
+}
+
 // resolveTensorFoldBin returns the tensorfold binary path. If override is
 // non-empty it is returned as-is. Otherwise the function searches
 // defaultTensorFoldPaths.
@@ -722,6 +749,10 @@ func main() {
 			"such as 128Gi. A download over it is stopped, its partial removed, and the start refused with "+
 			"ModelDownloadTooLarge. Default: the host's total memory (a model file larger than RAM cannot be "+
 			"wired). 0 disables the cap.")
+	flag.StringVar(&cfg.DownloadFreeSpaceHeadroom, "download-free-space-headroom", "10Gi",
+		"Free space a Model download must leave on the model store's filesystem, as a byte count or a "+
+			"quantity such as 10Gi. A download that would leave less is refused with ModelDownloadNoSpace "+
+			"before it starts, and retried on the refusal re-check. 0 still refuses a download that does not fit.")
 	flag.BoolVar(&cfg.AllowUnsafeExtraArgs, "allow-unsafe-extra-args", false,
 		"Relax the extraArgs policy (unknown flags, stray tokens, refused non-listener flags, path checks, "+
 			"vllm-swift code-loading) for hosts whose InferenceService authors are fully trusted; flags that "+
@@ -843,12 +874,14 @@ func main() {
 		"metalVersion", caps.MetalVersion,
 	)
 
-	maxDownloadBytes, err := resolveMaxDownloadBytes(cfg.MaxDownloadSize, agent.NewHostMemoryProvider().TotalMemory)
+	maxDownloadBytes, downloadFreeSpaceHeadroom, err := resolveDownloadLimits(cfg,
+		agent.NewHostMemoryProvider().TotalMemory)
 	if err != nil {
-		logger.Errorw("invalid --max-download-size", "error", err)
+		logger.Errorw("invalid download limit", "error", err)
 		os.Exit(1)
 	}
-	logger.Infow("model download cap", "maxDownloadBytes", maxDownloadBytes)
+	logger.Infow("model download cap", "maxDownloadBytes", maxDownloadBytes,
+		"downloadFreeSpaceHeadroom", downloadFreeSpaceHeadroom)
 
 	// Log which runtimes are available: each one whose binary path resolved.
 	if cfg.LlamaServerBin != "" {
@@ -955,6 +988,7 @@ func main() {
 		AllowedModelRoots:         allowedModelRoots,
 		AllowedDownloadHosts:      splitCSV(cfg.AllowedDownloadHosts),
 		MaxDownloadBytes:          maxDownloadBytes,
+		DownloadFreeSpaceHeadroom: downloadFreeSpaceHeadroom,
 		AllowUnsafeExtraArgs:      cfg.AllowUnsafeExtraArgs,
 		EngineEnvPassthrough:      engineEnvPassthrough,
 		IngressPort:               cfg.IngressPort,

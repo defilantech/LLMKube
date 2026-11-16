@@ -284,6 +284,8 @@ var AgentCollectors = []prometheus.Collector{
 	applePowerGPUWatts,
 	applePowerCPUWatts,
 	applePowerANEWatts,
+	modelStoreUsedBytes,
+	modelStoreFreeBytes,
 }
 
 func init() {

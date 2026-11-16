@@ -121,6 +121,8 @@ The Metal agent serves `AgentRegistry` at `GET /metrics` ([`pkg/agent/health.go`
 | `llmkube_metal_agent_memory_committed_bytes` | gauge |  | Memory admitted to running and starting processes in bytes; new models are admitted against the budget minus this. |
 | `llmkube_metal_agent_memory_estimated_bytes` | gauge | `name`, `namespace` | Estimated memory usage per managed process in bytes. |
 | `llmkube_metal_agent_memory_pressure_level` | gauge |  | Current memory pressure level: 0=normal, 1=warning, 2=critical. |
+| `llmkube_metal_agent_model_store_free_bytes` | gauge |  | Bytes still free on the filesystem holding the agent's model store, the space a model download competes for. Refreshed every minute. |
+| `llmkube_metal_agent_model_store_used_bytes` | gauge |  | Bytes of regular files under the agent's model store: downloaded models, partial downloads, digest stamps and engine logs. Refreshed every minute. |
 | `llmkube_metal_agent_process_healthy` | gauge | `name`, `namespace` | Whether a managed process is healthy (1) or unhealthy (0). |
 | `llmkube_metal_agent_process_restarts_total` | counter | `name`, `namespace` | Total number of engine restart attempts by the agent: health restarts and restarts after a memory-pressure eviction. |
 | `llmkube_metal_agent_process_rss_bytes` | gauge | `name` | Actual resident set size per managed process in bytes. |
