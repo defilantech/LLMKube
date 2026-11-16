@@ -102,9 +102,20 @@ spec:
               # with /work/repo as the cwd so the go tool resolves the
               # cloned module (file/package args are interpreted against
               # the working directory's module, exactly as in the script).
+              # The GoReleaser Dockerfiles COPY the license files that
+              # dockers_v2 stages into the build context, so each target's
+              # context needs them too (#2564). Generated, never committed.
+              if ! command -v make >/dev/null 2>&1; then
+                (apt-get update && apt-get install -y --no-install-recommends make) \
+                  || { echo "SCAN FAIL: make install"; exit 1; }
+              fi
+              ( cd /work/repo && make third-party-licenses ) \
+                || { echo "SCAN FAIL: third-party licenses"; exit 1; }
               {{- range .Targets }}
               echo "=== build {{ .ID }} (linux/amd64) ==="
               mkdir -p "/work/{{ .ID }}/linux/amd64"
+              cp /work/repo/LICENSE "/work/{{ .ID }}/LICENSE"
+              cp -R /work/repo/third_party_licenses "/work/{{ .ID }}/third_party_licenses"
               ( cd /work/repo && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath \
                 -o "/work/{{ .ID }}/linux/amd64/{{ .Binary }}" "{{ .Main }}" ) \
                 || { echo "SCAN FAIL: build {{ .ID }}"; exit 1; }

@@ -18,6 +18,7 @@ package tools
 
 import (
 	"os"
+	"path/filepath"
 	"reflect"
 	"regexp"
 	"strings"
@@ -292,4 +293,55 @@ func TestDefaultScanTargetIDsReturnsCopy(t *testing.T) {
 	if !reflect.DeepEqual(second, want) {
 		t.Errorf("DefaultScanTargetIDs leaked a mutable view: %v", second)
 	}
+}
+
+// TestScanJobStagesEveryDockerfileCopy pins the scan Job's build contexts to
+// the GoReleaser Dockerfiles: every path a release Dockerfile COPYs (other
+// than the per-platform artifact) must be generated in the clone and staged
+// into /work/<id>/. A COPY whose source is absent fails the image build, and
+// the gate then reports a SCAN FAIL unrelated to any CVE (#2564).
+func TestScanJobStagesEveryDockerfileCopy(t *testing.T) {
+	job := scanRenderJob(t, func(*scanRendererInput) {})
+	initArgs := strings.Join(job.Spec.Template.Spec.InitContainers[0].Args, "\n")
+	if !strings.Contains(initArgs, "make third-party-licenses") {
+		t.Errorf("initContainer does not run make third-party-licenses; "+
+			"the license tree must come from the clone:\n%s", initArgs)
+	}
+	for _, target := range builtInScanTargets {
+		sources := append([]string{"LICENSE", "third_party_licenses"}, dockerfileCopySources(t, target.Dockerfile)...)
+		for _, src := range sources {
+			if !strings.Contains(initArgs, "/work/repo/"+src) {
+				t.Errorf("scan Job does not stage %s from the clone for %s", src, target.ID)
+			}
+			if !strings.Contains(initArgs, `"/work/`+target.ID+`/`+src+`"`) {
+				t.Errorf("scan Job does not stage %s into /work/%s", src, target.ID)
+			}
+		}
+	}
+}
+
+// dockerfileCopySources returns the source paths of the single-source COPY
+// instructions in dockerfile, skipping the per-platform artifact dockers_v2
+// stages at $TARGETPLATFORM/.
+func dockerfileCopySources(t *testing.T, dockerfile string) []string {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join("../../../..", dockerfile))
+	if err != nil {
+		t.Fatalf("read %s: %v", dockerfile, err)
+	}
+	var sources []string
+	for _, line := range strings.Split(string(raw), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) == 0 || !strings.EqualFold(fields[0], "COPY") {
+			continue
+		}
+		if len(fields) != 3 {
+			t.Fatalf("%s: cannot parse COPY instruction %q; want one source and one destination", dockerfile, line)
+		}
+		if strings.HasPrefix(fields[1], "$TARGETPLATFORM/") {
+			continue
+		}
+		sources = append(sources, fields[1])
+	}
+	return sources
 }
