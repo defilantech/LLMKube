@@ -385,7 +385,7 @@ spans of its own, so it exports nothing. LLMKube does not instrument the
 inference pods (llama.cpp, vLLM and the other runtimes) or the metal-agent.
 
 The proxy traces each request to `/v1/chat/completions`, `/v1/completions`,
-`/v1/embeddings`, `/v1/rerank`, `/v1/messages` and
+`/v1/embeddings`, `/v1/rerank`, `/v1/responses`, `/v1/messages` and
 `/v1/messages/count_tokens` with two spans, exported under the service name
 `llmkube-router-proxy`:
 

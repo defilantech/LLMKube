@@ -134,6 +134,115 @@ func TestUsageTokensFromSSE(t *testing.T) {
 	}
 }
 
+func TestResponsesUsageTokens(t *testing.T) {
+	tests := []struct {
+		name           string
+		body           string
+		wantPrompt     int64
+		wantCompletion int64
+		wantOK         bool
+	}{
+		{
+			name:           "input and output totals",
+			body:           `{"id":"resp_1","object":"response","status":"completed","usage":{"input_tokens":60,"input_tokens_details":{"cached_tokens":20},"output_tokens":40,"output_tokens_details":{"reasoning_tokens":10},"total_tokens":100}}`,
+			wantPrompt:     60,
+			wantCompletion: 40,
+			wantOK:         true,
+		},
+		{
+			name:           "input and output without a total",
+			body:           `{"usage":{"input_tokens":60,"output_tokens":40}}`,
+			wantPrompt:     60,
+			wantCompletion: 40,
+			wantOK:         true,
+		},
+		{
+			name:           "total only charged as completion",
+			body:           `{"usage":{"total_tokens":7}}`,
+			wantPrompt:     0,
+			wantCompletion: 7,
+			wantOK:         true,
+		},
+		{
+			name:   "usage absent",
+			body:   `{"id":"resp_1","object":"response","status":"completed","output":[]}`,
+			wantOK: false,
+		},
+		{
+			name:   "empty body",
+			body:   "",
+			wantOK: false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			prompt, completion, ok := ResponsesUsageTokens([]byte(tt.body))
+			if ok != tt.wantOK {
+				t.Fatalf("ok = %v, want %v", ok, tt.wantOK)
+			}
+			if prompt != tt.wantPrompt {
+				t.Errorf("prompt = %d, want %d", prompt, tt.wantPrompt)
+			}
+			if completion != tt.wantCompletion {
+				t.Errorf("completion = %d, want %d", completion, tt.wantCompletion)
+			}
+		})
+	}
+}
+
+func TestResponsesUsageFromSSE(t *testing.T) {
+	tests := []struct {
+		name           string
+		body           string
+		wantPrompt     int64
+		wantCompletion int64
+		wantOK         bool
+	}{
+		{
+			name: "usage in response.completed",
+			body: "event: response.created\n" +
+				`data: {"type":"response.created","response":{"id":"resp_1","status":"in_progress"}}` + "\n\n" +
+				"event: response.completed\n" +
+				`data: {"type":"response.completed","response":{"id":"resp_1","status":"completed","usage":{"input_tokens":60,"output_tokens":40,"total_tokens":100}}}` + "\n\n",
+			wantPrompt:     60,
+			wantCompletion: 40,
+			wantOK:         true,
+		},
+		{
+			name: "usage at the event top level",
+			body: "event: response.completed\n" +
+				`data: {"type":"response.completed","usage":{"input_tokens":5,"output_tokens":6}}` + "\n\n",
+			wantPrompt:     5,
+			wantCompletion: 6,
+			wantOK:         true,
+		},
+		{
+			name:   "no usage event",
+			body:   "event: response.output_text.delta\n" + `data: {"type":"response.output_text.delta","delta":"hi"}` + "\n\n",
+			wantOK: false,
+		},
+		{
+			name:   "empty body",
+			body:   "",
+			wantOK: false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			prompt, completion, ok := ResponsesUsageTokensFromSSE([]byte(tt.body))
+			if ok != tt.wantOK {
+				t.Fatalf("ok = %v, want %v", ok, tt.wantOK)
+			}
+			if prompt != tt.wantPrompt {
+				t.Errorf("prompt = %d, want %d", prompt, tt.wantPrompt)
+			}
+			if completion != tt.wantCompletion {
+				t.Errorf("completion = %d, want %d", completion, tt.wantCompletion)
+			}
+		})
+	}
+}
+
 func TestCostUSD(t *testing.T) {
 	cost := &TokenCost{PromptUSD: 0.5, CompletionUSD: 1.5}
 

@@ -242,11 +242,12 @@ After `kubectl apply`:
 - `kubectl get configmap coding-router-router-proxy` contains the compiled JSON config.
 - The endpoint is `http://coding-router-router-proxy.<namespace>.svc.cluster.local:8080/v1/chat/completions`.
 
-Point any OpenAI-compatible client at that URL and it just works. The proxy serves the OpenAI-compatible routes, and the Anthropic Messages API, at their standard paths, and every POST route is matched on the request's `model` field against the same rule set:
+Point any OpenAI-compatible client at that URL and it just works. The proxy serves the OpenAI-compatible routes, the OpenAI Responses API, and the Anthropic Messages API, at their standard paths, and every POST route is matched on the request's `model` field against the same rule set:
 
 | Route | Serves |
 |---|---|
 | `POST /v1/chat/completions` | Chat completions |
+| `POST /v1/responses` | OpenAI Responses API: Responses-API-only clients such as Codex |
 | `POST /v1/completions` | Legacy completions: what fill-in-the-middle / IDE autocomplete clients and benchmark tools such as `vllm bench serve --backend openai` send |
 | `POST /v1/embeddings` | Embeddings |
 | `POST /v1/rerank` | Reranking |
@@ -255,6 +256,8 @@ Point any OpenAI-compatible client at that URL and it just works. The proxy serv
 | `GET /v1/models` | Model discovery: one entry per backend, under its `displayName`, else its `name`, the id `BackendNameMatch` resolves. An external backend's upstream `model` is not listed. |
 
 The two Anthropic routes are placed, balanced and session-bound exactly like chat completions, and headers such as `anthropic-version` and `anthropic-beta` pass through. The backend must serve them itself: vLLM does natively; a backend that does not returns its own `404`, which reaches the client unchanged and does not count against the backend. Token budgets charge Anthropic responses from their own usage fields (cached input included), and errors the router itself returns on these routes use the Anthropic error shape.
+
+`POST /v1/responses` is served by the same handler as the other POST routes, at its standard path: the same rules route it on the request's `model`, the same fallback and budgets apply, and its body reaches the backend as sent apart from the per-backend `model` override. The backend must serve it itself; vLLM, SGLang and llama.cpp do, and a backend that does not answers its own `404`, which reaches the client unchanged and does not count against it. Token budgets charge a Responses request from `usage.input_tokens` and `usage.output_tokens`; a stream reports them in its final `response.completed` event, and the router adds no `stream_options`, which the API does not have. The router keeps no affinity for `previous_response_id`: a follow-up that names a stored response reaches the instance that stored it when one replica serves that backend, and with more than one it can land on another, so send `store: false` with the full context, or give the backend `balancing.sessionAffinity` (which requires `mode: LoadAware`) and send its session header. Only `POST /v1/responses` is served: `GET /v1/responses/{id}`, cancelling a response, and `POST /v1/responses/input_tokens` are not routed.
 
 `GET /v1/models` lists each backend under its `displayName`, else its `name`. Coding clients, and services that generate client config, read this list to decide whether a model takes images and how much context it holds. A backend publishes both when it declares `modelInfo`:
 
