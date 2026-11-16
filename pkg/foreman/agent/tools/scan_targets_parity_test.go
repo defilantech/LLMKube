@@ -18,6 +18,7 @@ package tools
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"regexp"
@@ -317,6 +318,113 @@ func TestScanJobStagesEveryDockerfileCopy(t *testing.T) {
 				t.Errorf("scan Job does not stage %s into /work/%s", src, target.ID)
 			}
 		}
+	}
+}
+
+// TestScanJobInitScriptScansATreeWithoutTheLicenseTarget runs the rendered
+// initContainer script against a clone that predates `make
+// third-party-licenses`: the scan still stages every binary, as it did
+// before the license tree existed (#2564).
+func TestScanJobInitScriptScansATreeWithoutTheLicenseTarget(t *testing.T) {
+	job := scanRenderJob(t, func(*scanRendererInput) {})
+	script := strings.Join(job.Spec.Template.Spec.InitContainers[0].Args, "\n")
+
+	cases := []struct {
+		name     string
+		makefile string
+		makeFail bool
+		wantMake bool
+	}{
+		{"target present", "third-party-licenses:\n\t@true\n", false, true},
+		{"target absent", "build:\n\t@true\n", false, false},
+		{"generation fails", "third-party-licenses:\n\t@false\n", true, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			work := t.TempDir()
+			repo := filepath.Join(work, "repo")
+			if err := os.MkdirAll(repo, 0o755); err != nil {
+				t.Fatalf("mkdir %s: %v", repo, err)
+			}
+			if err := os.WriteFile(filepath.Join(repo, "Makefile"), []byte(tc.makefile), 0o644); err != nil {
+				t.Fatalf("write Makefile: %v", err)
+			}
+			if err := os.WriteFile(filepath.Join(repo, "LICENSE"), []byte("license\n"), 0o644); err != nil {
+				t.Fatalf("write LICENSE: %v", err)
+			}
+
+			bin := filepath.Join(work, "bin")
+			if err := os.MkdirAll(bin, 0o755); err != nil {
+				t.Fatalf("mkdir %s: %v", bin, err)
+			}
+			writeScanStub(t, bin, "git", "exit 0\n")
+			writeScanStub(t, bin, "make", `
+echo "make $*" >>"$MAKE_LOG"
+if [ -n "${MAKE_FAIL:-}" ]; then exit 2; fi
+mkdir -p third_party_licenses/github.com/example/dep
+cp LICENSE third_party_licenses/github.com/example/dep/LICENSE
+`)
+			writeScanStub(t, bin, "go", `
+while [ $# -gt 0 ]; do
+	if [ "$1" = "-o" ]; then shift; touch "$1"; fi
+	shift
+done
+`)
+
+			makeLog := filepath.Join(work, "make.log")
+			cmd := exec.Command("bash", "-c", strings.ReplaceAll(script, "/work", work))
+			cmd.Env = append(os.Environ(),
+				"PATH="+bin+":"+os.Getenv("PATH"),
+				"MAKE_LOG="+makeLog,
+			)
+			if tc.makeFail {
+				cmd.Env = append(cmd.Env, "MAKE_FAIL=1")
+			}
+			out, err := cmd.CombinedOutput()
+			if tc.makeFail {
+				if err == nil {
+					t.Fatalf("init script passed although generation failed:\n%s", out)
+				}
+				if !strings.Contains(string(out), "SCAN FAIL: third-party licenses") {
+					t.Errorf("init script did not name the license failure:\n%s", out)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("init script failed: %v\n%s", err, out)
+			}
+			for _, target := range builtInScanTargets {
+				binary := filepath.Join(work, target.ID, "linux", "amd64", target.Binary)
+				if _, err := os.Stat(binary); err != nil {
+					t.Errorf("%s did not stage its binary: %v", target.ID, err)
+				}
+				staged := filepath.Join(work, target.ID, "third_party_licenses", "github.com", "example", "dep", "LICENSE")
+				_, err := os.Stat(staged)
+				if tc.wantMake && err != nil {
+					t.Errorf("%s did not stage the license tree: %v", target.ID, err)
+				}
+				if !tc.wantMake && err == nil {
+					t.Errorf("%s staged a license tree from a clone that has none", target.ID)
+				}
+			}
+			log, err := os.ReadFile(makeLog)
+			called := err == nil && strings.Contains(string(log), "third-party-licenses")
+			if tc.wantMake && !called {
+				t.Errorf("init script did not run make third-party-licenses (log %q)", log)
+			}
+			if !tc.wantMake && called {
+				t.Errorf("init script ran make third-party-licenses in a clone without the target (log %q)", log)
+			}
+		})
+	}
+}
+
+// writeScanStub writes an executable /bin/sh stub named name into dir.
+func writeScanStub(t *testing.T, dir, name, body string) {
+	t.Helper()
+	path := filepath.Join(dir, name)
+	if err := os.WriteFile(path, []byte("#!/bin/sh\n"+body), 0o755); err != nil {
+		t.Fatalf("write stub %s: %v", name, err)
 	}
 }
 
