@@ -400,6 +400,32 @@ build-cli: fmt vet ## Build llmkube CLI binary.
 install-cli: build-cli ## Install llmkube CLI to /usr/local/bin (requires sudo).
 	sudo cp bin/llmkube /usr/local/bin/llmkube
 
+# Generated at build time and never committed: the tree goes stale with every
+# dependency bump. .goreleaser.yaml ships it in each archive and image (#2564).
+THIRD_PARTY_LICENSES_DIR ?= third_party_licenses
+# The six binaries .goreleaser.yaml builds; one tree covers their union.
+THIRD_PARTY_LICENSES_PKGS ?= ./cmd ./cmd/cli ./cmd/metal-agent ./cmd/router-proxy ./cmd/foreman-agent ./cmd/foreman-operator
+# The windows cli links a module the linux and darwin builds do not (cobra's
+# mousetrap), so every shipped GOOS gets a pass and the trees are merged.
+THIRD_PARTY_LICENSES_GOOS ?= linux darwin windows
+
+.PHONY: third-party-licenses
+third-party-licenses: go-licenses ## Generate the third-party license tree the release archives and images ship.
+	@staging="$(THIRD_PARTY_LICENSES_DIR).tmp"; rm -rf "$$staging"; \
+		trap 'rm -rf "$$staging" $(THIRD_PARTY_LICENSES_DIR).tmp.*' EXIT; \
+		for os in $(THIRD_PARTY_LICENSES_GOOS); do \
+			out="$(THIRD_PARTY_LICENSES_DIR).tmp.$$os"; \
+			rm -rf "$$out"; \
+			echo "Collecting third-party licenses (GOOS=$$os)"; \
+			GOOS=$$os $(GO_LICENSES) save $(THIRD_PARTY_LICENSES_PKGS) \
+				--save_path "$$out" --ignore $$(go list -m) || exit 1; \
+			mkdir -p "$$staging"; \
+			cp -Rf "$$out/." "$$staging/" || exit 1; \
+		done; \
+		rm -rf "$(THIRD_PARTY_LICENSES_DIR)"; \
+		mv "$$staging" "$(THIRD_PARTY_LICENSES_DIR)"
+	@echo "✅ $(THIRD_PARTY_LICENSES_DIR)/ ready"
+
 ##@ Metal Agent (macOS only)
 
 # METAL_AGENT_VERSION is stamped into the ldflags Version variable. Defaults to
@@ -788,6 +814,7 @@ CONTROLLER_GEN ?= $(LOCALBIN)/controller-gen
 ENVTEST ?= $(LOCALBIN)/setup-envtest
 GOLANGCI_LINT = $(LOCALBIN)/golangci-lint
 GOVULNCHECK = $(LOCALBIN)/govulncheck
+GO_LICENSES = $(LOCALBIN)/go-licenses
 
 ## Tool Versions
 KUSTOMIZE_VERSION ?= v5.8.3
@@ -798,6 +825,7 @@ ENVTEST_VERSION ?= $(shell go list -m -f "{{ .Version }}" sigs.k8s.io/controller
 ENVTEST_K8S_VERSION ?= $(shell go list -m -f "{{ .Version }}" k8s.io/api | awk -F'[v.]' '{printf "1.%d", $$3}')
 GOLANGCI_LINT_VERSION ?= v2.15.0
 GOVULNCHECK_VERSION ?= e672cbe8fbc8c76e28fcb6db0efd9ce354e0dac5
+GO_LICENSES_VERSION ?= v2.0.1
 
 .PHONY: kustomize
 kustomize: $(KUSTOMIZE) ## Download kustomize locally if necessary.
@@ -831,6 +859,11 @@ $(GOLANGCI_LINT): $(LOCALBIN)
 govulncheck: $(GOVULNCHECK) ## Download govulncheck locally if necessary.
 $(GOVULNCHECK): $(LOCALBIN)
 	$(call go-install-tool,$(GOVULNCHECK),golang.org/x/vuln/cmd/govulncheck,$(GOVULNCHECK_VERSION))
+
+.PHONY: go-licenses
+go-licenses: $(GO_LICENSES) ## Download go-licenses locally if necessary.
+$(GO_LICENSES): $(LOCALBIN)
+	$(call go-install-tool,$(GO_LICENSES),github.com/google/go-licenses/v2,$(GO_LICENSES_VERSION))
 
 .PHONY: vulncheck
 vulncheck: govulncheck ## Run govulncheck against the module.

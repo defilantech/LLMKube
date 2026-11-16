@@ -21,6 +21,13 @@ ALL=(
 
 want="${IMAGES:-controller foreman-operator foreman-agent router-proxy}"
 
+# The release Dockerfiles COPY the license files that dockers_v2 stages into
+# the build context (#2564); assemble the same context here.
+if [ ! -d third_party_licenses ]; then
+  echo "==> generating third_party_licenses/"
+  make third-party-licenses
+fi
+
 # Findings do not abort the loop: a run reports every image's findings before
 # failing, instead of hiding the rest behind the first.
 failed=0
@@ -31,6 +38,8 @@ for row in "${ALL[@]}"; do
 
   ctx="$SCAN_ROOT/$id"
   mkdir -p "$ctx/linux/amd64"
+  cp LICENSE "$ctx/LICENSE"
+  cp -R third_party_licenses "$ctx/third_party_licenses"
   echo "==> building $binary (linux/amd64) for scan"
   CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath \
     -o "$ctx/linux/amd64/$binary" "$main"

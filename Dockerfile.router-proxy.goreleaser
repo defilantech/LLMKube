@@ -7,6 +7,9 @@ FROM gcr.io/distroless/static:nonroot
 ARG TARGETPLATFORM
 WORKDIR /
 COPY $TARGETPLATFORM/router-proxy /usr/local/bin/router-proxy
+# Third-party license and NOTICE files (#2564).
+COPY LICENSE /licenses/LICENSE
+COPY third_party_licenses /licenses/third_party_licenses
 
 # Default HTTP port; the binary's --listen flag overrides.
 EXPOSE 8080

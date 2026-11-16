@@ -355,6 +355,11 @@ jobs:
           mkdir -p "$ctx/linux/amd64"
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath \
             -o "$ctx/linux/amd64/manager" ./cmd/main.go
+          # The image COPYs the third-party license tree the GoReleaser
+          # context stages (#2564); stage the same paths here.
+          make third-party-licenses
+          cp LICENSE "$ctx/LICENSE"
+          cp -R third_party_licenses "$ctx/third_party_licenses"
           docker buildx build --platform linux/amd64 --push \
             -f Dockerfile.goreleaser -t "${img}:provenance-test" "$ctx"
           digest="$(crane digest "${img}:provenance-test")"
