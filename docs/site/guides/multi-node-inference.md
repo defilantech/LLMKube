@@ -174,9 +174,53 @@ What to know before turning it on:
 - **Changing the block recreates the group**, like any other member change.
   Adding it to a serving group is a restart; a group without the block is
   untouched by an operator upgrade.
-- **It covers boot, not serving.** A page cache that regrows under load still
-  needs a serving-phase flusher; `config/samples/gb10-memory-guard.yaml` is
-  the one the three-Spark ring runs.
+- **It covers boot, not serving.** A page cache that regrows under load is
+  what the next section's guard is for.
+
+## Node memory while serving
+
+The page cache can regrow after boot: a runtime that reads rows from weights
+on disk (DeepSeek-V4.1's Engram tables) refills it while it serves. Two more
+fields keep MemFree in check for as long as the member runs:
+
+```yaml
+  multiNode:
+    memory:
+      flushBelowMemFree: 4Gi       # drop the page cache when MemFree falls below this
+      suspendBelowMemFree: 1536Mi  # suspend the group once if MemFree stays below this
+```
+
+Either field adds a sidecar, `multinode-memory-guard`, to every member pod:
+a native sidecar (an init container with `restartPolicy: Always`) placed after
+the prep, so it starts once the weights are staged and runs beside the
+runtime. Every 2 seconds it reads `/proc/meminfo`:
+
+- **Flush.** When MemFree is under `flushBelowMemFree`, more than 512 MiB is
+  page cache, and the last drop was at least 5 seconds ago, it syncs and drops
+  the page cache.
+- **Guard.** When MemFree stays under `suspendBelowMemFree` for 10 seconds,
+  it drops once more. If MemFree is still under, it writes the reason to its
+  termination message and exits 42. The operator sees that exit on a group
+  that has formed, sets `spec.suspend: true` on the InferenceService, records a
+  `MultiNodeMemoryGuardSuspended` Warning event with the member, the node and
+  the measured MemFree, and counts it in
+  `llmkube_multinode_guard_suspends_total`. The group is then deleted the usual
+  suspend way. Set `spec.suspend` back to `false` to start it again; the guard
+  is armed again on the new members.
+
+Every drop is one log line with MemFree and Cached before and after:
+
+```bash
+kubectl logs <service>-mn-1 -c multinode-memory-guard
+```
+
+The same rules as the prep apply: the sidecar is privileged and root, uses the
+operator's `--init-container-image` (it needs `sh`, `awk`, `date`, `sleep` and
+`sync`), its drops are node-wide, and changing either field recreates the
+group. A guard exit before the group has formed (still loading) is not acted
+on. Set `flushBelowMemFree` alone for a flusher that never suspends. Per-member
+MemFree is not exported by the operator; `node_memory_MemFree_bytes` from
+node-exporter has it.
 
 ## Failure semantics
 

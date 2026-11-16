@@ -330,6 +330,92 @@ var _ = Describe("multiNode group reconcile", func() {
 		}
 	})
 
+	It("runs the memory guard beside every member and suspends a formed group once when it trips", func() {
+		recorder := events.NewFakeRecorder(16)
+		reconciler.Recorder = recorder
+
+		var isvc inferencev1alpha1.InferenceService
+		Expect(k8sClient.Get(ctx, key, &isvc)).To(Succeed())
+		isvc.Spec.MultiNode.Memory = &inferencev1alpha1.MultiNodeMemory{FlushBelowMemFree: "4Gi", SuspendBelowMemFree: "1536Mi"}
+		Expect(k8sClient.Update(ctx, &isvc)).To(Succeed())
+		reconcileOnce()
+		pods := memberPods()
+		Expect(pods).To(HaveLen(2))
+		for _, p := range pods {
+			last := p.Spec.InitContainers[len(p.Spec.InitContainers)-1]
+			Expect(last.Name).To(Equal(multiNodeMemoryGuardContainer), "%s: the guard is the last init container", p.Name)
+			Expect(last.RestartPolicy).To(HaveValue(Equal(corev1.ContainerRestartPolicyAlways)))
+		}
+
+		// The group forms with the guards running beside the runtimes. A
+		// running sidecar must not read as staging.
+		guardRunning := func(p *corev1.Pod, last *corev1.ContainerStateTerminated) {
+			ics := make([]corev1.ContainerStatus, 0, len(p.Spec.InitContainers))
+			for _, c := range p.Spec.InitContainers {
+				if c.Name == multiNodeMemoryGuardContainer {
+					cs := corev1.ContainerStatus{Name: c.Name, State: corev1.ContainerState{Running: &corev1.ContainerStateRunning{StartedAt: metav1.Now()}}}
+					if last != nil {
+						cs.RestartCount = 1
+						cs.LastTerminationState.Terminated = last
+					}
+					ics = append(ics, cs)
+					continue
+				}
+				ics = append(ics, corev1.ContainerStatus{Name: c.Name, State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{ExitCode: 0, FinishedAt: metav1.Now()}}})
+			}
+			p.Status.InitContainerStatuses = ics
+		}
+		for _, name := range []string{"mn-ring-mn-0", "mn-ring-mn-1"} {
+			var p corev1.Pod
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: ns}, &p)).To(Succeed())
+			p.Status.Phase = corev1.PodRunning
+			guardRunning(&p, nil)
+			p.Status.ContainerStatuses = []corev1.ContainerStatus{{
+				Name: "vllm", Ready: name == "mn-ring-mn-0",
+				State: corev1.ContainerState{Running: &corev1.ContainerStateRunning{StartedAt: metav1.Now()}},
+			}}
+			if name == "mn-ring-mn-0" {
+				p.Status.Conditions = []corev1.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionTrue}}
+			}
+			Expect(k8sClient.Status().Update(ctx, &p)).To(Succeed())
+		}
+		reconcileOnce()
+		Expect(k8sClient.Get(ctx, key, &isvc)).To(Succeed())
+		formed := meta.FindStatusCondition(isvc.Status.Conditions, ConditionMultiNodeFormed)
+		Expect(formed).NotTo(BeNil())
+		Expect(formed.Status).To(Equal(metav1.ConditionTrue), "running guards must not hold formation")
+		Expect(isvc.Spec.Suspend).To(BeFalse())
+		Expect(memberPods()).To(HaveLen(2))
+
+		// mn-1's guard exits 42 after formation and the kubelet restarts it.
+		var worker corev1.Pod
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "mn-ring-mn-1", Namespace: ns}, &worker)).To(Succeed())
+		guardRunning(&worker, &corev1.ContainerStateTerminated{
+			ExitCode: multiNodeMemoryGuardExitCode, Reason: "Error",
+			FinishedAt: metav1.NewTime(time.Now().Add(2 * time.Second)),
+			Message:    "MemFree 900 MiB stayed under 1536 MiB for 10s after a page cache drop",
+		})
+		Expect(k8sClient.Status().Update(ctx, &worker)).To(Succeed())
+
+		reconcileOnce()
+		Expect(k8sClient.Get(ctx, key, &isvc)).To(Succeed())
+		Expect(isvc.Spec.Suspend).To(BeTrue(), "the guard's exit suspends the group")
+		Expect(recorder.Events).To(Receive(And(
+			ContainSubstring("MultiNodeMemoryGuardSuspended"),
+			ContainSubstring("mn-ring-mn-1"),
+			ContainSubstring("MemFree 900 MiB stayed under 1536 MiB"),
+		)))
+
+		// The next reconcile tears the group down the usual suspend way, and
+		// raises no second suspend event.
+		reconcileOnce()
+		finishTerminating()
+		Eventually(memberPods).Should(BeEmpty())
+		Expect(k8sClient.Get(ctx, key, &isvc)).To(Succeed())
+		Expect(isvc.Status.Phase).To(Equal(PhaseSuspended))
+		Expect(recorder.Events).NotTo(Receive(ContainSubstring("MultiNodeMemoryGuardSuspended")))
+	})
+
 	It("refuses memory sysctls that are not vm.* integers at admission", func() {
 		for _, tc := range []struct {
 			bad  map[string]inferencev1alpha1.MultiNodeSysctlValue

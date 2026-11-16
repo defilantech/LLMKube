@@ -388,10 +388,11 @@ type MultiNodeSpec struct {
 // unified-memory host (DGX Spark, GB10) host RAM is GPU memory, and a runtime
 // whose KV cache is pinned (vLLM --kv-cache-memory-bytes) skips its own memory
 // profiling, so a page cache left by staging the weights takes memory the
-// model needs and nothing else notices. Either field makes the operator add
-// one privileged init container, the last one, to every member pod, so the
-// namespace's Pod Security level must allow privileged pods. What it writes
-// is node-wide and outlives the pod.
+// model needs and nothing else notices. DropPageCacheBeforeBoot or Sysctls make
+// the operator add one privileged init container, the last one, to every
+// member pod; FlushBelowMemFree or SuspendBelowMemFree add a privileged sidecar
+// that runs beside the runtime. Either way the namespace's Pod Security level
+// must allow privileged pods. What they write is node-wide and outlives the pod.
 type MultiNodeMemory struct {
 	// DropPageCacheBeforeBoot syncs and drops the node's page cache after the
 	// member has staged its weights and before its runtime container starts.
@@ -406,6 +407,28 @@ type MultiNodeMemory struct {
 	// +kubebuilder:validation:MaxProperties=16
 	// +kubebuilder:validation:XValidation:rule="self.all(k, k.matches('^vm[.][a-z0-9_]+$'))",message="sysctls keys must be vm.<name> (lowercase letters, digits, '_')"
 	Sysctls map[string]MultiNodeSysctlValue `json:"sysctls,omitempty"`
+
+	// FlushBelowMemFree drops the node's page cache while the member runs
+	// whenever MemFree falls below it and there is page cache to drop, at
+	// most once every 5 seconds. Page cache that regrows while serving (row
+	// reads from weights on disk) is the memory a unified-memory GPU then
+	// cannot allocate. Setting it, or SuspendBelowMemFree, adds a privileged
+	// sidecar, multinode-memory-guard, to every member pod.
+	// A quantity, e.g. "4Gi".
+	// +kubebuilder:validation:Pattern=`^([+-]?[0-9.]+)([eEinumkKMGTP]*[-+]?[0-9]*)$`
+	// +optional
+	FlushBelowMemFree string `json:"flushBelowMemFree,omitempty"`
+
+	// SuspendBelowMemFree suspends the group once when a member's MemFree
+	// stays below it for 10 seconds, even after a last page-cache drop: the
+	// operator sets spec.suspend to true and records a Warning event, so the
+	// members are deleted cleanly instead of starving the GPU allocator.
+	// Setting spec.suspend back to false starts the group again and re-arms
+	// the guard. Only a group that has formed is suspended.
+	// A quantity, e.g. "1536Mi".
+	// +kubebuilder:validation:Pattern=`^([+-]?[0-9.]+)([eEinumkKMGTP]*[-+]?[0-9]*)$`
+	// +optional
+	SuspendBelowMemFree string `json:"suspendBelowMemFree,omitempty"`
 }
 
 // MultiNodeSysctlValue is the value written for one sysctl: a non-negative

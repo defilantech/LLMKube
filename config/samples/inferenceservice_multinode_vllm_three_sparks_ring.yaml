@@ -208,6 +208,9 @@ spec:
       sysctls:
         vm.min_free_kbytes: "1048576"
         vm.watermark_scale_factor: "200"
+      # While serving: drop the page cache under 4 GiB MemFree, suspend the ring once if it stays under 1.5 GiB.
+      flushBelowMemFree: 4Gi
+      suspendBelowMemFree: 1536Mi
     members:
       - node: ahazidgx1
         fabric: {address: 192.168.1.28, socketInterface: enP7s7, ibHCA: "rocep1s0f0,rocep1s0f1,roceP2p1s0f0,roceP2p1s0f1"}
