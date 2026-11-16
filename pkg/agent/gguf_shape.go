@@ -18,14 +18,10 @@ package agent
 
 import (
 	"bufio"
-	"context"
 	"errors"
 	"fmt"
 	"io"
-	"net/http"
-	neturl "net/url"
 	"os"
-	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -51,8 +47,8 @@ type attentionShape struct {
 
 	// KVHeadLayers and RecurrentStatePerSeq come only from a GGUF header
 	// whose layer layout differs from LayerCount layers of HeadCountKV heads
-	// (see kvLayoutFromParsed); both are 0 otherwise, and always for a shape
-	// from the Model status, which records no layout.
+	// (see gguf.KVLayout); both are 0 otherwise, and for a status an older
+	// controller wrote, which recorded no layout.
 	KVHeadLayers         uint64
 	RecurrentStatePerSeq uint64
 }
@@ -75,6 +71,13 @@ func shapeFromStatus(meta *inferencev1alpha1.GGUFMetadata) attentionShape {
 		HeadCountKV:   meta.HeadCountKV,
 		KeyLength:     meta.KeyLength,
 		ValueLength:   meta.ValueLength,
+
+		// Recorded by the controller from the header it read before the
+		// download, so the first start of a hybrid is charged its real
+		// layout instead of block_count layers of HeadCountKV heads. 0 on a
+		// status an older controller wrote, which charges every layer.
+		KVHeadLayers:         meta.KVHeadLayers,
+		RecurrentStatePerSeq: meta.RecurrentStatePerSeq,
 	}
 }
 
@@ -92,230 +95,8 @@ func shapeFromParsed(f *gguf.GGUFFile) attentionShape {
 		KeyLength:     f.KeyLength(),
 		ValueLength:   f.ValueLength(),
 	}
-	s.KVHeadLayers, s.RecurrentStatePerSeq = kvLayoutFromParsed(f)
+	s.KVHeadLayers, s.RecurrentStatePerSeq = gguf.KVLayout(f)
 	return s
-}
-
-// kvLayoutFromParsed reads which layers of a GGUF hold a KV cache, and the
-// state the others hold instead, for the files whose layout is not simply
-// block_count layers of head_count_kv heads. It mirrors llama.cpp master
-// (ggml-org/llama.cpp 3837bf0bc, 2026-11-10):
-//
-//   - A layer is recurrent when <arch>.attention.recurrent_layers says so
-//     (one bool per layer, or one for all). Without that key, when the file
-//     has <arch>.full_attention_interval = k, layer i is recurrent when
-//     (i+1) % k != 0, except the trailing <arch>.nextn_predict_layers (MTP)
-//     layers, which are attention layers (src/models/qwen35.cpp,
-//     qwen35moe.cpp, qwen3next.cpp, minimax-01.cpp). Without either key, a
-//     per-layer head_count_kv of 0 marks a recurrent layer when the file has
-//     SSM geometry (Jamba, Nemotron-H and the Granite hybrids set
-//     recurrent_layer_arr from n_head_kv(i) == 0); with no SSM geometry such
-//     a layer simply has no attention (Nemotron Super's deci layers).
-//   - The KV cache covers only the other layers, n_head_kv(il) heads each:
-//     llama-memory-hybrid.cpp filters the attention cache on !is_recr(il),
-//     and llama-kv-cache.cpp skips a filtered layer and sizes the rest by
-//     n_embd_k_gqa(il) = head dim * n_head_kv(il).
-//   - Each recurrent layer holds f32 conv state (d_conv-1) * (d_inner +
-//     2*n_group*d_state) and SSM state d_state * d_inner per sequence
-//     (llama-hparams.cpp n_embd_r and n_embd_s, the generic Mamba branch;
-//     recurrent_type_r and _s are GGML_TYPE_F32 in llama-model.cpp).
-//
-// It returns kvHeadLayers = 0 when the layout is the plain one (nothing to
-// refine), when a key is malformed, and when recurrent layers keep a state
-// the generic formula does not describe (RWKV's .wkv., LFM2's .shortconv.,
-// Kimi's .kda., the .ple. history) or lack SSM geometry: the estimate then
-// charges every layer, which over-charges a hybrid and never under-charges
-// it. Sliding-window layers are charged at the full context here; that too
-// over-charges.
-func kvLayoutFromParsed(f *gguf.GGUFFile) (kvHeadLayers, recurrentStatePerSeq uint64) {
-	arch := f.Architecture()
-	n := f.BlockCount()
-	if arch == "" || n == 0 || n > maxGGUFLayoutLayers {
-		return 0, 0
-	}
-	key := func(name string) (gguf.GGUFValue, bool) { return f.GetMetadata(arch + "." + name) }
-
-	headsKV, foundHeadsKV := key("attention.head_count_kv")
-	kvHeads, perLayerHeads, ok := ggufLayerCounts(headsKV, foundHeadsKV, n)
-	if !ok {
-		return 0, 0
-	}
-	ssmInner, hasInner := ggufCountKey(key("ssm.inner_size"))
-	ssmState, hasState := ggufCountKey(key("ssm.state_size"))
-	hasSSM := hasInner && hasState
-
-	recurrent := make([]bool, n)
-	if v, found := key("attention.recurrent_layers"); found {
-		if !ggufLayerBools(v, recurrent) {
-			return 0, 0
-		}
-	} else if v, found := key("full_attention_interval"); found {
-		interval, ok := ggufCount(v)
-		if !ok || interval == 0 {
-			return 0, 0
-		}
-		nextn, _ := ggufCountKey(key("nextn_predict_layers"))
-		if nextn > n {
-			return 0, 0
-		}
-		for i := uint64(0); i < n-nextn; i++ {
-			recurrent[i] = (i+1)%interval != 0
-		}
-	} else if perLayerHeads && hasSSM {
-		for i := range recurrent {
-			recurrent[i] = layerHeads(kvHeads, i) == 0
-		}
-	}
-
-	var recurrentLayers uint64
-	for i, r := range recurrent {
-		if r {
-			recurrentLayers++
-			continue
-		}
-		kvHeadLayers += layerHeads(kvHeads, i)
-	}
-	if recurrentLayers == 0 && !perLayerHeads {
-		return 0, 0 // block_count layers of head_count_kv heads: nothing to refine
-	}
-	if kvHeadLayers == 0 {
-		return 0, 0 // no attention layer at all; leave it to the existing charge
-	}
-	if recurrentLayers == 0 {
-		return kvHeadLayers, 0
-	}
-
-	// MiniMax-01's linear-attention state (n_embd_head_la in llama.cpp) needs
-	// no key here: src/models/minimax-01.cpp reads no ssm.* key, so such a
-	// file has no SSM geometry and takes the every-layer charge below.
-	if !hasSSM || ggufHasKeyPart(f, arch, ".wkv.", ".shortconv.", ".kda.", ".ple.") {
-		return 0, 0
-	}
-	conv, _ := ggufCountKey(key("ssm.conv_kernel"))
-	groups, _ := ggufCountKey(key("ssm.group_count"))
-	if conv > 0 {
-		conv--
-	}
-	// Real files are far inside maxSSMDim (Qwen3.8-27B: inner 6144, state
-	// 128, 16 groups, kernel 4); bounding every factor keeps the products
-	// below 2^61 with n <= 512. A file past the bound gets no layout.
-	if ssmInner > maxSSMDim || ssmState > maxSSMDim || conv > maxSSMDim || groups > maxSSMDim {
-		return 0, 0
-	}
-	floatsPerLayer := conv*(ssmInner+2*groups*ssmState) + ssmState*ssmInner
-	return kvHeadLayers, recurrentLayers * floatsPerLayer * 4
-}
-
-// maxSSMDim bounds each SSM dimension kvLayoutFromParsed multiplies.
-const maxSSMDim = 1 << 16
-
-// maxGGUFLayoutLayers bounds the per-layer arrays kvLayoutFromParsed builds;
-// llama.cpp's own limit is LLAMA_MAX_LAYERS, 512.
-const maxGGUFLayoutLayers = 512
-
-// layerHeads returns layer i's KV head count from ggufLayerCounts' result.
-func layerHeads(heads []uint64, i int) uint64 {
-	if len(heads) == 1 {
-		return heads[0]
-	}
-	return heads[i]
-}
-
-// ggufLayerCounts reads a per-layer count the way llama.cpp's
-// get_key_or_arr does: a scalar applies to every layer, an array gives one
-// value per layer. perLayer reports the array form. ok is false when the key
-// is absent, negative, or an array whose length is not one per layer.
-func ggufLayerCounts(v gguf.GGUFValue, found bool, n uint64) (counts []uint64, perLayer, ok bool) {
-	if !found {
-		return nil, false, false
-	}
-	if c, ok := ggufCount(v); ok {
-		return []uint64{c}, false, true
-	}
-	arr, isArr := v.(gguf.ArrayVal)
-	if !isArr || uint64(len(arr.Values)) != n {
-		return nil, false, false
-	}
-	counts = make([]uint64, len(arr.Values))
-	for i, e := range arr.Values {
-		c, ok := ggufCount(e)
-		if !ok {
-			return nil, false, false
-		}
-		counts[i] = c
-	}
-	return counts, true, true
-}
-
-// ggufLayerBools fills out from a bool, or an array of one bool per layer.
-func ggufLayerBools(v gguf.GGUFValue, out []bool) bool {
-	if b, ok := v.(gguf.BoolVal); ok {
-		for i := range out {
-			out[i] = b.Value
-		}
-		return true
-	}
-	arr, isArr := v.(gguf.ArrayVal)
-	if !isArr || len(arr.Values) != len(out) {
-		return false
-	}
-	for i, e := range arr.Values {
-		b, ok := e.(gguf.BoolVal)
-		if !ok {
-			return false
-		}
-		out[i] = b.Value
-	}
-	return true
-}
-
-// ggufCount reads a non-negative integer of any width. GGUF converters write
-// unsigned values for most counts but signed ones for some per-layer arrays
-// (Nemotron Super's head counts are int32).
-func ggufCount(v gguf.GGUFValue) (uint64, bool) {
-	if u, ok := gguf.AsU64(v); ok {
-		return u, true
-	}
-	var s int64
-	switch x := v.(type) {
-	case gguf.Int8Val:
-		s = int64(x.Value)
-	case gguf.Int16Val:
-		s = int64(x.Value)
-	case gguf.Int32Val:
-		s = int64(x.Value)
-	case gguf.Int64Val:
-		s = x.Value
-	default:
-		return 0, false
-	}
-	if s < 0 {
-		return 0, false
-	}
-	return uint64(s), true
-}
-
-// ggufCountKey is ggufCount for a lookup that may have missed.
-func ggufCountKey(v gguf.GGUFValue, found bool) (uint64, bool) {
-	if !found {
-		return 0, false
-	}
-	return ggufCount(v)
-}
-
-// ggufHasKeyPart reports whether any <arch>.* key contains one of parts.
-func ggufHasKeyPart(f *gguf.GGUFFile, arch string, parts ...string) bool {
-	for _, kv := range f.Metadata {
-		if !strings.HasPrefix(kv.Key, arch+".") {
-			continue
-		}
-		for _, p := range parts {
-			if strings.Contains(kv.Key, p) {
-				return true
-			}
-		}
-	}
-	return false
 }
 
 // ggufShapeCache remembers the attention shape read from each model file, so
@@ -412,134 +193,6 @@ func pathErrorCause(err error) error {
 		return pe.Err
 	}
 	return err
-}
-
-// remoteGGUFShapeTimeout bounds the header-only read of a remote source so a
-// hung or slow model host cannot hold up admission.
-const remoteGGUFShapeTimeout = 30 * time.Second
-
-// isRemoteGGUFSource reports whether source is one this agent can read a GGUF
-// header from without the file being on this Mac: an http(s) URL, or an hf://
-// source its resolver turns into one. An s3:// object is left out on purpose:
-// a range read would change the method its presigned probe signs for, so that
-// path keeps sizing from the Model status until it gets its own change.
-func isRemoteGGUFSource(source string) bool {
-	lower := strings.ToLower(source)
-	return strings.HasPrefix(lower, "http://") ||
-		strings.HasPrefix(lower, "https://") || strings.HasPrefix(lower, "hf://")
-}
-
-// remoteAttentionShape reads the attention shape from the GGUF header of a
-// remote source, through the same guarded clients and source credentials the
-// download uses. A failure is not fatal: the caller falls back to the Model
-// status shape.
-func (a *MetalAgent) remoteAttentionShape(
-	ctx context.Context, model *inferencev1alpha1.Model,
-) (attentionShape, string) {
-	if !isRemoteGGUFSource(model.Spec.Source) {
-		return attentionShape{}, ""
-	}
-	return a.llamaServerExecutor().remoteAttentionShape(ctx, model.Spec.Source,
-		sourceSecretKeyFor(model.Namespace, model.Spec.SourceSecretRef))
-}
-
-func (e *MetalExecutor) remoteAttentionShape(
-	ctx context.Context, source string, secretRef sourceSecretKey,
-) (attentionShape, string) {
-	client, url, release, err := e.remoteHeaderSource(ctx, source, secretRef)
-	if err != nil {
-		return attentionShape{}, fmt.Sprintf("the GGUF header of %s is unreadable: %v", source, err)
-	}
-	defer release()
-
-	ctx, cancel := context.WithTimeout(ctx, remoteGGUFShapeTimeout)
-	defer cancel()
-	return readRemoteGGUFShape(ctx, client, url)
-}
-
-// remoteHeaderSource returns the guarded client and URL for a header-only read
-// of source, plus a release func. s3:// goes through the signed download client
-// and sourceSecretRef credentials; everything else uses the download client,
-// the hf:// resolver, and the Hugging Face bearer token when the source is a
-// host that should see it.
-func (e *MetalExecutor) remoteHeaderSource(
-	ctx context.Context, source string, secretRef sourceSecretKey,
-) (*http.Client, string, func(), error) {
-	if isS3Source(source) {
-		creds, err := e.resolveS3Credentials(ctx, source, secretRef)
-		if err != nil {
-			return nil, "", nil, err
-		}
-		client, objectURL, err := e.s3DownloadClient(source, creds)
-		if err != nil {
-			return nil, "", nil, err
-		}
-		return client, objectURL, func() { client.CloseIdleConnections() }, nil
-	}
-
-	url := hfNormalize(source)
-	client := e.downloadClient()
-	release := func() { client.CloseIdleConnections() }
-
-	var token string
-	if secretRef != nil {
-		secretToken, hfEndpoint, err := e.resolveHFAuth(ctx, secretRef)
-		if err != nil {
-			release()
-			return nil, "", nil, err
-		}
-		if isHFAuthHostForEndpoint(source, hfEndpoint) {
-			token = secretToken
-		}
-	}
-	if token != "" {
-		host := ""
-		if u, err := neturl.Parse(url); err == nil {
-			host = u.Host
-		}
-		client.Transport = &hfHeaderAuthTransport{base: client.Transport, token: token, host: host}
-	}
-	return client, url, release, nil
-}
-
-// hfHeaderAuthTransport attaches a Hugging Face bearer token to the header
-// read's own-host requests, leaving a redirected host (the CDN) without it,
-// the same boundary hfRedirectStripper enforces for a download.
-type hfHeaderAuthTransport struct {
-	base  http.RoundTripper
-	token string
-	host  string
-}
-
-func (t *hfHeaderAuthTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	if req.URL.Host == t.host && req.Header.Get("Authorization") == "" {
-		clone := req.Clone(req.Context())
-		clone.Header.Set("Authorization", "Bearer "+t.token)
-		req = clone
-	}
-	return t.base.RoundTrip(req)
-}
-
-func (t *hfHeaderAuthTransport) CloseIdleConnections() {
-	if c, ok := t.base.(interface{ CloseIdleConnections() }); ok {
-		c.CloseIdleConnections()
-	}
-}
-
-// readRemoteGGUFShape parses the header of url with pkg/gguf, which reads only
-// the metadata and tensor index over Range requests, and returns its attention
-// shape or why there is none.
-func readRemoteGGUFShape(ctx context.Context, client *http.Client, url string) (attentionShape, string) {
-	parsed, err := gguf.ParseFromURLWithClient(ctx, client, url)
-	if err != nil {
-		return attentionShape{}, fmt.Sprintf("the GGUF header of %s is unreadable: %v", url, err)
-	}
-	shape := shapeFromParsed(parsed)
-	if !shape.known() {
-		return attentionShape{}, fmt.Sprintf("the GGUF header of %s has no block count or embedding length "+
-			"for architecture %q", url, parsed.Architecture())
-	}
-	return shape, ""
 }
 
 // readGGUFShape parses the header of r with pkg/gguf, reading at most

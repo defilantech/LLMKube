@@ -2774,7 +2774,7 @@ func (a *MetalAgent) estimateModelMemory(
 		return MemoryEstimate{}, err
 	}
 
-	shape, notCounted := a.attentionShapeFor(ctx, model, headerPath, headerFollowsSymlinks)
+	shape, notCounted := a.attentionShapeFor(model, headerPath, headerFollowsSymlinks)
 	seqs := recurrentSequences(parallelSlots)
 	recurrentState := shape.RecurrentStatePerSeq * seqs
 	if recurrentState/seqs != shape.RecurrentStatePerSeq {
@@ -2804,21 +2804,22 @@ func (a *MetalAgent) estimateModelMemory(
 
 // attentionShapeFor returns the attention shape the KV-cache estimate uses.
 // The header of headerPath, the file llama-server loads, wins once that file
-// is on this Mac. Before the download lands, a remote source's own header wins
-// over the Model status: the status records no per-layer layout and no KV head
-// count for a file that stores them per layer, so a hybrid model sized from it
-// is over-charged. A source whose remote header cannot be read falls back to
-// the status. headerPath is empty when the model is not on this Mac yet.
-// notCounted says why there is no shape, if there is none.
+// is on this Mac; the Model status covers the first start before the
+// download lands and a header that could not be read. A status an older
+// controller wrote records no per-layer layout and no KV head count for a
+// file that stores them per layer, so a hybrid model sized from it is
+// over-charged; a controller that read the header records both
+// (GGUFMetadata.KVHeadLayers and .RecurrentStatePerSeq), so the first
+// deploy of a hybrid is sized from the real layout. headerPath is empty
+// when the model is not on this Mac yet. notCounted says why there is no
+// shape, if there is none.
 func (a *MetalAgent) attentionShapeFor(
-	ctx context.Context, model *inferencev1alpha1.Model, headerPath string, followSymlinks bool,
+	model *inferencev1alpha1.Model, headerPath string, followSymlinks bool,
 ) (shape attentionShape, notCounted string) {
 	if headerPath != "" {
 		if shape, notCounted = a.ggufShapes.shapeOf(headerPath, followSymlinks); shape.known() {
 			return shape, ""
 		}
-	} else if shape, _ = a.remoteAttentionShape(ctx, model); shape.known() {
-		return shape, ""
 	}
 	if shape = shapeFromStatus(model.Status.GGUF); shape.known() {
 		return shape, ""
