@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"strings"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -27,6 +28,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/events"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
@@ -472,6 +474,40 @@ var _ = Describe("metal service scheduling status", func() {
 		Expect(got.Status.SchedulingStatus).To(BeEmpty(),
 			"a Ready metal service must not keep advertising AgentHeartbeatStale")
 		Expect(got.Status.SchedulingMessage).To(BeEmpty())
+	})
+
+	// #2408: the agent stamps its version on the slices it registers; a
+	// service served by an agent outside the skew window gets a Warning
+	// Event, and one inside it gets none.
+	It("warns when the serving agent is outside the version skew window", func() {
+		for _, tc := range []struct {
+			name, agent string
+			warn        bool
+		}{
+			{"sched-skew-ahead-isvc", "0.11.0", true},
+			{"sched-skew-same-isvc", "0.10.17", false},
+		} {
+			readyMetalFixtures(tc.name+"-model", tc.name)
+			slice := metalEndpoints(tc.name, time.Now().UTC().Format(time.RFC3339))
+			slice.Annotations[inferencev1alpha1.AnnotationAgentVersion] = tc.agent
+			Expect(k8sClient.Create(ctx, slice)).To(Succeed())
+			DeferCleanup(func() { _ = k8sClient.Delete(ctx, slice) })
+
+			recorder := events.NewFakeRecorder(20)
+			reconciler.Recorder = recorder
+			reconciler.ControllerVersion = "0.10.17"
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: tc.name, Namespace: namespace}})
+			Expect(err).NotTo(HaveOccurred())
+
+			var warned bool
+			for len(recorder.Events) > 0 {
+				if e := <-recorder.Events; strings.Contains(e, "Warning AgentVersionSkew") &&
+					strings.Contains(e, "agent 0.11.0 is newer than the controller 0.10.17") {
+					warned = true
+				}
+			}
+			Expect(warned).To(Equal(tc.warn), "%s: agent %s, controller 0.10.17", tc.name, tc.agent)
+		}
 	})
 
 	It("keeps WaitingForMetalAgent while the agent has not registered", func() {
