@@ -51,10 +51,11 @@ const AnnotationDesiredTemplateHash = "llmkube.ai/desired-template-hash"
 var errIdleUnsupported = errors.New("runtime does not implement idle detection")
 
 // errNoEndpoints is returned by checkServiceIdle when the Service has
-// EndpointSlices but none of them carries an address: the service is scaled to
-// zero, or every pod is gone. Whether that means "nothing to drain" or "pods
-// exist but are not addressable yet" depends on the pod count, which the
-// caller has, so the caller decides.
+// EndpointSlices but none of them carries an address, or every address belongs
+// to a pod that is not running its serving container: the service is scaled to
+// zero, every pod is gone, or nothing is left to probe. Whether that means
+// "nothing to drain" or "pods exist but are not addressable yet" depends on the
+// pod count, which the caller has, so the caller decides.
 var errNoEndpoints = errors.New("service has no endpoints to probe")
 
 // desiredTemplateHash computes a deterministic hash of the pod template for the
@@ -149,8 +150,9 @@ func collectNotReadyReplicaURLs(slices *discoveryv1.EndpointSliceList, port int3
 
 // checkServiceIdle checks whether the InferenceService Service currently routes
 // to idle backends. It resolves the backend for the given InferenceService,
-// type-asserts to IdleDetector, and probes each Ready replica via EndpointSlices
-// (or falls back to a single Service URL when no EndpointSlices exist).
+// type-asserts to IdleDetector, and probes each endpoint address of a pod that
+// is running its serving container (ready and not-ready), falling back to a
+// single Service URL when no EndpointSlices exist.
 func (r *InferenceServiceReconciler) checkServiceIdle(ctx context.Context, isvc *inferencev1alpha1.InferenceService, svc *corev1.Service) (bool, error) {
 	log := logf.FromContext(ctx)
 
@@ -226,7 +228,50 @@ func (r *InferenceServiceReconciler) checkServiceIdle(ctx context.Context, isvc 
 		return false, errNoEndpoints
 	}
 
+	// An endpoint whose pod is not running its serving container holds no
+	// request, so it is skipped; readiness is not the test, and an endpoint
+	// with no targetRef or an unlisted pod is probed (fail-closed).
+	podByURL := make(map[string]string)
+	for i := range slices.Items {
+		for j := range slices.Items[i].Endpoints {
+			ep := &slices.Items[i].Endpoints[j]
+			if ep.TargetRef == nil || ep.TargetRef.Kind != "Pod" || ep.TargetRef.Name == "" {
+				continue
+			}
+			for _, addr := range ep.Addresses {
+				podByURL[fmt.Sprintf("http://%s:%d", addr, port)] = ep.TargetRef.Name
+			}
+		}
+	}
+	skipped := make(map[string]bool)
+	if len(podByURL) > 0 {
+		pods, listErr := r.oldGenerationPods(ctx, isvc)
+		if listErr != nil {
+			// The endpoint is the evidence and the pod list is the shortcut,
+			// so a failed list probes every endpoint rather than skipping them.
+			log.Info("Failed to list pods for the idle check, probing every endpoint", "error", listErr)
+		} else {
+			containerName := backend.ContainerName()
+			listed := make(map[string]*corev1.Pod, len(pods))
+			for i := range pods {
+				listed[pods[i].Name] = &pods[i]
+			}
+			for url, name := range podByURL {
+				pod, ok := listed[name]
+				if ok && !podServingContainerRunning(pod, containerName) {
+					skipped[url] = true
+				}
+			}
+		}
+	}
+
+	probed := 0
 	for _, url := range replicaURLs {
+		if skipped[url] {
+			log.Info("Endpoint belongs to a pod that is not running its serving container, skipping", "url", url)
+			continue
+		}
+		probed++
 		idle, err := probe(ctx, url)
 		if err != nil {
 			log.Info("Failed to check replica idle status", "url", url, "error", err)
@@ -236,6 +281,12 @@ func (r *InferenceServiceReconciler) checkServiceIdle(ctx context.Context, isvc 
 			log.Info("Replica is busy, deferring rollout", "url", url)
 			return false, nil
 		}
+	}
+
+	if probed == 0 {
+		// Every endpoint belongs to a pod that is not serving, so nothing was
+		// asked. Hand the decision back to the caller's pod count.
+		return false, errNoEndpoints
 	}
 
 	log.Info("All replicas are idle, proceeding with rollout")
@@ -258,17 +309,13 @@ func (r *InferenceServiceReconciler) checkServiceIdle(ctx context.Context, isvc 
 // drain), so a transient List failure reported as zero would roll a pod that
 // may still hold work. The caller must fail closed on the error.
 func (r *InferenceServiceReconciler) countOldPods(ctx context.Context, isvc *inferencev1alpha1.InferenceService) (total, ready, running int32, err error) {
-	podList := &corev1.PodList{}
-	labels := client.MatchingLabels{
-		"app":                           isvc.Name,
-		"inference.llmkube.dev/service": isvc.Name,
-	}
-	if listErr := r.List(ctx, podList, client.InNamespace(isvc.Namespace), labels); listErr != nil {
+	pods, listErr := r.oldGenerationPods(ctx, isvc)
+	if listErr != nil {
 		return 0, 0, 0, listErr
 	}
 	containerName := resolveBackend(isvc).ContainerName()
-	for i := range podList.Items {
-		pod := &podList.Items[i]
+	for i := range pods {
+		pod := &pods[i]
 		total++
 		for _, cond := range pod.Status.Conditions {
 			if cond.Type == corev1.PodReady && cond.Status == corev1.ConditionTrue {
@@ -281,6 +328,17 @@ func (r *InferenceServiceReconciler) countOldPods(ctx context.Context, isvc *inf
 		}
 	}
 	return total, ready, running, nil
+}
+
+// Lists the pods the Deployment selects by the labels deploymentSelectorLabels
+// gives its selector, so the idle decision and the pod counts read one set.
+func (r *InferenceServiceReconciler) oldGenerationPods(ctx context.Context, isvc *inferencev1alpha1.InferenceService) ([]corev1.Pod, error) {
+	podList := &corev1.PodList{}
+	labels := client.MatchingLabels(deploymentSelectorLabels(isvc))
+	if err := r.List(ctx, podList, client.InNamespace(isvc.Namespace), labels); err != nil {
+		return nil, err
+	}
+	return podList.Items, nil
 }
 
 // podServingContainerRunning reports whether the pod is currently running its
