@@ -1,0 +1,520 @@
+/*
+Copyright 2026.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package controller
+
+import (
+	"context"
+	"net/http"
+	"net/http/httptest"
+	"strconv"
+	"testing"
+	"time"
+
+	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
+	discoveryv1 "k8s.io/api/discovery/v1"
+	"k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
+
+	inferencev1alpha1 "github.com/defilantech/llmkube/api/v1alpha1"
+)
+
+const (
+	rolloutTestImage   = "ghcr.io/ggml-org/llama.cpp:server"
+	rolloutTestImageV2 = "ghcr.io/ggml-org/llama.cpp:server-v2"
+)
+
+// rolloutFixture is one InferenceService mid-decision: a Deployment created by
+// the first reconcile, plus the old-generation pods the test places on top of
+// it. Reconcile is called with a real Service URL probe unless the test sets
+// slotsURL, so the default idle path (EndpointSlices) is the one under test.
+type rolloutFixture struct {
+	c      client.Client
+	key    types.NamespacedName
+	isvc   *inferencev1alpha1.InferenceService
+	r      *InferenceServiceReconciler
+	slots  *httptest.Server
+	dep    *appsv1.Deployment
+	ctx    context.Context
+	prefix string
+}
+
+func newRolloutFixture(t *testing.T, name, runtimeName string) *rolloutFixture {
+	t.Helper()
+	c, _, _ := sharedTestEnv(t, baseCRDPath)
+	ctx := context.Background()
+	model := readyModelFor(t, c, name+"-model")
+	ns := testNS
+
+	isvc := &inferencev1alpha1.InferenceService{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns},
+		Spec: inferencev1alpha1.InferenceServiceSpec{
+			ModelRef: model.Name,
+			Replicas: ptrInt32(1),
+			Image:    rolloutTestImage,
+			Runtime:  runtimeName,
+			RolloutPolicy: &inferencev1alpha1.RolloutPolicySpec{
+				WaitForIdle:        true,
+				IdleTimeoutSeconds: 900,
+			},
+		},
+	}
+	if err := c.Create(ctx, isvc); err != nil {
+		t.Fatalf("create isvc: %v", err)
+	}
+	key := client.ObjectKeyFromObject(isvc)
+	f := &rolloutFixture{
+		c:      c,
+		key:    key,
+		isvc:   isvc,
+		ctx:    ctx,
+		prefix: name,
+		r: &InferenceServiceReconciler{
+			Client:             c,
+			Scheme:             c.Scheme(),
+			InitContainerImage: "docker.io/curlimages/curl:8.18.0",
+		},
+	}
+	if _, err := f.r.Reconcile(ctx, reconcile.Request{NamespacedName: key}); err != nil {
+		t.Fatalf("first reconcile: %v", err)
+	}
+	dep := &appsv1.Deployment{}
+	if err := c.Get(ctx, key, dep); err != nil {
+		t.Fatalf("get deployment: %v", err)
+	}
+	if len(dep.Spec.Template.Spec.Containers) == 0 {
+		t.Fatalf("fixture: deployment has no containers")
+	}
+	f.dep = dep
+	t.Cleanup(func() {
+		if f.slots != nil {
+			f.slots.Close()
+		}
+	})
+	return f
+}
+
+// servingContainerName reads the name the controller actually gave the
+// serving container, rather than assuming the runtime's default.
+func (f *rolloutFixture) servingContainerName(t *testing.T) string {
+	t.Helper()
+	return f.dep.Spec.Template.Spec.Containers[0].Name
+}
+
+// useIdleStub points the idle probe at a local server that answers /slots with
+// the given body and status, the way a running replica would.
+func (f *rolloutFixture) useIdleStub(t *testing.T, status int, body string) {
+	t.Helper()
+	f.slots = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/slots" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(status)
+		_, _ = w.Write([]byte(body))
+	}))
+	f.r.RolloutIdleBaseURL = f.slots.URL
+}
+
+// pod places an old-generation, not-Ready pod whose serving container is in
+// the given state.
+func (f *rolloutFixture) pod(t *testing.T, suffix string, state corev1.ContainerState) *corev1.Pod {
+	return f.podWithFinalizer(t, suffix, state, false)
+}
+
+// podWithFinalizer keeps the pod on the server after a delete, which is the
+// only way to observe a terminating pod from a reconcile in envtest (no
+// kubelet, so an unfinalized pod disappears at once).
+func (f *rolloutFixture) podWithFinalizer(t *testing.T, suffix string, state corev1.ContainerState, finalize bool) *corev1.Pod {
+	t.Helper()
+	container := f.servingContainerName(t)
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      f.prefix + "-" + suffix,
+			Namespace: f.key.Namespace,
+			Labels: map[string]string{
+				"app":                           f.key.Name,
+				"inference.llmkube.dev/service": f.key.Name,
+			},
+		},
+		Spec: corev1.PodSpec{
+			Containers: []corev1.Container{{Name: container, Image: rolloutTestImage}},
+		},
+	}
+	if finalize {
+		pod.Finalizers = []string{"test.llmkube.dev/hold"}
+	}
+	if err := f.c.Create(f.ctx, pod); err != nil {
+		t.Fatalf("create pod %s: %v", suffix, err)
+	}
+	pod.Status = corev1.PodStatus{
+		Phase: corev1.PodRunning,
+		Conditions: []corev1.PodCondition{
+			{Type: corev1.PodReady, Status: corev1.ConditionFalse},
+		},
+		ContainerStatuses: []corev1.ContainerStatus{{
+			Name:  container,
+			State: state,
+		}},
+	}
+	if err := f.c.Status().Update(f.ctx, pod); err != nil {
+		t.Fatalf("update pod %s status: %v", suffix, err)
+	}
+	return pod
+}
+
+func crashLoopState() corev1.ContainerState {
+	return corev1.ContainerState{Waiting: &corev1.ContainerStateWaiting{Reason: "CrashLoopBackOff"}}
+}
+
+func containerCreatingState() corev1.ContainerState {
+	return corev1.ContainerState{Waiting: &corev1.ContainerStateWaiting{Reason: "ContainerCreating"}}
+}
+
+func runningState() corev1.ContainerState {
+	return corev1.ContainerState{Running: &corev1.ContainerStateRunning{}}
+}
+
+// endpointSlice publishes an address for the service, so checkServiceIdle
+// probes it instead of taking the no-EndpointSlice fallback.
+func (f *rolloutFixture) endpointSlice(t *testing.T, addr string) {
+	t.Helper()
+	ready := false
+	ep := &discoveryv1.EndpointSlice{
+		ObjectMeta: metav1.ObjectMeta{
+			GenerateName: "eslice-",
+			Namespace:    f.key.Namespace,
+			Labels:       map[string]string{"kubernetes.io/service-name": f.key.Name},
+		},
+		AddressType: discoveryv1.AddressTypeIPv4,
+		Endpoints: []discoveryv1.Endpoint{{
+			Addresses:  []string{addr},
+			Conditions: discoveryv1.EndpointConditions{Ready: &ready},
+		}},
+	}
+	if err := f.c.Create(f.ctx, ep); err != nil {
+		t.Fatalf("create endpointslice: %v", err)
+	}
+}
+
+// setIdleEndpoint gives a generic runtime the annotation that makes it
+// idle-checkable, so checkServiceIdle reaches the endpoint list rather than
+// returning errIdleUnsupported.
+func setIdleEndpoint(t *testing.T, f *rolloutFixture, path string) {
+	t.Helper()
+	isvc := &inferencev1alpha1.InferenceService{}
+	if err := f.c.Get(f.ctx, f.key, isvc); err != nil {
+		t.Fatalf("get isvc: %v", err)
+	}
+	if isvc.Annotations == nil {
+		isvc.Annotations = map[string]string{}
+	}
+	isvc.Annotations[inferencev1alpha1.AnnotationIdleEndpoint] = path
+	if err := f.c.Update(f.ctx, isvc); err != nil {
+		t.Fatalf("annotate isvc: %v", err)
+	}
+}
+
+// reconcileAfterEdit changes the image and runs one reconcile, with a short
+// deadline so a base-tree deferral cannot sit on the 900s idle budget.
+func (f *rolloutFixture) reconcileAfterEdit(t *testing.T) (reconcile.Result, error, context.CancelFunc) {
+	t.Helper()
+	bumpISVCImage(t, f.c, f.key, rolloutTestImageV2)
+	ctx, cancel := context.WithTimeout(f.ctx, 30*time.Second)
+	t.Cleanup(cancel)
+	result, err := f.r.Reconcile(ctx, reconcile.Request{NamespacedName: f.key})
+	return result, err, cancel
+}
+
+func (f *rolloutFixture) deploymentImage(t *testing.T) string {
+	t.Helper()
+	dep := &appsv1.Deployment{}
+	if err := f.c.Get(f.ctx, f.key, dep); err != nil {
+		t.Fatalf("get deployment: %v", err)
+	}
+	// The serving container is the one this fixture created; find it by name
+	// so an injected sidecar cannot shift the index.
+	return dep.Spec.Template.Spec.Containers[0].Image
+}
+
+func (f *rolloutFixture) rolloutCondition(t *testing.T) *metav1.Condition {
+	t.Helper()
+	isvc := &inferencev1alpha1.InferenceService{}
+	if err := f.c.Get(f.ctx, f.key, isvc); err != nil {
+		t.Fatalf("get isvc: %v", err)
+	}
+	return meta.FindStatusCondition(isvc.Status.Conditions, ConditionRolloutDeferred)
+}
+
+// --- reproductions: these fail on base and pass once the decision reads
+// container state. ---
+
+func TestRolloutProceedsWhenServingContainerIsCrashLooping(t *testing.T) {
+	f := newRolloutFixture(t, "rollout-crashloop", "")
+	f.pod(t, "old", crashLoopState())
+	f.endpointSlice(t, "10.0.0.51")
+
+	if _, err, _ := f.reconcileAfterEdit(t); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+
+	if got := f.deploymentImage(t); got != rolloutTestImageV2 {
+		t.Fatalf("deployment image is %q, want %q: the rollout was held for a pod whose serving container is not running", got, rolloutTestImageV2)
+	}
+	if cond := f.rolloutCondition(t); cond != nil && cond.Status == metav1.ConditionTrue {
+		t.Fatalf("RolloutDeferred=True (%s) for a pod whose serving container is not running: %s", cond.Reason, cond.Message)
+	}
+}
+
+func TestRolloutProceedsWhenPodIsContainerCreating(t *testing.T) {
+	f := newRolloutFixture(t, "rollout-container-creating", "")
+	f.pod(t, "old", containerCreatingState())
+	f.endpointSlice(t, "10.0.0.52")
+
+	if _, err, _ := f.reconcileAfterEdit(t); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+
+	if got := f.deploymentImage(t); got != rolloutTestImageV2 {
+		t.Fatalf("deployment image is %q, want %q: the rollout was held for a pod that is still creating", got, rolloutTestImageV2)
+	}
+}
+
+// A generic runtime with no idle-endpoint annotation never reaches the probe:
+// checkServiceIdle returns errIdleUnsupported before it lists endpoints. The
+// container being stopped is what lets the rollout through.
+func TestRolloutProceedsForUnsupportedRuntimeWhenContainerNotRunning(t *testing.T) {
+	f := newRolloutFixture(t, "rollout-unsupported-crashloop", "generic")
+	f.pod(t, "old", crashLoopState())
+	f.endpointSlice(t, "10.0.0.53")
+
+	if _, err, _ := f.reconcileAfterEdit(t); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+
+	if got := f.deploymentImage(t); got != rolloutTestImageV2 {
+		t.Fatalf("deployment image is %q, want %q: a runtime without idle detection held the rollout for a container that is not running", got, rolloutTestImageV2)
+	}
+}
+
+// One running replica answers idle, the other is not running: the idle answer
+// is the only evidence there is to weigh, so the rollout goes.
+// One old pod runs and answers idle; another is crash-looping and still
+// holds a not-ready endpoint address, so checkServiceIdle probes it too and
+// its refused probe returns first. The rollout is held with IdleCheckFailed
+// on base and on the branch: the not-running shortcut needs runningPods == 0.
+func TestRolloutStillDefersWhenOneRunningIdlePodSitsBesideANotRunningPod(t *testing.T) {
+	f := newRolloutFixture(t, "rollout-mixed-idle", "")
+	f.pod(t, "running", runningState())
+	f.pod(t, "crashloop", crashLoopState())
+	f.endpointSlice(t, "10.0.0.71")
+	f.endpointSlice(t, "10.0.0.72")
+	f.r.HTTPClient = &http.Client{
+		Transport: &addressAwareRoundTripper{responses: map[string]string{
+			// The running replica answers idle; 10.0.0.72 (the crash-looping
+			// one) is absent, so its probe gets a 404 and fails.
+			"10.0.0.71:" + strconv.Itoa(int(resolveIdlePort(f.isvc, resolveBackend(f.isvc)))): `[{"id":0,"is_processing":false}]`,
+		}},
+		Timeout: 5 * time.Second,
+	}
+
+	if _, err, _ := f.reconcileAfterEdit(t); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+
+	if got := f.deploymentImage(t); got != rolloutTestImage {
+		t.Fatalf("deployment image is %q, want %q: a not-running replica's refused probe still holds the rollout", got, rolloutTestImage)
+	}
+	cond := f.rolloutCondition(t)
+	if cond == nil || cond.Status != metav1.ConditionTrue || cond.Reason != ReasonIdleCheckFailed {
+		t.Fatalf("RolloutDeferred = %+v, want True/IdleCheckFailed", cond)
+	}
+}
+
+// --- parity: these give the same result on base and on the branch. ---
+
+func TestRolloutStillDefersWhenRunningPodAnswersBusy(t *testing.T) {
+	f := newRolloutFixture(t, "rollout-running-busy", "")
+	f.useIdleStub(t, http.StatusOK, `[{"id":0,"is_processing":true}]`)
+	f.pod(t, "old", runningState())
+
+	if _, err, _ := f.reconcileAfterEdit(t); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+
+	if got := f.deploymentImage(t); got != rolloutTestImage {
+		t.Fatalf("deployment image is %q, want %q: a busy running replica must hold the rollout", got, rolloutTestImage)
+	}
+	cond := f.rolloutCondition(t)
+	// A running replica answered busy, so the reason is PodsBusy. Base
+	// reports PodsCrashLooping here because it decides on readiness, and this
+	// asserts the running-count reason the branch chooses.
+	if cond == nil || cond.Status != metav1.ConditionTrue || cond.Reason != ReasonPodsBusy {
+		t.Fatalf("RolloutDeferred = %+v, want True/PodsBusy", cond)
+	}
+}
+
+func TestRolloutStillDefersWhenRunningPodProbeFails(t *testing.T) {
+	f := newRolloutFixture(t, "rollout-running-probe-error", "")
+	f.useIdleStub(t, http.StatusInternalServerError, "boom")
+	f.pod(t, "old", runningState())
+	// Publish the pod's address so the failing probe is a per-endpoint error
+	// rather than the no-EndpointSlice fallback, which reports a different
+	// reason.
+	f.endpointSlice(t, "10.0.0.81")
+	if _, err, _ := f.reconcileAfterEdit(t); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+
+	if got := f.deploymentImage(t); got != rolloutTestImage {
+		t.Fatalf("deployment image is %q, want %q: an unanswered probe on a running replica must hold the rollout", got, rolloutTestImage)
+	}
+
+	cond := f.rolloutCondition(t)
+	if cond == nil || cond.Status != metav1.ConditionTrue || cond.Reason != ReasonIdleCheckFailed {
+		t.Fatalf("RolloutDeferred = %+v, want True/IdleCheckFailed", cond)
+	}
+}
+
+func TestRolloutStillDefersWhenRunningPodUnsupported(t *testing.T) {
+	f := newRolloutFixture(t, "rollout-running-unsupported", "generic")
+	f.pod(t, "old", runningState())
+
+	if _, err, _ := f.reconcileAfterEdit(t); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+
+	if got := f.deploymentImage(t); got != rolloutTestImage {
+		t.Fatalf("deployment image is %q, want %q: a runtime without idle detection must hold a running replica", got, rolloutTestImage)
+	}
+	cond := f.rolloutCondition(t)
+	if cond == nil || cond.Status != metav1.ConditionTrue || cond.Reason != ReasonIdleCheckUnsupported {
+		t.Fatalf("RolloutDeferred = %+v, want True/IdleCheckUnsupported", cond)
+	}
+}
+
+func TestRolloutStillDefersWhenRunningReplicaBusy(t *testing.T) {
+	f := newRolloutFixture(t, "rollout-mixed-busy", "")
+	f.useIdleStub(t, http.StatusOK, `[{"id":0,"is_processing":true}]`)
+	f.pod(t, "running", runningState())
+	f.pod(t, "crashloop", crashLoopState())
+
+	if _, err, _ := f.reconcileAfterEdit(t); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+
+	if got := f.deploymentImage(t); got != rolloutTestImage {
+		t.Fatalf("deployment image is %q, want %q: a busy running replica must hold the rollout", got, rolloutTestImage)
+	}
+}
+
+func TestRolloutProceedsWithNoOldPods(t *testing.T) {
+	f := newRolloutFixture(t, "rollout-no-pods", "")
+
+	if _, err, _ := f.reconcileAfterEdit(t); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+
+	if got := f.deploymentImage(t); got != rolloutTestImageV2 {
+		t.Fatalf("deployment image is %q, want %q: with no old pods there is nothing to drain", got, rolloutTestImageV2)
+	}
+	if cond := f.rolloutCondition(t); cond != nil && cond.Status == metav1.ConditionTrue {
+		t.Fatalf("RolloutDeferred=True for a service with no old pods: %s", cond.Reason)
+	}
+}
+
+// A lone terminating pod, with a probe that answers idle, does not hold the
+// rollout: base rolls, and the branch rolls too.
+func TestRolloutProceedsWithOnlyATerminatingPod(t *testing.T) {
+	f := newRolloutFixture(t, "rollout-terminating", "")
+	f.useIdleStub(t, http.StatusOK, `[{"id":0,"is_processing":false}]`)
+	pod := f.pod(t, "terminating", runningState())
+	if err := f.c.Delete(f.ctx, pod); err != nil {
+		t.Fatalf("delete pod: %v", err)
+	}
+
+	if _, err, _ := f.reconcileAfterEdit(t); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+
+	if got := f.deploymentImage(t); got != rolloutTestImageV2 {
+		t.Fatalf("deployment image is %q, want %q: an idle cluster with a terminating pod should roll", got, rolloutTestImageV2)
+	}
+}
+
+// No old pods, and an EndpointSlice whose single address the probe cannot
+// reach: both trees defer IdleCheckFailed. With no pod list to read, the
+// endpoint is the only evidence, so an unanswered probe there still holds.
+func TestRolloutStillDefersWithNoPodsAndAnEndpointSlice(t *testing.T) {
+	f := newRolloutFixture(t, "rollout-no-pods-slice", "generic")
+	setIdleEndpoint(t, f, "/idle")
+	f.endpointSlice(t, "10.0.0.21")
+
+	if _, err, _ := f.reconcileAfterEdit(t); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+
+	if got := f.deploymentImage(t); got != rolloutTestImage {
+		t.Fatalf("deployment image is %q, want %q: an unanswered probe with no pod list must hold the rollout", got, rolloutTestImage)
+	}
+}
+
+// A lone terminating pod whose container is still running keeps holding the
+// rollout: its process can still be finishing an accepted generation. Base and
+// the branch both defer, and this pins that the running-container predicate
+// does not treat a terminating pod as stopped.
+func TestRolloutDefersWhileATerminatingRunningPodRemains(t *testing.T) {
+	f := newRolloutFixture(t, "rollout-term-running", "generic")
+	f.useIdleStub(t, http.StatusOK, "ok")
+	f.endpointSlice(t, "10.0.0.31")
+	pod := f.podWithFinalizer(t, "terminating", runningState(), true)
+	if err := f.c.Delete(f.ctx, pod); err != nil {
+		t.Fatalf("delete pod: %v", err)
+	}
+	live := &corev1.Pod{}
+	if err := f.c.Get(f.ctx, client.ObjectKeyFromObject(pod), live); err != nil {
+		t.Fatalf("get pod: %v", err)
+	}
+	if live.DeletionTimestamp == nil {
+		t.Fatalf("fixture: the pod is not terminating")
+	}
+	container := f.servingContainerName(t)
+	running := false
+	for _, cs := range live.Status.ContainerStatuses {
+		if cs.Name == container && cs.State.Running != nil {
+			running = true
+		}
+	}
+	if !running {
+		t.Fatalf("fixture: the terminating pod should still report a running serving container")
+	}
+
+	if _, err, _ := f.reconcileAfterEdit(t); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+
+	if got := f.deploymentImage(t); got != rolloutTestImage {
+		t.Fatalf("deployment image is %q, want %q: a terminating pod with a running container must hold the rollout", got, rolloutTestImage)
+	}
+	if cond := f.rolloutCondition(t); cond == nil || cond.Status != metav1.ConditionTrue {
+		t.Fatalf("RolloutDeferred = %+v, want True", cond)
+	}
+}

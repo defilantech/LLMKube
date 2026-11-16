@@ -220,10 +220,10 @@ const (
 	ReasonIdleCheckUnsupported string = "IdleCheckUnsupported"
 
 	// ReasonPodsCrashLooping is set when RolloutDeferred=True because some
-	// old-generation pods are crashlooping (not Ready) while others are Ready
-	// and serving. The rollout is deferred to protect in-flight work on the
-	// Ready pods; when ALL old pods are unready the rollout proceeds instead
-	// (no work to protect).
+	// old-generation pods are running their serving container while others are
+	// not. The rollout is deferred to protect in-flight work on the running
+	// pods; a pod whose serving container is not running holds nothing, and
+	// when no old pod is running the rollout proceeds instead (#2553).
 	ReasonPodsCrashLooping string = "PodsCrashLooping"
 
 	// DefaultIdleCheckInterval is how often the controller re-checks pod
