@@ -808,17 +808,26 @@ func servedConcurrencyLimit(isvc *inferencev1alpha1.InferenceService, metal bool
 		}
 		return 0
 	}
+	// With spec.command, vLLM and SGLang get only spec.args then extraArgs
+	// (setCommandAndArgs), as in servedModelNames.
+	command := len(isvc.Spec.Command) > 0 && (isvc.Spec.Runtime == RuntimeVLLM || isvc.Spec.Runtime == RuntimeSGLANG)
+	if command {
+		args = append(append([]string{}, isvc.Spec.Args...), args...)
+	}
 	switch isvc.Spec.Runtime {
 	case RuntimeVLLM:
 		if n, ok := extraArgInt(args, "max-num-seqs"); ok {
 			return n
+		}
+		if command {
+			return 0
 		}
 		return slots
 	case RuntimeSGLANG:
 		if n, ok := extraArgInt(args, "max-running-requests"); ok {
 			return n
 		}
-		if cfg := isvc.Spec.SGLangConfig; cfg != nil && cfg.MaxRunningRequests != nil {
+		if cfg := isvc.Spec.SGLangConfig; cfg != nil && cfg.MaxRunningRequests != nil && !command {
 			return int64(*cfg.MaxRunningRequests)
 		}
 	case "", "llamacpp":

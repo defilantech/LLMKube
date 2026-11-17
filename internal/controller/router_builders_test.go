@@ -2233,6 +2233,10 @@ func TestServedConcurrencyLimit(t *testing.T) {
 		{"metal-agent above one slot", inferencev1alpha1.InferenceServiceSpec{ParallelSlots: i32(4)}, true, 4},
 		{"metal-agent at one slot", inferencev1alpha1.InferenceServiceSpec{ParallelSlots: i32(1)}, true, 0},
 		{"a runtime without a known flag", inferencev1alpha1.InferenceServiceSpec{Runtime: "tgi", ParallelSlots: i32(4)}, false, 0},
+		{"vLLM spec.command leaves parallelSlots unrendered", inferencev1alpha1.InferenceServiceSpec{Runtime: RuntimeVLLM, Command: []string{"vllm", "serve"}, ParallelSlots: i32(128)}, false, 0},
+		{"vLLM spec.command reads spec.args", inferencev1alpha1.InferenceServiceSpec{Runtime: RuntimeVLLM, Command: []string{"vllm", "serve"}, Args: []string{"m", "--max-num-seqs", "96"}, ParallelSlots: i32(128)}, false, 96},
+		{"SGLang spec.command leaves sglangConfig unrendered", inferencev1alpha1.InferenceServiceSpec{Runtime: RuntimeSGLANG, Command: []string{"python3", "-m", "sglang.launch_server"}, SGLangConfig: &inferencev1alpha1.SGLangConfig{MaxRunningRequests: i32(64)}}, false, 0},
+		{"llama.cpp spec.command keeps the rendered args, not spec.args", inferencev1alpha1.InferenceServiceSpec{Command: []string{"/app/llama-server"}, Args: []string{"--parallel", "8"}, ParallelSlots: i32(4)}, false, 4},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
