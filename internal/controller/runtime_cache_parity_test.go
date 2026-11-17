@@ -80,7 +80,7 @@ func TestRuntimeCacheDefaultsUnchanged(t *testing.T) {
 				InitContainerImage: "docker.io/curlimages/curl:8.18.0",
 				DefaultFSGroup:     102,
 			}
-			pod := r.constructDeploymentForCache(isvc, tc.model, resolveEffectiveModelCache(isvc, tc.model), nil, 1, "", "").Spec.Template.Spec
+			pod := r.deploymentFor(isvc, tc.model, resolveEffectiveModelCache(isvc, tc.model), nil, 1, "", "").Spec.Template.Spec
 
 			for _, m := range pod.Containers[0].VolumeMounts {
 				if m.MountPath == "/runtime-cache" {
@@ -144,7 +144,7 @@ func TestPrefetchedCacheStaysReadOnly(t *testing.T) {
 		InitContainerImage: "docker.io/curlimages/curl:8.18.0",
 		DefaultFSGroup:     102,
 	}
-	pod := r.constructDeploymentForCache(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "").Spec.Template.Spec
+	pod := r.deploymentFor(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "").Spec.Template.Spec
 
 	var vol *corev1.Volume
 	for i := range pod.Volumes {

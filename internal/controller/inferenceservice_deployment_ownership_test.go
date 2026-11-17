@@ -304,7 +304,7 @@ var _ = Describe("InferenceService Deployment ownership (#2011)", func() {
 				InitContainerImage: "docker.io/curlimages/curl:8.18.0",
 			}
 
-			dep, _, _, result, err := r.reconcileDeployment(context.Background(), isvc, resolveEffectiveModelCache(isvc, model), model, nil, 1, true, false)
+			dep, _, _, result, err := r.reconcileDeployment(context.Background(), isvc, resolveEffectiveModelCache(isvc, model), model, nil, 1, true, false, r.runtimeCachePlan(isvc, model, resolveEffectiveModelCache(isvc, model), resolveBackend(isvc)))
 			Expect(err).NotTo(HaveOccurred(), "the refusal is not a reconcile error")
 			Expect(dep).To(BeNil())
 			Expect(result).NotTo(BeNil())
@@ -461,7 +461,7 @@ var _ = Describe("InferenceService Deployment ownership (#2011)", func() {
 				InitContainerImage: "docker.io/curlimages/curl:8.18.0",
 			}
 
-			_, _, _, result, err := r.reconcileDeployment(context.Background(), isvc, resolveEffectiveModelCache(isvc, model), model, nil, 1, true, false)
+			_, _, _, result, err := r.reconcileDeployment(context.Background(), isvc, resolveEffectiveModelCache(isvc, model), model, nil, 1, true, false, r.runtimeCachePlan(isvc, model, resolveEffectiveModelCache(isvc, model), resolveBackend(isvc)))
 			Expect(err).NotTo(HaveOccurred(), "the refusal is not a reconcile error")
 			Expect(result).NotTo(BeNil())
 			Expect(result.RequeueAfter).To(Equal(2 * time.Minute))
@@ -527,7 +527,7 @@ var _ = Describe("InferenceService Deployment ownership (#2011)", func() {
 				InitContainerImage: "docker.io/curlimages/curl:8.18.0",
 			}
 
-			_, _, _, result, err := r.reconcileDeployment(context.Background(), isvc, resolveEffectiveModelCache(isvc, model), model, nil, 1, true, false)
+			_, _, _, result, err := r.reconcileDeployment(context.Background(), isvc, resolveEffectiveModelCache(isvc, model), model, nil, 1, true, false, r.runtimeCachePlan(isvc, model, resolveEffectiveModelCache(isvc, model), resolveBackend(isvc)))
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result.RequeueAfter).To(Equal(2 * time.Minute))
 			got := &inferencev1alpha1.InferenceService{}
@@ -536,7 +536,7 @@ var _ = Describe("InferenceService Deployment ownership (#2011)", func() {
 			Expect(cond).NotTo(BeNil())
 			Expect(cond.Reason).To(Equal(ReasonHPAStateUnknown))
 
-			_, _, _, result, err = r.reconcileDeployment(context.Background(), isvc, resolveEffectiveModelCache(isvc, model), model, nil, 1, true, false)
+			_, _, _, result, err = r.reconcileDeployment(context.Background(), isvc, resolveEffectiveModelCache(isvc, model), model, nil, 1, true, false, r.runtimeCachePlan(isvc, model, resolveEffectiveModelCache(isvc, model), resolveBackend(isvc)))
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result.RequeueAfter).To(Equal(2 * time.Minute))
 			Expect(c.Get(context.Background(), types.NamespacedName{Name: name, Namespace: "default"}, got)).To(Succeed())
@@ -601,7 +601,7 @@ var _ = Describe("InferenceService Deployment ownership (#2011)", func() {
 				InitContainerImage: "docker.io/curlimages/curl:8.18.0",
 			}
 
-			dep, _, _, result, err := r.reconcileDeployment(context.Background(), isvc, resolveEffectiveModelCache(isvc, model), model, nil, 1, true, false)
+			dep, _, _, result, err := r.reconcileDeployment(context.Background(), isvc, resolveEffectiveModelCache(isvc, model), model, nil, 1, true, false, r.runtimeCachePlan(isvc, model, resolveEffectiveModelCache(isvc, model), resolveBackend(isvc)))
 			Expect(err).NotTo(HaveOccurred(), "a failed HPA delete must not abort the refusal")
 			Expect(dep).To(BeNil())
 			Expect(result).NotTo(BeNil())

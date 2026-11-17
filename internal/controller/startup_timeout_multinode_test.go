@@ -33,7 +33,7 @@ func buildRingPods(t *testing.T, timeout *metav1.Duration) (head, worker *corev1
 	isvc, model := multiNodeFixture()
 	isvc.Spec.StartupTimeout = timeout
 	r := &InferenceServiceReconciler{ModelCachePath: "/models", ModelCacheMode: ModelCacheModePerService}
-	pods, _, err := r.constructMemberPods(isvc, model, resolveEffectiveModelCache(isvc, model), nil, "", "")
+	pods, _, err := r.memberPodsFor(isvc, model, resolveEffectiveModelCache(isvc, model), nil, "", "")
 	if err != nil {
 		t.Fatalf("constructMemberPods: %v", err)
 	}
@@ -111,7 +111,7 @@ func ringWithOverride(t *testing.T, startup *corev1.Probe) (head, worker *corev1
 	isvc, model := multiNodeFixture()
 	isvc.Spec.ProbeOverrides = &inferencev1alpha1.ProbeOverrides{Startup: startup}
 	r := &InferenceServiceReconciler{ModelCachePath: "/models", ModelCacheMode: ModelCacheModePerService}
-	pods, _, err := r.constructMemberPods(isvc, model, resolveEffectiveModelCache(isvc, model), nil, "", "")
+	pods, _, err := r.memberPodsFor(isvc, model, resolveEffectiveModelCache(isvc, model), nil, "", "")
 	if err != nil {
 		t.Fatalf("constructMemberPods: %v", err)
 	}

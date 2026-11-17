@@ -229,7 +229,7 @@ var _ = Describe("Operator state metrics lifecycle", func() {
 			// seed carries this service's controller reference, as every
 			// Deployment the operator creates does; an unowned one is refused
 			// per #2011 before the Update path is reached.
-			deployment := reconciler.constructDeploymentForCache(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 2, "", "")
+			deployment := reconciler.deploymentFor(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 2, "", "")
 			Expect(setControllerReferenceUnblocked(isvc, deployment, k8sClient.Scheme())).To(Succeed())
 			reconciler.Client = fake.NewClientBuilder().
 				WithScheme(k8sClient.Scheme()).

@@ -179,20 +179,14 @@ func (r *InferenceServiceReconciler) runtimeCachePlan(
 	case cache.isEphemeral():
 		return runtimeCachePlan{reason: ReasonRuntimeCacheUnsupported, message: "spec.modelCache.runtimeCache.enabled is ignored: persistence is Ephemeral, so the Pod mounts an emptyDir that dies with it"}
 	case effectiveModelCacheKey(model) == "":
-		// Transient: the key is derived when the Model reconciles, and the
-		// next pass applies the request.
-		return runtimeCachePlan{}
-	}
-	// A prefetched claim is written by the Job in the operator's group, so a
-	// service whose own fsGroup differs would make kubelet walk and re-own
-	// every staged file on each pod start, because the runtime cache mounts
-	// that claim writable.
-	if g := r.prefetchGate(isvc, model, cache); g.applies && g.satisfied {
-		if psc := isvc.Spec.PodSecurityContext; psc != nil && psc.FSGroup != nil && *psc.FSGroup != r.DefaultFSGroup {
-			return runtimeCachePlan{reason: ReasonRuntimeCacheFSGroupMismatch, message: fmt.Sprintf(
-				"spec.modelCache.runtimeCache.enabled is ignored: podSecurityContext.fsGroup %d differs from the group the prefetch writes the cache claim in (--default-fsgroup %d), and the runtime cache mounts that claim writable, so kubelet would re-own every staged file on each pod start; remove podSecurityContext.fsGroup or set it to %d",
-				*psc.FSGroup, r.DefaultFSGroup, r.DefaultFSGroup)}
+		if model.Status.Phase != PhaseReady {
+			// Transient: the key is derived when the Model reconciles, and the
+			// next pass applies the request.
+			return runtimeCachePlan{}
 		}
+		return runtimeCachePlan{reason: ReasonRuntimeCacheUnsupported, message: fmt.Sprintf(
+			"spec.modelCache.runtimeCache.enabled is ignored: model %q has no cache key (a source the runtime resolves itself, or a local source), so the Pod mounts no cache claim and the runtime's cache would live in an emptyDir that dies with the Pod",
+			model.Name)}
 	}
 	// A user volume takes a cache over only when it is mounted at that cache's
 	// own default directory. A mount above it (an emptyDir at /tmp for a
@@ -206,7 +200,37 @@ func (r *InferenceServiceReconciler) runtimeCachePlan(
 		}
 		kept = append(kept, d)
 	}
+	if len(kept) == 0 {
+		return runtimeCachePlan{}
+	}
+	// A prefetched claim is written by the Job in the operator's group, so a
+	// service whose own fsGroup differs would make kubelet walk and re-own
+	// every staged file on each pod start, because the runtime cache mounts
+	// that claim writable. With the operator's own default disabled there is no
+	// group the prefetch writes in, and the group-0 prep's chmod 770 clears the
+	// setgid bit that skip requires, so any fsGroup of the service's own is
+	// declined too.
+	if g := r.prefetchGate(isvc, model, cache); g.applies && g.satisfied {
+		if psc := isvc.Spec.PodSecurityContext; psc != nil && psc.FSGroup != nil &&
+			(r.DefaultFSGroup <= 0 || *psc.FSGroup != r.DefaultFSGroup) {
+			return runtimeCachePlan{reason: ReasonRuntimeCacheFSGroupMismatch, message: runtimeCacheFSGroupMismatchMessage(*psc.FSGroup, r.DefaultFSGroup)}
+		}
+	}
 	return runtimeCachePlan{dirs: kept}
+}
+
+// runtimeCacheFSGroupMismatchMessage explains the prefetched-fsGroup decline.
+// With the operator's fsGroup disabled there is no group to set the service's
+// own to, so that message offers removal only.
+func runtimeCacheFSGroupMismatchMessage(fsGroup, defaultFSGroup int64) string {
+	if defaultFSGroup <= 0 {
+		return fmt.Sprintf(
+			"spec.modelCache.runtimeCache.enabled is ignored: podSecurityContext.fsGroup %d is set while the operator sets no fsGroup of its own (--default-fsgroup %d), and the runtime cache mounts the prefetched claim writable, so kubelet would re-own every staged file on each pod start; remove podSecurityContext.fsGroup",
+			fsGroup, defaultFSGroup)
+	}
+	return fmt.Sprintf(
+		"spec.modelCache.runtimeCache.enabled is ignored: podSecurityContext.fsGroup %d differs from the group the prefetch writes the cache claim in (--default-fsgroup %d), and the runtime cache mounts that claim writable, so kubelet would re-own every staged file on each pod start; remove podSecurityContext.fsGroup or set it to %d",
+		fsGroup, defaultFSGroup, defaultFSGroup)
 }
 
 // runtimeCacheClaimDir returns the per-service directory on the cache claim.
@@ -319,7 +343,7 @@ func runtimeCachePrepInitContainer(initImage, claimDir, volume string, dirs []Ru
 			{Name: volume, MountPath: runtimeCacheMountPath},
 		},
 		TerminationMessagePolicy: corev1.TerminationMessageFallbackToLogsOnError,
-		SecurityContext:          cachePrepSecurityContext(),
+		SecurityContext:          runtimeCachePrepSecurityContext(),
 	}
 }
 
@@ -329,11 +353,8 @@ func runtimeCachePrepInitContainer(initImage, claimDir, volume string, dirs []Ru
 // the Model, and warning each of those about a block nobody wrote on the
 // service is noise.
 func (r *InferenceServiceReconciler) warnRuntimeCacheNotApplied(
-	ctx context.Context,
 	isvc *inferencev1alpha1.InferenceService,
-	model *inferencev1alpha1.Model,
-	cache effectiveModelCache,
-	backend RuntimeBackend,
+	plan runtimeCachePlan,
 ) {
 	if r.Recorder == nil {
 		return
@@ -341,7 +362,6 @@ func (r *InferenceServiceReconciler) warnRuntimeCacheNotApplied(
 	if isvc.Spec.ModelCache == nil || isvc.Spec.ModelCache.RuntimeCache == nil {
 		return
 	}
-	plan := r.runtimeCachePlanFor(ctx, isvc, model, cache, backend)
 	if plan.applied() || plan.reason == "" {
 		return
 	}

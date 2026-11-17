@@ -1488,6 +1488,16 @@ func cachePrepSecurityContext() *corev1.SecurityContext {
 	}
 }
 
+// runtimeCachePrepSecurityContext is cachePrepSecurityContext with group 0 of
+// its own. With --default-fsgroup=0 the cache root is <uid>:0 mode 770, which
+// admits only that uid and group 0; without this a prep that inherited the
+// pod's runAsGroup is neither, and its mkdir is refused.
+func runtimeCachePrepSecurityContext() *corev1.SecurityContext {
+	sc := cachePrepSecurityContext()
+	sc.RunAsGroup = int64Ptr(0)
+	return sc
+}
+
 // multiFileInitEnvVars returns env vars for a multi-file init container.
 // MODEL_SOURCE is normalized (hf:// -> https://huggingface.co/), and
 // MODEL_FILES is newline-delimited. For s3:// sources, S3_BUCKET and

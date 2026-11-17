@@ -47,7 +47,7 @@ func renderContainer(t *testing.T, isvc *inferencev1alpha1.InferenceService) cor
 		Spec:       inferencev1alpha1.ModelSpec{Source: "org/model"},
 	}
 	r := &InferenceServiceReconciler{ModelCachePath: "/models", ModelCacheMode: ModelCacheModePerService}
-	return r.constructDeploymentForCache(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "").Spec.Template.Spec.Containers[0]
+	return r.deploymentFor(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "").Spec.Template.Spec.Containers[0]
 }
 
 func envNamed(c corev1.Container, name string) []corev1.EnvVar {

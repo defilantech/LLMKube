@@ -312,7 +312,7 @@ var _ = Describe("InferenceService draft-model speculative decoding", func() {
 					ModelCachePath: "/models", ModelCacheMode: ModelCacheModePerService,
 					InitContainerImage: "curlimages/curl:latest",
 				}
-				dep := r.constructDeploymentForCache(isvc, tc.target, resolveEffectiveModelCache(isvc, tc.target), tc.draft, 1, "", "")
+				dep := r.deploymentFor(isvc, tc.target, resolveEffectiveModelCache(isvc, tc.target), tc.draft, 1, "", "")
 				Expect(k8sClient.Create(ctx, dep)).To(Succeed())
 				DeferCleanup(func() { _ = k8sClient.Delete(ctx, dep) })
 			})

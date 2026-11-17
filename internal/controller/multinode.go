@@ -293,9 +293,9 @@ func multiNodeResourceClaimsConflict(isvc *inferencev1alpha1.InferenceService, m
 //
 // The caller's InferenceService is not mutated: the resolved tensor and
 // pipeline sizes are pinned on a copy so BuildArgs emits them for every rank.
-// plan, when given, is the runtime-cache decision the caller already made: one
-// decision serves both templates rendered here, the pods and the status-free
-// copy their group hash comes from.
+// plan is the runtime-cache decision the caller made: one decision serves both
+// templates rendered here, the pods and the status-free copy their group hash
+// comes from.
 func (r *InferenceServiceReconciler) constructMemberPods(
 	isvc *inferencev1alpha1.InferenceService,
 	model *inferencev1alpha1.Model,
@@ -303,7 +303,7 @@ func (r *InferenceServiceReconciler) constructMemberPods(
 	draftModel *inferencev1alpha1.Model,
 	hfEndpoint string,
 	draftHFEndpoint string,
-	plan ...runtimeCachePlan,
+	runtimeCache runtimeCachePlan,
 ) ([]*corev1.Pod, string, error) {
 	if err := validateMultiNode(isvc); err != nil {
 		return nil, "", err
@@ -322,14 +322,7 @@ func (r *InferenceServiceReconciler) constructMemberPods(
 	}
 	pinned.Spec.VLLMConfig.TensorParallelSize = &tp
 	pinned.Spec.VLLMConfig.PipelineParallelSize = &pp
-
-	var decision runtimeCachePlan
-	if len(plan) > 0 {
-		decision = plan[0]
-	} else {
-		decision = r.runtimeCachePlan(isvc, model, cache, resolveBackend(isvc))
-	}
-	tmpl := r.constructDeploymentForCache(pinned, model, cache, draftModel, 1, hfEndpoint, draftHFEndpoint, decision).Spec.Template
+	tmpl := r.constructDeploymentForCache(pinned, model, cache, draftModel, 1, hfEndpoint, draftHFEndpoint, runtimeCache).Spec.Template
 
 	// The group hash must describe intent, not observation. The template
 	// reads InferenceService status in places (the disruption-protection
@@ -339,7 +332,7 @@ func (r *InferenceServiceReconciler) constructMemberPods(
 	// blank status so only spec (service, model, image) feeds it.
 	statusless := pinned.DeepCopy()
 	statusless.Status = inferencev1alpha1.InferenceServiceStatus{}
-	hashTmpl := r.constructDeploymentForCache(statusless, model, cache, draftModel, 1, hfEndpoint, draftHFEndpoint, decision).Spec.Template
+	hashTmpl := r.constructDeploymentForCache(statusless, model, cache, draftModel, 1, hfEndpoint, draftHFEndpoint, runtimeCache).Spec.Template
 
 	pods := make([]*corev1.Pod, 0, len(mn.Members))
 	h := sha256.New()
@@ -1008,6 +1001,7 @@ func (r *InferenceServiceReconciler) reconcileMultiNodeGroup(
 	draftModel *inferencev1alpha1.Model,
 	desiredReplicas int32,
 	modelReady bool,
+	runtimeCache runtimeCachePlan,
 ) (int32, *ctrl.Result, error) {
 	if err := r.deleteStaleSingleNodeDeployment(ctx, isvc); err != nil {
 		return 0, nil, err
@@ -1023,7 +1017,6 @@ func (r *InferenceServiceReconciler) reconcileMultiNodeGroup(
 			fmt.Sprintf("Invalid multiNode: %v", err), nil)
 		return 0, &result, updateErr
 	}
-	runtimeCache := r.runtimeCachePlanFor(ctx, isvc, model, cache, resolveBackend(isvc))
 	desired, hash, err := r.constructMemberPods(isvc, model, cache, draftModel,
 		hfEndpointFromSecret(ctx, r.Client, model), hfEndpointFromSecret(ctx, r.Client, draftModel), runtimeCache)
 	if err != nil {
