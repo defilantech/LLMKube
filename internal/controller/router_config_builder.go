@@ -816,7 +816,7 @@ func servedConcurrencyLimit(isvc *inferencev1alpha1.InferenceService, metal bool
 			}
 			return slots
 		case inferencev1alpha1.RuntimeVLLMSwift:
-			if n, ok := extraArgInt(args, "max-num-seqs"); ok {
+			if n, ok := extraArgInt(vllmFlagSpellings(args), "max-num-seqs"); ok {
 				return n
 			}
 			return slots
@@ -831,7 +831,7 @@ func servedConcurrencyLimit(isvc *inferencev1alpha1.InferenceService, metal bool
 	}
 	switch isvc.Spec.Runtime {
 	case RuntimeVLLM:
-		if n, ok := extraArgInt(args, "max-num-seqs"); ok {
+		if n, ok := extraArgInt(vllmFlagSpellings(args), "max-num-seqs"); ok {
 			return n
 		}
 		if command {
@@ -849,6 +849,23 @@ func servedConcurrencyLimit(isvc *inferencev1alpha1.InferenceService, metal bool
 		return llamaCppSlots(args, slots)
 	}
 	return 0
+}
+
+// vllmFlagSpellings rewrites "_" to "-" in long flag names, as vLLM's
+// FlexibleArgumentParser does before matching them.
+func vllmFlagSpellings(args []string) []string {
+	out := make([]string, len(args))
+	for i, a := range args {
+		name, value, hasValue := strings.Cut(a, "=")
+		if strings.HasPrefix(name, "--") {
+			name = strings.ReplaceAll(name, "_", "-")
+		}
+		if hasValue {
+			name += "=" + value
+		}
+		out[i] = name
+	}
+	return out
 }
 
 // llamaCppSlots is llama-server's --parallel, else slots; -np is left unknown.
