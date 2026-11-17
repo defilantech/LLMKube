@@ -448,12 +448,13 @@ func (r *InferenceServiceReconciler) servingStorage(
 	if g := r.prefetchGate(isvc, model, cache); g.applies && g.satisfied {
 		// The weights are already on the claim (#2136): mount it read-only
 		// and verify the names the Job recorded, rather than run the
-		// downloader on the serving node.
+		// downloader on the serving node. A requested runtime cache needs the
+		// volume source writable for its second mount (#2117).
 		var staged []string
 		if g.entry != nil {
 			staged = g.entry.Files
 		}
-		storageConfig = buildPrefetchedStorageConfig(model, isvc, cache, r.ModelCacheMode, r.InitContainerImage, staged)
+		storageConfig = buildPrefetchedStorageConfig(model, isvc, cache, r.ModelCacheMode, r.InitContainerImage, staged, r.runtimeCacheRequested(isvc, model, cache, backend))
 	} else {
 		storageConfig = buildModelStorageConfig(model, isvc, cache, isvc.Namespace, useCache, r.ModelCacheMode, r.CACertConfigMap, r.InitContainerImage, r.DefaultFSGroup, r.ModelCachePrep, resolveInitContainerUser(r.InitContainerUser), r.AllowedHostPathRoots, hfEndpoint)
 	}
@@ -609,6 +610,25 @@ func (r *InferenceServiceReconciler) constructDeploymentForCache(
 		LivenessProbe:  livenessProbe,
 		ReadinessProbe: readinessProbe,
 	}
+
+	// spec.modelCache.runtimeCache (#2117): one extra mount of the cache
+	// volume at the operator's own path, plus the env that points the
+	// runtime's caches there. Nothing is added when the feature does not
+	// apply or the user mounted /runtime-cache themselves.
+	var runtimeCacheEnv []corev1.EnvVar
+	var runtimeCachePrep *corev1.Container
+	if r.runtimeCacheRequested(isvc, model, cache, backend) {
+		if volume := modelCacheVolumeFor(storageConfig, cache, r.ModelCacheMode); volume != "" {
+			mount, env := runtimeCacheMount(isvc, backend, volume)
+			if mount != nil {
+				container.VolumeMounts = append(container.VolumeMounts, *mount)
+				runtimeCacheEnv = env
+				prep := runtimeCachePrepInitContainer(r.InitContainerImage, runtimeCacheClaimDir(isvc), volume,
+					runtimeCacheDirsFor(backend), resolvedCacheFSGroup(isvc, r.DefaultFSGroup), downloaderUID(isvc, resolveInitContainerUser(r.InitContainerUser)))
+				runtimeCachePrep = &prep
+			}
+		}
+	}
 	container.VolumeMounts = append(container.VolumeMounts, isvc.Spec.ExtraVolumeMounts...)
 
 	setCommandAndArgs(&container, isvc, backend, args)
@@ -621,6 +641,9 @@ func (r *InferenceServiceReconciler) constructDeploymentForCache(
 	if eb, ok := backend.(EnvBuilder); ok {
 		container.Env = append(container.Env, eb.BuildEnv(isvc)...)
 	}
+	// The runtime-cache env goes after the backend's own env and before the
+	// mirror and spec.env appends, so a user entry for one of those names wins.
+	container.Env = append(container.Env, runtimeCacheEnv...)
 	// Mirror env, then the Hub-offline env, then spec.env: the user's entry for
 	// any of these names comes last and wins.
 	mirrorEnv, _ := runtimeHFMirrorEnv(backend, isvc, model, hfEndpoint)
@@ -701,6 +724,11 @@ func (r *InferenceServiceReconciler) constructDeploymentForCache(
 	configureSGLangAPIKey(deployment, isvc)
 	if shmVolume != nil {
 		deployment.Spec.Template.Spec.Volumes = append(deployment.Spec.Template.Spec.Volumes, *shmVolume)
+	}
+	// Appended last so it runs after the model cache is prepared and the
+	// weights are staged.
+	if runtimeCachePrep != nil {
+		deployment.Spec.Template.Spec.InitContainers = append(deployment.Spec.Template.Spec.InitContainers, *runtimeCachePrep)
 	}
 
 	// GPU-only scheduling: the device taint toleration and the shared-pool

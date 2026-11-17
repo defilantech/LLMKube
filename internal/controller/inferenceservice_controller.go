@@ -304,6 +304,7 @@ func (r *InferenceServiceReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	r.warnIgnoredModelCacheClaim(inferenceService, model, cache)
 	r.warnPrefetchTargetMismatch(inferenceService, model, cache)
 	r.warnUnboundedEphemeralCache(inferenceService, cache)
+	r.warnRuntimeCacheNotApplied(inferenceService, model, cache, resolveBackend(inferenceService))
 
 	isMetal := isMetalModel(model)
 
