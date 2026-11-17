@@ -187,7 +187,7 @@ fields keep MemFree in check for as long as the member runs:
   multiNode:
     memory:
       flushBelowMemFree: 4Gi       # drop the page cache when MemFree falls below this
-      suspendBelowMemFree: 1536Mi  # suspend the group once if MemFree stays below this
+      suspendBelowMemFree: 8Gi     # suspend the group once if MemFree stays below this
 ```
 
 Either field adds a sidecar, `multinode-memory-guard`, to every member pod:
@@ -207,6 +207,19 @@ runtime. Every 2 seconds it reads `/proc/meminfo`:
   `llmkube_multinode_guard_suspends_total`. The group is then deleted the usual
   suspend way. Set `spec.suspend` back to `false` to start it again; the guard
   is armed again on the new members.
+
+**Set the suspend floor above the kernel's high watermark.** The kernel
+starts reclaiming at its watermarks, not at zero, and a node that is near the
+high watermark with nothing left to reclaim (no page cache, no swap) stalls:
+on a DGX Spark with `vm.min_free_kbytes: "1048576"` and
+`vm.watermark_scale_factor: "200"` the watermarks are about 1, 3.5 and 6 GiB,
+and a node squeezed to 6.4 GiB MemFree stopped answering its kubelet. The
+guard's loop stalls with the node, so a floor at or under the high watermark
+fires late: in that test it took about 3 minutes, not 10 seconds. Read the
+watermarks on a member node (`grep -E 'min|low|high' /proc/zoneinfo`, in
+4 KiB pages) and leave a few GiB above `high`. The floor may be higher than
+`flushBelowMemFree`: the guard drops the page cache itself before it decides,
+so a dip that page cache explains (a model load) does not suspend the group.
 
 Every drop is one log line with MemFree and Cached before and after:
 
