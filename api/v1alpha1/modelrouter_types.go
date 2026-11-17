@@ -220,7 +220,7 @@ type ModelRouterSpec struct {
 // Exactly one of InferenceServiceRef or External must be set, except on a
 // router with spec.backendSelector: there an entry with neither overrides the
 // fields it sets on the selected backend of the same Name.
-// +kubebuilder:validation:XValidation:rule="!has(self.balancing) || (has(self.inferenceServiceRef) && has(self.resolution) && self.resolution == 'endpoint')",message="balancing requires an inferenceServiceRef backend with resolution: endpoint"
+// +kubebuilder:validation:XValidation:rule="!has(self.balancing) || (!has(self.external) && has(self.resolution) && self.resolution == 'endpoint')",message="balancing requires an endpoint-resolution backend and no external provider"
 type RouterBackend struct {
 	// Name is the stable identifier used by rules and observability labels.
 	// Must be lowercase alphanumeric or '-'.

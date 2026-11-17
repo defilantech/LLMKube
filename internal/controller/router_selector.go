@@ -58,12 +58,19 @@ func (r *ModelRouterReconciler) resolveRouterBackends(
 	var errs []ModelRouterValidationError
 	resolved := make([]inferencev1alpha1.RouterBackend, 0, len(mr.Spec.Backends)+len(selected))
 	selectorSourced := make(map[string]bool, len(selected))
+	// Every resolved name appears exactly once: a ref-less entry replaces the
+	// selected backend of its name, and every other explicit entry suppresses
+	// the synthesized backend of its name. An entry's displayName claims the
+	// published id the same way, so /v1/models never lists one id twice.
 	claimed := make(map[string]bool, len(mr.Spec.Backends))
 	for i := range mr.Spec.Backends {
 		entry := &mr.Spec.Backends[i]
 		if entry.InferenceServiceRef != nil || entry.External != nil {
 			resolved = append(resolved, *entry.DeepCopy())
 			claimed[entry.Name] = true
+			if entry.DisplayName != "" {
+				claimed[entry.DisplayName] = true
+			}
 			continue
 		}
 		isvc, ok := selected[entry.Name]
@@ -78,6 +85,9 @@ func (r *ModelRouterReconciler) resolveRouterBackends(
 		resolved = append(resolved, overlaySelectedBackend(isvc, entry))
 		selectorSourced[entry.Name] = true
 		claimed[entry.Name] = true
+		if entry.DisplayName != "" {
+			claimed[entry.DisplayName] = true
+		}
 	}
 
 	unclaimed := make([]string, 0, len(selected))

@@ -17,6 +17,8 @@ import (
 	"strings"
 	"time"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
 	inferencev1alpha1 "github.com/defilantech/llmkube/api/v1alpha1"
 	"github.com/defilantech/llmkube/internal/router"
 )
@@ -208,15 +210,26 @@ func validateAuditLog(spec *inferencev1alpha1.ModelRouterSpec) []ModelRouterVali
 // validateBackendSelector rejects a router with neither spec.backendSelector
 // nor a spec.backends entry. The CRD's CEL rule refuses it at the API server;
 // this repeats the check so the Validated condition explains a stored object
-// that predates the rule.
+// that predates the rule. It also resolves the selector, so an unknown operator
+// or an In expression with no values fails at admission rather than at
+// reconcile.
 func validateBackendSelector(spec *inferencev1alpha1.ModelRouterSpec) []ModelRouterValidationError {
-	if spec.BackendSelector != nil || len(spec.Backends) > 0 {
-		return nil
+	if spec.BackendSelector == nil {
+		if len(spec.Backends) > 0 {
+			return nil
+		}
+		return []ModelRouterValidationError{{
+			Field:   "spec.backends",
+			Message: "must declare at least one backend or set spec.backendSelector",
+		}}
 	}
-	return []ModelRouterValidationError{{
-		Field:   "spec.backends",
-		Message: "must declare at least one backend or set spec.backendSelector",
-	}}
+	if _, err := metav1.LabelSelectorAsSelector(spec.BackendSelector); err != nil {
+		return []ModelRouterValidationError{{
+			Field:   "spec.backendSelector",
+			Message: err.Error(),
+		}}
+	}
+	return nil
 }
 
 // backendSelectorUnsupportedMessage reports the one data-plane limit that

@@ -23,6 +23,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/events"
@@ -57,7 +58,11 @@ const (
 	// SpecInvalid only when that is the spec's sole problem.
 	ModelRouterReasonClassifierNotImplemented = "ClassifierNotImplemented"
 	ModelRouterReasonCompileFailed            = "CompileFailed"
-	ModelRouterReasonReconcileFailed          = "ReconcileFailed"
+	// ModelRouterReasonBackendResolutionFailed marks a router whose backend set
+	// could not be resolved from cluster state: a selected InferenceService
+	// vanished, or an overlay entry matches no selected service.
+	ModelRouterReasonBackendResolutionFailed = "BackendResolutionFailed"
+	ModelRouterReasonReconcileFailed         = "ReconcileFailed"
 	// ModelRouterReasonRouterProxyNameTaken marks a router whose generated
 	// router-proxy name is held by an object LLMKube did not create (any of
 	// the seven proxy objects: ConfigMap, Deployment, both Services,
@@ -331,7 +336,7 @@ func (r *ModelRouterReconciler) recordResolutionFailure(
 	apimeta.SetStatusCondition(&desired.Status.Conditions, metav1.Condition{
 		Type:    ModelRouterConditionValidated,
 		Status:  metav1.ConditionFalse,
-		Reason:  ModelRouterReasonSpecInvalid,
+		Reason:  ModelRouterReasonBackendResolutionFailed,
 		Message: message,
 	})
 	apimeta.SetStatusCondition(&desired.Status.Conditions, metav1.Condition{
@@ -701,9 +706,11 @@ func (r *ModelRouterReconciler) findModelRoutersForModelPool(ctx context.Context
 
 // findModelRoutersForInferenceService returns reconcile requests for every
 // ModelRouter in the same namespace that references the given
-// InferenceService by name, plus every router that selects backends by label:
-// a label removal cannot be seen from the new object, so any event in the
-// namespace may change a selector router's resolved set.
+// InferenceService by name, plus every router whose backendSelector matches
+// the event object's labels. controller-runtime runs the map function on both
+// the old and the new object of an update, so a removed label still reaches a
+// selector router through the old object. A selector that does not parse
+// enqueues it too, so the reconcile can report the error.
 // Mirrors the pattern used by
 // InferenceServiceReconciler.findInferenceServicesForModel.
 func (r *ModelRouterReconciler) findModelRoutersForInferenceService(ctx context.Context, obj client.Object) []reconcile.Request {
@@ -719,7 +726,7 @@ func (r *ModelRouterReconciler) findModelRoutersForInferenceService(ctx context.
 
 	var requests []reconcile.Request
 	for _, mr := range routerList.Items {
-		if mr.Spec.BackendSelector != nil || routerReferencesInferenceService(&mr, isvc.Name) {
+		if routerSelectorMatchesLabels(&mr, isvc.Labels) || routerReferencesInferenceService(&mr, isvc.Name) {
 			requests = append(requests, reconcile.Request{
 				NamespacedName: types.NamespacedName{
 					Name:      mr.Name,
@@ -729,6 +736,20 @@ func (r *ModelRouterReconciler) findModelRoutersForInferenceService(ctx context.
 		}
 	}
 	return requests
+}
+
+// routerSelectorMatchesLabels reports whether the router's spec.backendSelector
+// selects an object carrying the given labels. A selector that does not parse
+// matches, so the router reconciles and reports the parse error.
+func routerSelectorMatchesLabels(mr *inferencev1alpha1.ModelRouter, objLabels map[string]string) bool {
+	if mr.Spec.BackendSelector == nil {
+		return false
+	}
+	selector, err := metav1.LabelSelectorAsSelector(mr.Spec.BackendSelector)
+	if err != nil {
+		return true
+	}
+	return selector.Matches(labels.Set(objLabels))
 }
 
 // routerReferencesInferenceService reports whether the router has a backend

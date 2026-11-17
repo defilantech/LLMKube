@@ -24,6 +24,7 @@ package router
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -31,6 +32,11 @@ import (
 
 	"golang.org/x/net/http/httpguts"
 )
+
+// ErrUnknownBackend reports a config that names a backend it does not define.
+// The controller distinguishes it from the other validation failures to add
+// its spec.backendSelector hint.
+var ErrUnknownBackend = errors.New("does not name an existing backend")
 
 // Default-route strategies. These mirror the CRD enum and decide what the
 // matcher does for a request that no rule accepted.
@@ -517,7 +523,7 @@ func (c *Config) Validate() error {
 		}
 	}
 	if c.DefaultRoute != "" && !names[c.DefaultRoute] {
-		return fmt.Errorf("defaultRoute %q does not name an existing backend", c.DefaultRoute)
+		return fmt.Errorf("defaultRoute %q %w", c.DefaultRoute, ErrUnknownBackend)
 	}
 	switch c.DefaultRouteStrategy {
 	case "", DefaultRouteStrategyStatic, DefaultRouteStrategyBackendNameMatch:
@@ -536,8 +542,8 @@ func (c *Config) Validate() error {
 		}
 		for j, name := range r.Route.Backends {
 			if !names[name] {
-				return fmt.Errorf("rules[%d] %s: route.backends[%d] %q does not name an existing backend",
-					i, r.Name, j, name)
+				return fmt.Errorf("rules[%d] %s: route.backends[%d] %q %w",
+					i, r.Name, j, name, ErrUnknownBackend)
 			}
 		}
 		switch r.Route.PoolActivation {

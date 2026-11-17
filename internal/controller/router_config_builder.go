@@ -15,6 +15,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"slices"
@@ -24,7 +25,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	discoveryv1 "k8s.io/api/discovery/v1"
-	"k8s.io/apimachinery/pkg/api/errors"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -158,7 +159,7 @@ func (r *ModelRouterReconciler) compileRouterConfig(
 	out.Policy = translatePolicy(mr.Spec.Policy)
 
 	if err := out.Validate(); err != nil {
-		if mr.Spec.BackendSelector != nil {
+		if mr.Spec.BackendSelector != nil && errors.Is(err, router.ErrUnknownBackend) {
 			return nil, fmt.Errorf("compiled router config failed validation "+
 				"(a name spec.backendSelector no longer selects): %w", err)
 		}
@@ -222,7 +223,7 @@ func (r *ModelRouterReconciler) resolveBackend(
 		switch {
 		case err == nil:
 			isvc = obj
-		case !errors.IsNotFound(err) && b.ModelInfo != nil:
+		case !apierrors.IsNotFound(err) && b.ModelInfo != nil:
 			// Only modelInfo fails the compile on a lookup error, as
 			// compileBalancing does; without it the backend compiles as before.
 			return wire, status, fmt.Errorf("get InferenceService %s for backend %q modelInfo: %w", b.InferenceServiceRef.Name, b.Name, err)
@@ -365,7 +366,7 @@ func (r *ModelRouterReconciler) resolveInferenceServiceAddress(
 ) (string, string) {
 	isvc := &inferencev1alpha1.InferenceService{}
 	if err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, isvc); err != nil {
-		if errors.IsNotFound(err) {
+		if apierrors.IsNotFound(err) {
 			return "", fmt.Sprintf("InferenceService %q not found in namespace %q", name, namespace)
 		}
 		return "", fmt.Sprintf("InferenceService %q lookup failed: %v", name, err)
@@ -433,7 +434,7 @@ func (r *ModelRouterReconciler) resolveInferenceServiceEndpoints(
 ) (endpoints []string, source *router.EndpointSource, serviceAddr, msg string) {
 	isvc := &inferencev1alpha1.InferenceService{}
 	if err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, isvc); err != nil {
-		if errors.IsNotFound(err) {
+		if apierrors.IsNotFound(err) {
 			return nil, nil, "", fmt.Sprintf("InferenceService %q not found in namespace %q", name, namespace)
 		}
 		return nil, nil, "", fmt.Sprintf("InferenceService %q lookup failed: %v", name, err)
@@ -515,7 +516,7 @@ func (r *ModelRouterReconciler) assertCredentialsSecretExists(
 ) error {
 	sec := &corev1.Secret{}
 	if err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, sec); err != nil {
-		if errors.IsNotFound(err) {
+		if apierrors.IsNotFound(err) {
 			return fmt.Errorf("credentials Secret %q not found", name)
 		}
 		return fmt.Errorf("credentials Secret %q lookup failed: %w", name, err)
@@ -733,7 +734,7 @@ func (r *ModelRouterReconciler) runtimeSetByMetalAgent(
 	switch {
 	case err == nil:
 		return isMetalModel(model), nil
-	case errors.IsNotFound(err):
+	case apierrors.IsNotFound(err):
 		return true, nil
 	default:
 		return false, fmt.Errorf("get Model %s: %w", isvc.Spec.ModelRef, err)
@@ -835,7 +836,7 @@ func (r *ModelRouterReconciler) reconcileRouterConfigMap(
 	existing := &corev1.ConfigMap{}
 	err := r.Get(ctx, types.NamespacedName{Name: desired.Name, Namespace: desired.Namespace}, existing)
 	switch {
-	case errors.IsNotFound(err):
+	case apierrors.IsNotFound(err):
 		return r.Create(ctx, desired)
 	case err != nil:
 		return err
@@ -959,7 +960,7 @@ func (r *ModelRouterReconciler) compileBalancing(ctx context.Context, namespace,
 	}
 	isvc := &inferencev1alpha1.InferenceService{}
 	if err := r.Get(ctx, types.NamespacedName{Name: isvcName, Namespace: namespace}, isvc); err != nil {
-		if errors.IsNotFound(err) {
+		if apierrors.IsNotFound(err) {
 			return out, nil, nil
 		}
 		return nil, nil, fmt.Errorf("backend balancing: get InferenceService %s/%s: %w", namespace, isvcName, err)

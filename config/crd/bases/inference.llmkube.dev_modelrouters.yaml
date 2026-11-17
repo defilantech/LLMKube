@@ -605,10 +605,10 @@ spec:
                   - name
                   type: object
                   x-kubernetes-validations:
-                  - message: 'balancing requires an inferenceServiceRef backend with
-                      resolution: endpoint'
-                    rule: '!has(self.balancing) || (has(self.inferenceServiceRef)
-                      && has(self.resolution) && self.resolution == ''endpoint'')'
+                  - message: balancing requires an endpoint-resolution backend and
+                      no external provider
+                    rule: '!has(self.balancing) || (!has(self.external) && has(self.resolution)
+                      && self.resolution == ''endpoint'')'
                 type: array
               dataPlane:
                 default: Proxy

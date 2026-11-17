@@ -304,8 +304,9 @@ spec:
 }
 
 // TestModelRouterSelectorRelabelDropsBackend pins that a label removal, a
-// service deletion, and a service creation each re-render a selector router,
-// which means every InferenceService event in the namespace must enqueue it.
+// service deletion, and a service creation each re-render a selector router:
+// the mapper runs on the event object's labels, and controller-runtime runs it
+// on the old object of an update too, so a removed label is still seen.
 func TestModelRouterSelectorRelabelDropsBackend(t *testing.T) {
 	c, _, stop := startBudgetTestEnv(t)
 	defer stop()
@@ -329,13 +330,13 @@ spec:
 	reconcileSelectorRouter(t, r, ns, "models")
 	assertBackendNames(t, routerConfigJSON(t, c, ns, "models"), "glm-5-3-flash", "qwen2-5-0-5b", "smollm2-135m")
 
-	// A label removal cannot be seen from the new object alone, so the mapper
-	// must enqueue every selector router in the namespace.
+	// A label removal is an update: the mapper's run on the old object still
+	// matches, which is what enqueues the router.
 	glm.SetLabels(nil)
 	if err := c.Update(context.Background(), glm); err != nil {
 		t.Fatalf("remove label from glm-5-3-flash: %v", err)
 	}
-	assertRouterEnqueuedForInferenceService(t, r, ns, "glm-5-3-flash", "models")
+	assertRouterEnqueuedForInferenceService(t, r, ns, "glm-5-3-flash", selected, "models")
 
 	reconcileSelectorRouter(t, r, ns, "models")
 	cfg := routerConfigJSON(t, c, ns, "models")
@@ -344,11 +345,12 @@ spec:
 		t.Errorf("status.backends after relabel = %v, want the relabelled service gone", got)
 	}
 
-	// Deleting a selected service drops its backend the same way.
+	// Deleting a selected service drops its backend the same way: the delete
+	// event carries the object, labels included.
 	if err := c.Delete(context.Background(), qwen); err != nil {
 		t.Fatalf("delete qwen2-5-0-5b: %v", err)
 	}
-	assertRouterEnqueuedForInferenceService(t, r, ns, "qwen2-5-0-5b", "models")
+	assertRouterEnqueuedForInferenceService(t, r, ns, "qwen2-5-0-5b", selected, "models")
 	reconcileSelectorRouter(t, r, ns, "models")
 	assertBackendNames(t, routerConfigJSON(t, c, ns, "models"), "smollm2-135m")
 
@@ -359,15 +361,19 @@ spec:
 }
 
 // assertRouterEnqueuedForInferenceService checks the watch mapper returns the
-// router for an InferenceService event in ns.
+// router for an InferenceService event object carrying the given labels.
 func assertRouterEnqueuedForInferenceService(
 	t *testing.T,
 	r *ModelRouterReconciler,
-	ns, isvcName, mrName string,
+	ns, isvcName string,
+	isvcLabels map[string]string,
+	mrName string,
 ) {
 	t.Helper()
 	requests := r.findModelRoutersForInferenceService(context.Background(),
-		&inferencev1alpha1.InferenceService{ObjectMeta: metav1.ObjectMeta{Name: isvcName, Namespace: ns}})
+		&inferencev1alpha1.InferenceService{ObjectMeta: metav1.ObjectMeta{
+			Name: isvcName, Namespace: ns, Labels: isvcLabels,
+		}})
 	for _, req := range requests {
 		if req.Name == mrName && req.Namespace == ns {
 			return

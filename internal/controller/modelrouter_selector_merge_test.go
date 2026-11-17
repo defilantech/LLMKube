@@ -31,6 +31,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	inferencev1alpha1 "github.com/defilantech/llmkube/api/v1alpha1"
 	"github.com/defilantech/llmkube/internal/router"
@@ -285,6 +286,10 @@ func TestResolveRouterBackendsUnmatchedRefLess(t *testing.T) {
 	if validated == nil || validated.Status != metav1.ConditionFalse {
 		t.Fatalf("Validated = %+v, want False", validated)
 	}
+	if validated.Reason != ModelRouterReasonBackendResolutionFailed {
+		t.Errorf("Validated reason = %q, want %s: cluster state, not the spec, failed",
+			validated.Reason, ModelRouterReasonBackendResolutionFailed)
+	}
 	if !strings.Contains(validated.Message, "spec.backends[0].name") {
 		t.Errorf("Validated message = %q, want the failing entry's path", validated.Message)
 	}
@@ -363,6 +368,31 @@ func TestValidateModelRouterSelector(t *testing.T) {
 			}},
 			wantField: "spec.backends[0]",
 			wantMsg:   "exactly one of inferenceServiceRef or external must be set",
+		},
+		{
+			name: "a selector with an unknown operator is refused",
+			mr: &inferencev1alpha1.ModelRouter{Spec: inferencev1alpha1.ModelRouterSpec{
+				BackendSelector: &metav1.LabelSelector{MatchExpressions: []metav1.LabelSelectorRequirement{{
+					Key:      "llmkube.dev/router",
+					Operator: "Equals",
+					Values:   []string{"models"},
+				}}},
+				Backends: []inferencev1alpha1.RouterBackend{{Name: "b", InferenceServiceRef: local("b")}},
+			}},
+			wantField: "spec.backendSelector",
+			wantMsg:   "not a valid label selector operator",
+		},
+		{
+			name: "a selector with an In expression and no values is refused",
+			mr: &inferencev1alpha1.ModelRouter{Spec: inferencev1alpha1.ModelRouterSpec{
+				BackendSelector: &metav1.LabelSelector{MatchExpressions: []metav1.LabelSelectorRequirement{{
+					Key:      "llmkube.dev/router",
+					Operator: metav1.LabelSelectorOpIn,
+				}}},
+				Backends: []inferencev1alpha1.RouterBackend{{Name: "b", InferenceServiceRef: local("b")}},
+			}},
+			wantField: "spec.backendSelector",
+			wantMsg:   "values set can't be empty",
 		},
 		{
 			name: "failClosed naming a selected-only backend is refused",
@@ -913,5 +943,161 @@ func TestModelRouterSelectorModelPoolEventEnqueuesRouter(t *testing.T) {
 	}
 	if !slices.Equal(got, []string{"models"}) {
 		t.Fatalf("ModelPool event enqueued %v, want only the selector router", got)
+	}
+}
+
+// mapperEnqueued reports whether a watch mapper's result names the router.
+func mapperEnqueued(reqs []reconcile.Request, name, ns string) bool {
+	for _, req := range reqs {
+		if req.Name == name && req.Namespace == ns {
+			return true
+		}
+	}
+	return false
+}
+
+// TestModelRouterSelectorOverlayBalancing pins that an overlay entry may carry
+// balancing: the CEL rule admits it on a ref-less, non-external entry with
+// endpoint resolution, and the merged backend keeps it.
+func TestModelRouterSelectorOverlayBalancing(t *testing.T) {
+	c, _, stop := startBudgetTestEnv(t)
+	defer stop()
+	ns := newTestNamespace(t, c)
+
+	createSelectedInferenceService(t, c, ns, "glm-5-3-flash", selectorLabels())
+	createTypedSelectorRouter(t, c, ns, "models", routerSelector(),
+		[]inferencev1alpha1.RouterBackend{{
+			Name:       "glm-5-3-flash",
+			Resolution: inferencev1alpha1.RouterBackendResolutionEndpoint,
+			Balancing:  &inferencev1alpha1.BackendBalancing{Mode: "LoadAware"},
+		}}, nil)
+	reconcileSelectorRouter(t, selectorReconciler(c), ns, "models")
+
+	b := configBackend(t, routerConfigJSON(t, c, ns, "models"), "glm-5-3-flash")
+	balancing, ok := b["balancing"].(map[string]any)
+	if !ok || balancing["mode"] != "LoadAware" {
+		t.Errorf("overlay backend balancing = %v, want mode LoadAware from the entry", b["balancing"])
+	}
+
+	// The loosened rule reaches overlays only: without a selector the same
+	// entry is still refused, because nothing gives it an InferenceService.
+	noSelector := &inferencev1alpha1.ModelRouter{
+		Spec: inferencev1alpha1.ModelRouterSpec{
+			Backends: []inferencev1alpha1.RouterBackend{{
+				Name:       "glm-5-3-flash",
+				Resolution: inferencev1alpha1.RouterBackendResolutionEndpoint,
+				Balancing:  &inferencev1alpha1.BackendBalancing{Mode: "LoadAware"},
+			}},
+		},
+	}
+	err := (&ModelRouterValidator{}).validate(noSelector)
+	if err == nil || !strings.Contains(err.Error(), "exactly one of inferenceServiceRef or external must be set") {
+		t.Fatalf("webhook error = %v, want the ref-less entry refused without a selector", err)
+	}
+}
+
+// TestModelRouterSelectorCompileErrorHint pins that the deselection hint goes
+// only on the unknown-backend-name error, not on every validation failure of a
+// selector router's compiled config.
+func TestModelRouterSelectorCompileErrorHint(t *testing.T) {
+	c, _, stop := startBudgetTestEnv(t)
+	defer stop()
+	ns := newTestNamespace(t, c)
+
+	createSelectedInferenceService(t, c, ns, "glm-5-3-flash", selectorLabels())
+	zero := int32(0)
+	createTypedSelectorRouter(t, c, ns, "models", routerSelector(),
+		[]inferencev1alpha1.RouterBackend{{Name: "glm-5-3-flash", Weight: &zero}},
+		[]inferencev1alpha1.RouterRule{{
+			Name:  "spread",
+			Route: inferencev1alpha1.RuleRoute{Backends: []string{"glm-5-3-flash"}, Strategy: "weighted"},
+		}})
+	reconcileSelectorRouter(t, selectorReconciler(c), ns, "models")
+
+	stored := fetchTypedRouter(t, c, ns, "models")
+	available := apimeta.FindStatusCondition(stored.Status.Conditions, ConditionAvailable)
+	if available == nil || available.Status != metav1.ConditionFalse || available.Reason != ModelRouterReasonCompileFailed {
+		t.Fatalf("Available = %+v, want False/%s", available, ModelRouterReasonCompileFailed)
+	}
+	if !strings.Contains(available.Message, "positive weight") {
+		t.Fatalf("Available message = %q, want the weighted-rule failure", available.Message)
+	}
+	if strings.Contains(available.Message, "backendSelector") {
+		t.Errorf("Available message = %q carries the deselection hint, but the failure is a weighted rule, not a missing backend",
+			available.Message)
+	}
+}
+
+// TestModelRouterSelectorDisplayNameClaimed pins that an explicit entry's
+// displayName claims that model id: a selected service of the same name is not
+// added, so /v1/models never publishes an id twice.
+func TestModelRouterSelectorDisplayNameClaimed(t *testing.T) {
+	c, _, stop := startBudgetTestEnv(t)
+	defer stop()
+	ns := newTestNamespace(t, c)
+
+	createSelectedInferenceService(t, c, ns, "llama-70b", selectorLabels())
+	createSelectedInferenceService(t, c, ns, "glm-5-3-flash", selectorLabels())
+	createTypedSelectorRouter(t, c, ns, "models", routerSelector(),
+		[]inferencev1alpha1.RouterBackend{{
+			Name:                "glm-5-3-flash",
+			DisplayName:         "llama-70b",
+			InferenceServiceRef: &corev1.LocalObjectReference{Name: "glm-5-3-flash"},
+		}}, nil)
+	reconcileSelectorRouter(t, selectorReconciler(c), ns, "models")
+
+	cfg := routerConfigJSON(t, c, ns, "models")
+	assertBackendNames(t, cfg, "glm-5-3-flash")
+	if got := modelIDsFromProxy(t, cfg); !slices.Equal(got, []string{"llama-70b"}) {
+		t.Errorf("GET /v1/models = %v, want the explicit entry's displayName once", got)
+	}
+}
+
+// TestModelRouterSelectorInferenceServiceEventMatchesLabels pins the watch
+// filter: only an event whose object the selector matches re-renders a
+// selector router, except a selector that does not parse, which always does so
+// the reconcile can report it.
+func TestModelRouterSelectorInferenceServiceEventMatchesLabels(t *testing.T) {
+	c, _, stop := startBudgetTestEnv(t)
+	defer stop()
+	ns := newTestNamespace(t, c)
+
+	createTypedSelectorRouter(t, c, ns, "models", routerSelector(), nil, nil)
+	createTypedSelectorRouter(t, c, ns, "broken", &metav1.LabelSelector{
+		MatchExpressions: []metav1.LabelSelectorRequirement{{
+			Key:      "llmkube.dev/router",
+			Operator: "Equals",
+			Values:   []string{"models"},
+		}},
+	}, nil, nil)
+	r := selectorReconciler(c)
+
+	matched := &inferencev1alpha1.InferenceService{ObjectMeta: metav1.ObjectMeta{
+		Name: "matched", Namespace: ns, Labels: selectorLabels(),
+	}}
+	unmatched := &inferencev1alpha1.InferenceService{ObjectMeta: metav1.ObjectMeta{
+		Name: "unmatched", Namespace: ns, Labels: map[string]string{"other": "label"},
+	}}
+
+	if reqs := r.findModelRoutersForInferenceService(context.Background(), matched); !mapperEnqueued(reqs, "models", ns) {
+		t.Errorf("a matching InferenceService event enqueued %v, want the selector router", reqs)
+	}
+	reqs := r.findModelRoutersForInferenceService(context.Background(), unmatched)
+	if mapperEnqueued(reqs, "models", ns) {
+		t.Errorf("an unrelated InferenceService event enqueued %v, want no selector router", reqs)
+	}
+	if !mapperEnqueued(reqs, "broken", ns) {
+		t.Errorf("an unrelated InferenceService event enqueued %v, want the router whose selector does not parse", reqs)
+	}
+
+	// A label removal is an update: controller-runtime runs the mapper on the
+	// old object as well, and its labels still match.
+	relabelled := matched.DeepCopy()
+	relabelled.Labels = nil
+	if reqs := r.findModelRoutersForInferenceService(context.Background(), relabelled); mapperEnqueued(reqs, "models", ns) {
+		t.Errorf("the relabelled object alone enqueued %v, want nothing", reqs)
+	}
+	if reqs := r.findModelRoutersForInferenceService(context.Background(), matched); !mapperEnqueued(reqs, "models", ns) {
+		t.Errorf("removing the label did not enqueue the selector router through the old object: got %v", reqs)
 	}
 }
