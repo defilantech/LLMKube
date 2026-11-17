@@ -114,7 +114,7 @@ func resolveForTest(
 	mr *inferencev1alpha1.ModelRouter,
 ) ([]inferencev1alpha1.RouterBackend, []ModelRouterValidationError) {
 	t.Helper()
-	resolved, errs, err := selectorReconciler(c).resolveRouterBackends(context.Background(), mr)
+	resolved, _, errs, err := selectorReconciler(c).resolveRouterBackends(context.Background(), mr)
 	if err != nil {
 		t.Fatalf("resolveRouterBackends: %v", err)
 	}
@@ -142,11 +142,18 @@ func TestResolveRouterBackendsOverlay(t *testing.T) {
 	createSelectedInferenceService(t, c, ns, "qwen2-5-0-5b", selectorLabels())
 
 	timeout := metav1.Duration{Duration: 600 * time.Second}
+	weight := int32(7)
+	contextLength := int64(131072)
 	mr := createTypedSelectorRouter(t, c, ns, "models", routerSelector(),
 		[]inferencev1alpha1.RouterBackend{{
-			Name:        "glm-5-3-flash",
-			DisplayName: "glm-flash",
-			Timeout:     &timeout,
+			Name:                 "glm-5-3-flash",
+			DisplayName:          "glm-flash",
+			Timeout:              &timeout,
+			Capabilities:         []string{"vision"},
+			Weight:               &weight,
+			CostPerMillionTokens: &inferencev1alpha1.TokenCost{PromptUSD: "0.5", CompletionUSD: "1.5"},
+			ModelInfo:            &inferencev1alpha1.RouterBackendModelInfo{ContextLength: &contextLength},
+			HealthCheck:          &inferencev1alpha1.BackendHealthCheck{Path: "/readyz", IntervalSeconds: 5, TimeoutSeconds: 3},
 		}}, nil)
 
 	resolved, errs := resolveForTest(t, c, mr)
@@ -172,6 +179,22 @@ func TestResolveRouterBackendsOverlay(t *testing.T) {
 	}
 	if glm.DisplayName != "glm-flash" {
 		t.Errorf("overlay displayName = %q, want glm-flash", glm.DisplayName)
+	}
+	if !slices.Equal(glm.Capabilities, []string{"vision"}) {
+		t.Errorf("overlay capabilities = %v, want the entry's [vision]", glm.Capabilities)
+	}
+	if glm.Weight == nil || *glm.Weight != 7 {
+		t.Errorf("overlay weight = %v, want the entry's 7", glm.Weight)
+	}
+	if glm.CostPerMillionTokens == nil || glm.CostPerMillionTokens.PromptUSD != "0.5" ||
+		glm.CostPerMillionTokens.CompletionUSD != "1.5" {
+		t.Errorf("overlay costPerMillionTokens = %+v, want the entry's 0.5/1.5", glm.CostPerMillionTokens)
+	}
+	if glm.ModelInfo == nil || glm.ModelInfo.ContextLength == nil || *glm.ModelInfo.ContextLength != 131072 {
+		t.Errorf("overlay modelInfo = %+v, want the entry's contextLength 131072", glm.ModelInfo)
+	}
+	if glm.HealthCheck == nil || glm.HealthCheck.Path != "/readyz" || glm.HealthCheck.IntervalSeconds != 5 {
+		t.Errorf("overlay healthCheck = %+v, want the entry's /readyz at 5s", glm.HealthCheck)
 	}
 
 	qwen := resolved[1]
@@ -565,6 +588,119 @@ func TestModelRouterSelectorPooledMemberStaysVisible(t *testing.T) {
 	}
 }
 
+// TestModelRouterSelectorHidesOnlySelectorSourcedBackends pins that the hidden
+// flag follows the backend's source: a backend the selector produced drops out
+// of /v1/models when its service is stopped, while an explicit entry keeps the
+// entry it has today.
+func TestModelRouterSelectorHidesOnlySelectorSourcedBackends(t *testing.T) {
+	stopped := func(isvc *inferencev1alpha1.InferenceService) {
+		zero := int32(0)
+		isvc.Spec.Replicas = &zero
+	}
+
+	t.Run("an explicit entry naming a selected stopped service stays listed", func(t *testing.T) {
+		c, _, stop := startBudgetTestEnv(t)
+		defer stop()
+		ns := newTestNamespace(t, c)
+		createSelectedInferenceService(t, c, ns, "glm-5-3-flash", selectorLabels(), stopped)
+		createTypedSelectorRouter(t, c, ns, "models", routerSelector(),
+			[]inferencev1alpha1.RouterBackend{{
+				Name:                "glm-5-3-flash",
+				InferenceServiceRef: &corev1.LocalObjectReference{Name: "glm-5-3-flash"},
+			}}, nil)
+		reconcileSelectorRouter(t, selectorReconciler(c), ns, "models")
+
+		cfg := routerConfigJSON(t, c, ns, "models")
+		if hidden, present := configBackend(t, cfg, "glm-5-3-flash")["hidden"]; present {
+			t.Errorf("explicit backend carries hidden=%v: an explicit entry keeps today's /v1/models entry", hidden)
+		}
+		if got := modelIDsFromProxy(t, cfg); !slices.Equal(got, []string{"glm-5-3-flash"}) {
+			t.Errorf("GET /v1/models = %v, want the explicit entry listed", got)
+		}
+	})
+
+	t.Run("an overlay of a stopped selected service is hidden", func(t *testing.T) {
+		c, _, stop := startBudgetTestEnv(t)
+		defer stop()
+		ns := newTestNamespace(t, c)
+		createSelectedInferenceService(t, c, ns, "glm-5-3-flash", selectorLabels(), stopped)
+		timeout := metav1.Duration{Duration: 600 * time.Second}
+		createTypedSelectorRouter(t, c, ns, "models", routerSelector(),
+			[]inferencev1alpha1.RouterBackend{{Name: "glm-5-3-flash", Timeout: &timeout}}, nil)
+		reconcileSelectorRouter(t, selectorReconciler(c), ns, "models")
+
+		cfg := routerConfigJSON(t, c, ns, "models")
+		if hidden := configBackend(t, cfg, "glm-5-3-flash")["hidden"]; hidden != true {
+			t.Errorf("overlay of a stopped selected service carries hidden=%v, want true", hidden)
+		}
+		if got := modelIDsFromProxy(t, cfg); len(got) != 0 {
+			t.Errorf("GET /v1/models = %v, want the stopped selected service left out", got)
+		}
+	})
+
+	t.Run("an explicit entry to an unselected stopped service stays listed", func(t *testing.T) {
+		c, _, stop := startBudgetTestEnv(t)
+		defer stop()
+		ns := newTestNamespace(t, c)
+		createSelectedInferenceService(t, c, ns, "runner", selectorLabels())
+		createSelectedInferenceService(t, c, ns, "other-isvc", nil, stopped)
+		createTypedSelectorRouter(t, c, ns, "models", routerSelector(),
+			[]inferencev1alpha1.RouterBackend{{
+				Name:                "renamed-glm",
+				InferenceServiceRef: &corev1.LocalObjectReference{Name: "other-isvc"},
+			}}, nil)
+		reconcileSelectorRouter(t, selectorReconciler(c), ns, "models")
+
+		cfg := routerConfigJSON(t, c, ns, "models")
+		if hidden, present := configBackend(t, cfg, "renamed-glm")["hidden"]; present {
+			t.Errorf("explicit backend to an unselected stopped service carries hidden=%v, want none", hidden)
+		}
+		if got := modelIDsFromProxy(t, cfg); !slices.Equal(got, []string{"renamed-glm", "runner"}) {
+			t.Errorf("GET /v1/models = %v, want the explicit entry and the running selected service", got)
+		}
+	})
+}
+
+// TestModelRouterSelectorEndpointOverlayGetsActivationRBAC pins that the
+// deployment ServiceAccount and the endpointslices Role are provisioned from
+// the resolved list: a ref-less overlay with resolution: endpoint needs both,
+// and only the merge knows the InferenceService its name resolves to.
+func TestModelRouterSelectorEndpointOverlayGetsActivationRBAC(t *testing.T) {
+	c, _, stop := startBudgetTestEnv(t)
+	defer stop()
+	ns := newTestNamespace(t, c)
+
+	createSelectedInferenceService(t, c, ns, "glm-5-3-flash", selectorLabels())
+	createTypedSelectorRouter(t, c, ns, "models", routerSelector(),
+		[]inferencev1alpha1.RouterBackend{{
+			Name:       "glm-5-3-flash",
+			Resolution: inferencev1alpha1.RouterBackendResolutionEndpoint,
+		}}, nil)
+	reconcileSelectorRouter(t, selectorReconciler(c), ns, "models")
+
+	name := routerProxyResourceName("models")
+	dep := &appsv1.Deployment{}
+	if err := c.Get(context.Background(), types.NamespacedName{Name: name, Namespace: ns}, dep); err != nil {
+		t.Fatalf("router-proxy Deployment: %v", err)
+	}
+	if dep.Spec.Template.Spec.ServiceAccountName != name {
+		t.Errorf("deployment serviceAccountName = %q, want %q from the endpoint overlay", dep.Spec.Template.Spec.ServiceAccountName, name)
+	}
+	role := &rbacv1.Role{}
+	if err := c.Get(context.Background(), types.NamespacedName{Name: name, Namespace: ns}, role); err != nil {
+		t.Fatalf("activation Role: %v", err)
+	}
+	endpointSlices := false
+	for _, rule := range role.Rules {
+		if slices.Contains(rule.APIGroups, "discovery.k8s.io") && slices.Contains(rule.Resources, "endpointslices") {
+			endpointSlices = true
+		}
+	}
+	if !endpointSlices {
+		t.Errorf("activation Role rules = %+v, want endpointslices access for the endpoint overlay", role.Rules)
+	}
+}
+
 // TestModelRouterSelectorKeyedSelectedService pins that the keyed-backend
 // check runs over the resolved list, so a selected keyed service fails loud.
 func TestModelRouterSelectorKeyedSelectedService(t *testing.T) {
@@ -712,6 +848,17 @@ func TestModelRouterSelectorEndpointOverlayEnqueued(t *testing.T) {
 	plain.Spec.Backends[0].Resolution = inferencev1alpha1.RouterBackendResolutionService
 	if routerHasEndpointBackend(plain) {
 		t.Error("a ref-less overlay with resolution: service was counted as an endpoint backend")
+	}
+	refLessNoSelector := &inferencev1alpha1.ModelRouter{
+		Spec: inferencev1alpha1.ModelRouterSpec{
+			Backends: []inferencev1alpha1.RouterBackend{{
+				Name:       "glm-5-3-flash",
+				Resolution: inferencev1alpha1.RouterBackendResolutionEndpoint,
+			}},
+		},
+	}
+	if routerHasEndpointBackend(refLessNoSelector) {
+		t.Error("a ref-less entry on a router without a selector was counted: base matches no backend")
 	}
 
 	c, _, stop := startBudgetTestEnv(t)

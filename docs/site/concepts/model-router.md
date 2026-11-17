@@ -310,7 +310,7 @@ A selected service at `spec.replicas: 0` or `spec.suspend: true` stays in the co
 
 `backendSelector` is a Proxy data-plane field: `dataPlane: Gateway` and `dataPlane: AgentGateway` refuse it at `kubectl apply`. A `failClosed` rule may name only `spec.backends` entries that do not depend on the selector, because the fail-closed guarantee is checked without the cluster. A `maxUSD` budget cannot be combined with `backendSelector`, because a selected backend declares no `costPerMillionTokens` and the budget would charge 0 USD and never block. A rule or `spec.defaultRoute` naming a selected backend that stops being selected stops the compile, with a message naming the rule and the backend; the router keeps serving its last config.
 
-Anyone who can label an InferenceService in the namespace can add it to the router. That is ordinary namespace RBAC, and the operator's own access to InferenceServices stays read-only (`get`, `list`, `watch`). A selected backend is still subject to `spec.rules`, `spec.defaultRoute`, and the `failClosed` restriction above, so adding a service never routes sensitive traffic to it.
+Anyone who can label an InferenceService in the namespace can add it to the router. That is ordinary namespace RBAC. The selector itself only reads InferenceServices (the operator already holds `get`, `list` and `watch` on them), and selecting a service creates no object for it. A selected backend is still subject to `spec.rules`, `spec.defaultRoute`, and the `failClosed` restriction above, so adding a service never routes sensitive traffic to it.
 
 Headers that change routing:
 

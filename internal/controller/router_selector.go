@@ -17,7 +17,6 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/labels"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	inferencev1alpha1 "github.com/defilantech/llmkube/api/v1alpha1"
@@ -37,6 +36,9 @@ func (e *routerResolutionError) Error() string {
 // resolveRouterBackends returns the backends the compile should render: the
 // explicit entries in declaration order followed by every InferenceService
 // spec.backendSelector selects and no explicit entry claims, sorted by name.
+// The second result names every backend that came from the selector, whether
+// synthesized or an overlay of a selected service, so the compile can tell it
+// from an entry the user wrote.
 // A router without a selector returns spec.backends untouched and makes no
 // API call. The returned validation errors describe cluster state (an
 // overlay entry that matches nothing, a selector that selects nothing), not
@@ -44,17 +46,18 @@ func (e *routerResolutionError) Error() string {
 func (r *ModelRouterReconciler) resolveRouterBackends(
 	ctx context.Context,
 	mr *inferencev1alpha1.ModelRouter,
-) ([]inferencev1alpha1.RouterBackend, []ModelRouterValidationError, error) {
+) ([]inferencev1alpha1.RouterBackend, map[string]bool, []ModelRouterValidationError, error) {
 	if mr.Spec.BackendSelector == nil {
-		return mr.Spec.Backends, nil, nil
+		return mr.Spec.Backends, nil, nil, nil
 	}
 	selected, err := r.selectedInferenceServices(ctx, mr)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 
 	var errs []ModelRouterValidationError
 	resolved := make([]inferencev1alpha1.RouterBackend, 0, len(mr.Spec.Backends)+len(selected))
+	selectorSourced := make(map[string]bool, len(selected))
 	claimed := make(map[string]bool, len(mr.Spec.Backends))
 	for i := range mr.Spec.Backends {
 		entry := &mr.Spec.Backends[i]
@@ -73,6 +76,7 @@ func (r *ModelRouterReconciler) resolveRouterBackends(
 			continue
 		}
 		resolved = append(resolved, overlaySelectedBackend(isvc, entry))
+		selectorSourced[entry.Name] = true
 		claimed[entry.Name] = true
 	}
 
@@ -85,6 +89,7 @@ func (r *ModelRouterReconciler) resolveRouterBackends(
 	slices.Sort(unclaimed)
 	for _, name := range unclaimed {
 		resolved = append(resolved, selectedBackend(selected[name]))
+		selectorSourced[name] = true
 	}
 
 	if len(resolved) == 0 && len(errs) == 0 {
@@ -93,7 +98,7 @@ func (r *ModelRouterReconciler) resolveRouterBackends(
 			Message: "selects no InferenceService, and spec.backends is empty, so the router has no backend",
 		})
 	}
-	return resolved, errs, nil
+	return resolved, selectorSourced, errs, nil
 }
 
 // selectedInferenceServices lists the InferenceServices in the router's
@@ -174,21 +179,4 @@ func overlaySelectedBackend(
 		out.Timeout = entry.Timeout
 	}
 	return out
-}
-
-// routerSelectsInferenceService reports whether spec.backendSelector selects
-// this InferenceService. It is how resolveBackend tells a selector-synthesized
-// backend (or an overlay of one) from an explicit entry.
-func routerSelectsInferenceService(
-	mr *inferencev1alpha1.ModelRouter,
-	isvc *inferencev1alpha1.InferenceService,
-) bool {
-	if mr.Spec.BackendSelector == nil || isvc == nil {
-		return false
-	}
-	selector, err := metav1.LabelSelectorAsSelector(mr.Spec.BackendSelector)
-	if err != nil {
-		return false
-	}
-	return selector.Matches(labels.Set(isvc.Labels))
 }

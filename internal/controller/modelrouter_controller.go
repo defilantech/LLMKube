@@ -654,7 +654,10 @@ func (r *ModelRouterReconciler) findModelRoutersForEndpointSlice(ctx context.Con
 func routerHasEndpointBackend(mr *inferencev1alpha1.ModelRouter) bool {
 	for i := range mr.Spec.Backends {
 		b := &mr.Spec.Backends[i]
-		if b.External == nil && b.Resolution == inferencev1alpha1.RouterBackendResolutionEndpoint {
+		if b.External != nil || b.Resolution != inferencev1alpha1.RouterBackendResolutionEndpoint {
+			continue
+		}
+		if b.InferenceServiceRef != nil || mr.Spec.BackendSelector != nil {
 			return true
 		}
 	}

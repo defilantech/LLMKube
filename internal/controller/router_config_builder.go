@@ -94,7 +94,7 @@ func (r *ModelRouterReconciler) compileRouterConfig(
 	ctx context.Context,
 	mr *inferencev1alpha1.ModelRouter,
 ) (*compiledConfig, error) {
-	resolved, resErrs, err := r.resolveRouterBackends(ctx, mr)
+	resolved, selectorSourced, resErrs, err := r.resolveRouterBackends(ctx, mr)
 	if err != nil {
 		return nil, err
 	}
@@ -119,7 +119,7 @@ func (r *ModelRouterReconciler) compileRouterConfig(
 
 	for i := range resolved {
 		b := &resolved[i]
-		wire, status, err := r.resolveBackend(ctx, mr, b)
+		wire, status, err := r.resolveBackend(ctx, mr, b, selectorSourced[b.Name])
 		if err != nil {
 			return nil, err
 		}
@@ -183,13 +183,15 @@ func (r *ModelRouterReconciler) compileRouterConfig(
 }
 
 // resolveBackend turns one ModelRouter backend into its proxy wire
-// representation plus the BackendStatus the reconciler reports. An error
-// means the backend could not be compiled faithfully and the compile must
-// fail, keeping the previous config.
+// representation plus the BackendStatus the reconciler reports. fromSelector
+// says the backend came from spec.backendSelector rather than from an explicit
+// entry. An error means the backend could not be compiled faithfully and the
+// compile must fail, keeping the previous config.
 func (r *ModelRouterReconciler) resolveBackend(
 	ctx context.Context,
 	mr *inferencev1alpha1.ModelRouter,
 	b *inferencev1alpha1.RouterBackend,
+	fromSelector bool,
 ) (router.Backend, inferencev1alpha1.BackendStatus, error) {
 	now := metav1.Now()
 	status := inferencev1alpha1.BackendStatus{
@@ -279,7 +281,7 @@ func (r *ModelRouterReconciler) resolveBackend(
 		// A non-resident ModelPool member sits at replicas 0 (`drainMember`), so
 		// a pooled backend is never hidden: `/v1/models` has to list a model
 		// the proxy can activate.
-		if wire.Pool == nil && isvc != nil && routerSelectsInferenceService(mr, isvc) &&
+		if wire.Pool == nil && fromSelector && isvc != nil &&
 			(isvc.Spec.Suspend || (isvc.Spec.Replicas != nil && *isvc.Spec.Replicas == 0)) {
 			wire.Hidden = true
 		}
