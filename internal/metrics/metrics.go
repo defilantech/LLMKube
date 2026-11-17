@@ -291,7 +291,7 @@ var (
 		prometheus.HistogramOpts{
 			Name:    "llmkube_router_endpoint_waiting_requests",
 			Help:    "Engine waiting requests of one pod, one observation per router proxy load sample.",
-			Buckets: []float64{0, 1, 2, 4, 8, 16, 32, 64},
+			Buckets: []float64{0, 1, 2, 4, 8, 16, 32, 64, 96, 128, 192, 256, 512},
 		},
 		[]string{labelRouter, labelBackend, "endpoint", "target_pod", "target_node"},
 	)

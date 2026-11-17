@@ -428,6 +428,28 @@ func TestLoadScraperRecordsPressureHistograms(t *testing.T) {
 // TestLoadScraperPressureHistogramsSkipUnknowns: no utilization series without
 // a concurrency limit, no KV series for a profile without a KV gauge, and
 // nothing at all for a pod whose scrape failed.
+func TestLoadScraperWaitingHistogramResolvesOverload(t *testing.T) {
+	const router = "r-pressure-overload"
+	resetPressureSeries(router)
+	body := "vllm:num_requests_running 128\nvllm:num_requests_waiting 300\nvllm:kv_cache_usage_perc 0.99\n"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte(body)) }))
+	defer srv.Close()
+
+	cfg := scrapedConfig()
+	d := NewDispatcher(cfg)
+	d.SetEndpoints("qwen", []string{srv.URL})
+	s := NewLoadScraper(cfg, d, router, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	s.scrapeOnce(context.Background())
+
+	h := histogramOf(t, prommetrics.RouterEndpointWaitingRequests, router, "qwen", srv.URL, "", "")
+	if got := cumulative(h, 256); got != 0 {
+		t.Errorf("%d waiting observations at or under 256, want 0", got)
+	}
+	if got := cumulative(h, 512); got != 1 {
+		t.Errorf("%d waiting observations at or under 512, want 1 (300 waiting must land in a finite bucket)", got)
+	}
+}
+
 func TestLoadScraperPressureHistogramsSkipUnknowns(t *testing.T) {
 	const router = "r-pressure-skip"
 	resetPressureSeries(router)
