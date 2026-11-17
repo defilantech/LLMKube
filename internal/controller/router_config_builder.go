@@ -16,6 +16,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"math"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -715,7 +716,7 @@ func (r *ModelRouterReconciler) compileConcurrencyLimit(
 		}
 	}
 	n := servedConcurrencyLimit(isvc, servedByMetalAgent(isvc, model))
-	return int32(n), nil //nolint:gosec // G115: every source is an int32 field or a flag parsed at 32 bits
+	return int32(n), nil //nolint:gosec // G115: every source is an int32 field, a flag parsed at 32 bits, or a product capped at MaxInt32
 }
 
 // runtimeSetByMetalAgent reports whether an unset runtime is left to the
@@ -816,10 +817,7 @@ func servedConcurrencyLimit(isvc *inferencev1alpha1.InferenceService, metal bool
 			}
 			return slots
 		case inferencev1alpha1.RuntimeVLLMSwift:
-			if n, ok := extraArgInt(vllmFlagSpellings(args), "max-num-seqs"); ok {
-				return n
-			}
-			return slots
+			return vllmMaxNumSeqs(args, slots)
 		}
 		return 0
 	}
@@ -831,13 +829,10 @@ func servedConcurrencyLimit(isvc *inferencev1alpha1.InferenceService, metal bool
 	}
 	switch isvc.Spec.Runtime {
 	case RuntimeVLLM:
-		if n, ok := extraArgInt(vllmFlagSpellings(args), "max-num-seqs"); ok {
-			return n
-		}
 		if command {
-			return 0
+			slots = 0
 		}
-		return slots
+		return vllmMaxNumSeqs(args, slots)
 	case RuntimeSGLANG:
 		if n, ok := extraArgInt(args, "max-running-requests"); ok {
 			return n
@@ -851,13 +846,49 @@ func servedConcurrencyLimit(isvc *inferencev1alpha1.InferenceService, metal bool
 	return 0
 }
 
+// vllmMaxNumSeqs is --max-num-seqs, else slots, times --data-parallel-size:
+// vLLM applies it per rank, and one endpoint balances over every rank. It is
+// zero when the flags place ranks elsewhere, so this pod's share is unknown.
+func vllmMaxNumSeqs(args []string, slots int64) int64 {
+	args = vllmFlagSpellings(args)
+	n, ok := extraArgInt(args, "max-num-seqs")
+	if !ok {
+		n = slots
+	}
+	dp, ok := extraArgInt(args, "data-parallel-size")
+	if !ok {
+		return n
+	}
+	if hasMatchingExtraArgAny(args, "data-parallel-size-local", "data-parallel-rank", "data-parallel-start-rank",
+		"data-parallel-external-lb", "data-parallel-hybrid-lb", "headless") {
+		return 0
+	}
+	if n*dp > math.MaxInt32 {
+		return 0
+	}
+	return n * dp
+}
+
+// vllmShortFlags are the vLLM short spellings vllmMaxNumSeqs reads.
+var vllmShortFlags = map[string]string{
+	"-dp":  "--data-parallel-size",
+	"-dpl": "--data-parallel-size-local",
+	"-dpn": "--data-parallel-rank",
+	"-dpr": "--data-parallel-start-rank",
+	"-dpe": "--data-parallel-external-lb",
+	"-dph": "--data-parallel-hybrid-lb",
+}
+
 // vllmFlagSpellings rewrites "_" to "-" in long flag names, as vLLM's
-// FlexibleArgumentParser does before matching them.
+// FlexibleArgumentParser does before matching them, and the short flags above
+// to their long names.
 func vllmFlagSpellings(args []string) []string {
 	out := make([]string, len(args))
 	for i, a := range args {
 		name, value, hasValue := strings.Cut(a, "=")
-		if strings.HasPrefix(name, "--") {
+		if long, ok := vllmShortFlags[name]; ok {
+			name = long
+		} else if strings.HasPrefix(name, "--") {
 			name = strings.ReplaceAll(name, "_", "-")
 		}
 		if hasValue {

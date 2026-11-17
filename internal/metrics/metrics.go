@@ -93,7 +93,7 @@ var (
 	InferenceServiceConcurrencyLimit = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
 			Name: "llmkube_inferenceservice_concurrency_limit",
-			Help: "Requests one replica serves concurrently, as configured (parallelSlots, --max-num-seqs, --max-running-requests). Absent when the runtime picks its own.",
+			Help: "Requests one replica serves concurrently, as configured (parallelSlots, --max-num-seqs times vLLM's --data-parallel-size, --max-running-requests). Absent when the runtime picks its own or the controller cannot know it.",
 		},
 		[]string{"inferenceservice", labelNamespace},
 	)
