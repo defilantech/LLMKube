@@ -229,6 +229,26 @@ func TestFindModelTransferFailure(t *testing.T) {
 		}
 	})
 
+	// The runtime-cache prep creates and chowns the per-service directory on
+	// the claim (#2117). A share that refuses that as root, as an NFS export
+	// with root_squash does, is a cache-ownership failure like the
+	// downloader's and must reach the same condition. Driven through the
+	// production constant so a rename cannot silently drop the diagnosis.
+	t.Run("diagnoses a refused runtime-cache-prep", func(t *testing.T) {
+		for _, msg := range []string{
+			"mkdir: can't create directory '/runtime-cache/_runtime-cache/default/svc/vllm': Permission denied",
+			"chown: changing ownership of '/runtime-cache/_runtime-cache/default/svc': Operation not permitted",
+		} {
+			pod := initPod("node-a", terminatedInit(runtimeCachePrepContainerName, 1, msg))
+			pod.Spec.Volumes = []corev1.Volume{{Name: "model-cache", VolumeSource: corev1.VolumeSource{
+				PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: "c"}}}}
+			f, found := findModelTransferFailure([]corev1.Pod{pod})
+			if !found || f.reason != ReasonModelCacheNotWritable {
+				t.Fatalf("msg %q: found=%v reason=%q, want %q", msg, found, f.reason, ReasonModelCacheNotWritable)
+			}
+		}
+	})
+
 	// The remedy lands in the condition the user reads. On the fsGroup <= 0
 	// profile the prep is already on, so a hint that names only
 	// --model-cache-prep sends them to a knob already in the right position;
