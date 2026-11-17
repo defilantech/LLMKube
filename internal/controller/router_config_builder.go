@@ -794,8 +794,7 @@ func servedContextLength(isvc *inferencev1alpha1.InferenceService) int64 {
 
 // servedConcurrencyLimit is how many requests one replica serves at once, read
 // from the flags the controller renders, extraArgs first as with
-// servedContextLength. It is zero when the runtime picks its own. On the
-// metal-agent every engine gets the slot flag only above one slot.
+// servedContextLength. It is zero when the runtime picks its own.
 func servedConcurrencyLimit(isvc *inferencev1alpha1.InferenceService, metal bool) int64 {
 	args := isvc.Spec.ExtraArgs
 	var slots int64
@@ -803,7 +802,23 @@ func servedConcurrencyLimit(isvc *inferencev1alpha1.InferenceService, metal bool
 		slots = int64(*p)
 	}
 	if metal {
-		if slots > 1 {
+		// The agent renders the slot flag only above one slot, and only for
+		// these engines; an unset runtime is its --runtime, which may be any.
+		if slots < 2 {
+			slots = 0
+		}
+		switch isvc.Spec.Runtime {
+		case "llamacpp":
+			return llamaCppSlots(args, slots)
+		case inferencev1alpha1.RuntimeMLXServer:
+			if n, ok := extraArgInt(args, "max-slots"); ok {
+				return n
+			}
+			return slots
+		case inferencev1alpha1.RuntimeVLLMSwift:
+			if n, ok := extraArgInt(args, "max-num-seqs"); ok {
+				return n
+			}
 			return slots
 		}
 		return 0
@@ -831,15 +846,20 @@ func servedConcurrencyLimit(isvc *inferencev1alpha1.InferenceService, metal bool
 			return int64(*cfg.MaxRunningRequests)
 		}
 	case "", "llamacpp":
-		if hasMatchingExtraArgAny(args, "-np") {
-			return 0
-		}
-		if n, ok := extraArgInt(args, "parallel"); ok {
-			return n
-		}
-		return slots
+		return llamaCppSlots(args, slots)
 	}
 	return 0
+}
+
+// llamaCppSlots is llama-server's --parallel, else slots; -np is left unknown.
+func llamaCppSlots(args []string, slots int64) int64 {
+	if hasMatchingExtraArgAny(args, "-np") {
+		return 0
+	}
+	if n, ok := extraArgInt(args, "parallel"); ok {
+		return n
+	}
+	return slots
 }
 
 // servedByMetalAgent reports whether the metal-agent runs the service. A
