@@ -425,10 +425,8 @@ func TestLoadScraperRecordsPressureHistograms(t *testing.T) {
 	}
 }
 
-// TestLoadScraperPressureHistogramsSkipUnknowns: no utilization series without
-// a concurrency limit, no KV series for a profile without a KV gauge or an
-// engine that doesn't expose the profile's one, and nothing at all for a pod
-// whose scrape failed.
+// TestLoadScraperWaitingHistogramResolvesOverload: a queue far past 64 lands in
+// a finite bucket, so a quantile in overload isn't capped at the top bound.
 func TestLoadScraperWaitingHistogramResolvesOverload(t *testing.T) {
 	const router = "r-pressure-overload"
 	resetPressureSeries(router)
@@ -451,6 +449,10 @@ func TestLoadScraperWaitingHistogramResolvesOverload(t *testing.T) {
 	}
 }
 
+// TestLoadScraperPressureHistogramsSkipUnknowns: no utilization series without
+// a concurrency limit, no KV series for a profile without a KV gauge or an
+// engine that doesn't expose the profile's one, and nothing at all for a pod
+// whose scrape failed.
 func TestLoadScraperPressureHistogramsSkipUnknowns(t *testing.T) {
 	const router = "r-pressure-skip"
 	resetPressureSeries(router)
