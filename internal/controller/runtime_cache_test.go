@@ -759,7 +759,8 @@ func assertRuntimeCacheNoFSGroupPolicyWithoutFeature(t *testing.T) {
 // assertRuntimeCacheDeclinesPrefetchedFSGroupMismatch pins the decline for a
 // prefetched service whose own fsGroup differs from the group the prefetch
 // writes the claim in: the claim must stay read-only, or kubelet would re-own
-// every staged file on each pod start.
+// every staged file on each pod start. The warning names only the two fixes
+// that lift it.
 func assertRuntimeCacheDeclinesPrefetchedFSGroupMismatch(t *testing.T) {
 	t.Helper()
 	fsGroup := int64(3000)
@@ -771,6 +772,24 @@ func assertRuntimeCacheDeclinesPrefetchedFSGroupMismatch(t *testing.T) {
 	vol := volumeNamed(pod, "model-cache")
 	if vol == nil || vol.PersistentVolumeClaim == nil || !vol.PersistentVolumeClaim.ReadOnly {
 		t.Errorf("prefetched claim = %+v, want the read-only volume source a declined request leaves", vol)
+	}
+
+	r := runtimeCacheTestReconciler()
+	model := runtimeCachePrefetchedModel()
+	plan := r.runtimeCachePlan(isvc, model, resolveEffectiveModelCache(isvc, model), resolveBackend(isvc))
+	if plan.reason != ReasonRuntimeCacheFSGroupMismatch {
+		t.Fatalf("reason = %q, want %q", plan.reason, ReasonRuntimeCacheFSGroupMismatch)
+	}
+	for _, want := range []string{"remove podSecurityContext.fsGroup", "set it to 102"} {
+		if !strings.Contains(plan.message, want) {
+			t.Errorf("message = %q, want it to name %q", plan.message, want)
+		}
+	}
+	// This reconciler is in perService mode: the prefetch Job writes that
+	// service's own claim, so the walk the check guards against happens there
+	// too and the mode lifts nothing.
+	if strings.Contains(plan.message, "perService") {
+		t.Errorf("message = %q, want no perService fix: it declines the same request", plan.message)
 	}
 }
 

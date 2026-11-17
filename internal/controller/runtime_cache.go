@@ -190,7 +190,7 @@ func (r *InferenceServiceReconciler) runtimeCachePlan(
 	if g := r.prefetchGate(isvc, model, cache); g.applies && g.satisfied {
 		if psc := isvc.Spec.PodSecurityContext; psc != nil && psc.FSGroup != nil && *psc.FSGroup != r.DefaultFSGroup {
 			return runtimeCachePlan{reason: ReasonRuntimeCacheFSGroupMismatch, message: fmt.Sprintf(
-				"spec.modelCache.runtimeCache.enabled is ignored: podSecurityContext.fsGroup %d differs from the group the prefetch writes the cache claim in (--default-fsgroup %d), and the runtime cache mounts that claim writable, so kubelet would re-own every staged file on each pod start; remove podSecurityContext.fsGroup, set it to %d, or use perService cache mode so the walk reaches only this service's own claim",
+				"spec.modelCache.runtimeCache.enabled is ignored: podSecurityContext.fsGroup %d differs from the group the prefetch writes the cache claim in (--default-fsgroup %d), and the runtime cache mounts that claim writable, so kubelet would re-own every staged file on each pod start; remove podSecurityContext.fsGroup or set it to %d",
 				*psc.FSGroup, r.DefaultFSGroup, r.DefaultFSGroup)}
 		}
 	}
