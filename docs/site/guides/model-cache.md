@@ -131,8 +131,8 @@ keep a cache from), a pre-staged `pvc://` or `oci://` source,
 Ephemeral`, or a Model whose cache key has not been computed yet. With
 `--model-cache-prep=never` the operator declines it with
 `RuntimeCacheNeedsPrepare`, because nothing would create the directory, and
-`persistence: Ephemeral` cannot be combined with it at all: the API server
-rejects the pair.
+`persistence: Ephemeral` cannot carry `enabled: true`: the API server rejects
+that pair.
 
 Two replicas of one service share that one directory. On a node-local locking
 filesystem such as BlobFuse, locks do not exclude across nodes (the downloader
