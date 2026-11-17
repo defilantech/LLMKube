@@ -455,6 +455,10 @@ func assertRuntimeCacheRendersEnabled(t *testing.T) {
 	if prep.Image != "docker.io/curlimages/curl:8.18.0" {
 		t.Errorf("prep image = %q, want the operator's init image", prep.Image)
 	}
+	if prep.TerminationMessagePolicy != corev1.TerminationMessageFallbackToLogsOnError {
+		t.Errorf("prep termination message policy = %q, want the log tail on failure, as every generated init container has",
+			prep.TerminationMessagePolicy)
+	}
 	if len(prep.VolumeMounts) != 1 || prep.VolumeMounts[0].Name != "model-cache" ||
 		prep.VolumeMounts[0].MountPath != runtimeCacheMountPath || prep.VolumeMounts[0].SubPath != "" {
 		t.Errorf("prep mounts = %+v, want the claim root at %s (the subPath does not exist yet)",
