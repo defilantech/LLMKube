@@ -1031,25 +1031,47 @@ func TestModelRouterSelectorCompileErrorHint(t *testing.T) {
 // TestModelRouterSelectorDisplayNameClaimed pins that an explicit entry's
 // displayName claims that model id: a selected service of the same name is not
 // added, so /v1/models never publishes an id twice.
+// TestModelRouterSelectorDisplayNameClaimed pins that an explicit entry's
+// displayName claims its published id exactly as its name does, so a selected
+// service of that id is not added and GET /v1/models lists one id once.
 func TestModelRouterSelectorDisplayNameClaimed(t *testing.T) {
-	c, _, stop := startBudgetTestEnv(t)
-	defer stop()
-	ns := newTestNamespace(t, c)
+	for _, tc := range []struct {
+		name  string
+		entry inferencev1alpha1.RouterBackend
+	}{
+		{
+			name: "referenced entry",
+			entry: inferencev1alpha1.RouterBackend{
+				Name:                "glm-5-3-flash",
+				DisplayName:         "llama-70b",
+				InferenceServiceRef: &corev1.LocalObjectReference{Name: "glm-5-3-flash"},
+			},
+		},
+		{
+			name: "overlay",
+			entry: inferencev1alpha1.RouterBackend{
+				Name:        "glm-5-3-flash",
+				DisplayName: "llama-70b",
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c, _, stop := startBudgetTestEnv(t)
+			defer stop()
+			ns := newTestNamespace(t, c)
 
-	createSelectedInferenceService(t, c, ns, "llama-70b", selectorLabels())
-	createSelectedInferenceService(t, c, ns, "glm-5-3-flash", selectorLabels())
-	createTypedSelectorRouter(t, c, ns, "models", routerSelector(),
-		[]inferencev1alpha1.RouterBackend{{
-			Name:                "glm-5-3-flash",
-			DisplayName:         "llama-70b",
-			InferenceServiceRef: &corev1.LocalObjectReference{Name: "glm-5-3-flash"},
-		}}, nil)
-	reconcileSelectorRouter(t, selectorReconciler(c), ns, "models")
+			createSelectedInferenceService(t, c, ns, "llama-70b", selectorLabels())
+			createSelectedInferenceService(t, c, ns, "glm-5-3-flash", selectorLabels())
+			createTypedSelectorRouter(t, c, ns, "models", routerSelector(),
+				[]inferencev1alpha1.RouterBackend{tc.entry}, nil)
+			reconcileSelectorRouter(t, selectorReconciler(c), ns, "models")
 
-	cfg := routerConfigJSON(t, c, ns, "models")
-	assertBackendNames(t, cfg, "glm-5-3-flash")
-	if got := modelIDsFromProxy(t, cfg); !slices.Equal(got, []string{"llama-70b"}) {
-		t.Errorf("GET /v1/models = %v, want the explicit entry's displayName once", got)
+			cfg := routerConfigJSON(t, c, ns, "models")
+			assertBackendNames(t, cfg, "glm-5-3-flash")
+			if got := modelIDsFromProxy(t, cfg); !slices.Equal(got, []string{"llama-70b"}) {
+				t.Errorf("GET /v1/models = %v, want the explicit entry's displayName once", got)
+			}
+		})
 	}
 }
 
