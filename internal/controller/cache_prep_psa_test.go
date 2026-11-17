@@ -89,7 +89,7 @@ func submitPodTemplate(c client.Client, tmpl corev1.PodTemplateSpec) error {
 // cacheBackedServingTemplate is the pod template of a cache-backed
 // InferenceService Deployment, built through the production path.
 func cacheBackedServingTemplate(r *InferenceServiceReconciler, isvc *inferencev1alpha1.InferenceService, model *inferencev1alpha1.Model) corev1.PodTemplateSpec {
-	return r.constructDeploymentForCache(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "").Spec.Template
+	return r.deploymentFor(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "").Spec.Template
 }
 
 // cacheBackedIsvcWithRestrictedPodContext is the user configuration

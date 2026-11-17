@@ -161,7 +161,7 @@ func TestReconcileDeploymentRefusesMetalOnlyRuntimeOffMetal(t *testing.T) {
 		Build()
 	r := &InferenceServiceReconciler{Client: c, Scheme: scheme, InitContainerImage: "docker.io/curlimages/curl:8.18.0"}
 
-	dep, _, _, result, err := r.reconcileDeployment(ctx, isvc, resolveEffectiveModelCache(isvc, model), model, nil, 1, true, false)
+	dep, _, _, result, err := r.reconcileDeployment(ctx, isvc, resolveEffectiveModelCache(isvc, model), model, nil, 1, true, false, r.runtimeCachePlan(isvc, model, resolveEffectiveModelCache(isvc, model), resolveBackend(isvc)))
 	if err != nil {
 		t.Fatalf("reconcileDeployment() error = %v", err)
 	}
@@ -196,8 +196,8 @@ func TestEmptyRuntimeBuildsLlamaCppDeployment(t *testing.T) {
 	model := placementModel("m", "cuda")
 	r := &InferenceServiceReconciler{ModelCachePath: "/models", InitContainerImage: "docker.io/curlimages/curl:8.18.0"}
 
-	explicit := r.constructDeploymentForCache(placementISvc("svc", "m", "llamacpp"), model, resolveEffectiveModelCache(placementISvc("svc", "m", "llamacpp"), model), nil, 1, "", "")
-	empty := r.constructDeploymentForCache(placementISvc("svc", "m", ""), model, resolveEffectiveModelCache(placementISvc("svc", "m", ""), model), nil, 1, "", "")
+	explicit := r.deploymentFor(placementISvc("svc", "m", "llamacpp"), model, resolveEffectiveModelCache(placementISvc("svc", "m", "llamacpp"), model), nil, 1, "", "")
+	empty := r.deploymentFor(placementISvc("svc", "m", ""), model, resolveEffectiveModelCache(placementISvc("svc", "m", ""), model), nil, 1, "", "")
 
 	if !apiequality.Semantic.DeepEqual(explicit.Spec, empty.Spec) {
 		t.Errorf("Deployment spec differs between runtime \"\" and \"llamacpp\"\nllamacpp: %+v\nempty:    %+v",

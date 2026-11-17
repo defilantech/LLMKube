@@ -983,8 +983,10 @@ spec:
   directory and each declared cache directory and chowns and chmods those
   paths only, never recursively. It runs under the same security context as
   `model-cache-prep` (root, ALL capabilities dropped, `CHOWN` and `FOWNER`
-  added, no privilege escalation, read-only root filesystem), which is why
-  `--model-cache-prep=never` declines the feature with a
+  added, no privilege escalation, read-only root filesystem), plus a
+  `runAsGroup: 0` of its own so the pod's own group cannot leave it unable to
+  create the directory. That context is why `--model-cache-prep=never` declines
+  the feature with a
   `RuntimeCacheNeedsPrepare` warning event. The prep hands the directory to
   the operator's `fsGroup`, or with `--default-fsgroup=0` to the downloader's
   uid with group `0`; a pod whose own `podSecurityContext` sets no `fsGroup`
@@ -1011,9 +1013,14 @@ spec:
   `RuntimeCacheFSGroupMismatch`: the prefetch writes the claim in the
   operator's group, and mounting it writable for the runtime cache would make
   kubelet re-own every staged file on each pod start. Remove that `fsGroup`,
-  or set it to the operator's group. A Model
-  whose cache key has not been computed yet is skipped silently, and the next
-  reconcile applies the request. Only a service that sets the field itself is
+  or set it to the operator's group; with `--default-fsgroup=0` there is no
+  operator group to set it to, so any `fsGroup` of the service's own is
+  declined. A Model that is not Ready yet and has no cache key is skipped
+  silently, and a later reconcile applies the request. A Ready Model with no
+  cache key is declined with `RuntimeCacheUnsupported`: its source is one the
+  runtime resolves itself (a bare Hugging Face repo id) or a local one, so the
+  pod mounts no cache claim and the cache would live in an emptyDir that dies
+  with the pod. Only a service that sets the field itself is
   warned: a `Model.spec.modelCache.runtimeCache` block reaches every service
   that references the Model.
 - `persistence: Ephemeral` cannot carry `enabled: true`: the API server rejects

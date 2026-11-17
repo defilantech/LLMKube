@@ -117,7 +117,7 @@ func TestDraftCachePrepFollowsPolicy(t *testing.T) {
 
 	r := cachePrepTripwireISvcReconciler()
 	r.ModelCachePrep = ModelCachePrepNever
-	dep := r.constructDeploymentForCache(isvc, cachePrepTripwireModel(), resolveEffectiveModelCache(isvc, cachePrepTripwireModel()), draft, 1, "", "")
+	dep := r.deploymentFor(isvc, cachePrepTripwireModel(), resolveEffectiveModelCache(isvc, cachePrepTripwireModel()), draft, 1, "", "")
 
 	names := containerNames(dep.Spec.Template.Spec.InitContainers)
 	if slices.Contains(names, "model-cache-prep") || slices.Contains(names, "draft-model-cache-prep") {
@@ -143,7 +143,7 @@ func TestDraftUncachedKeepsNoPrep(t *testing.T) {
 	}
 	r := cachePrepTripwireISvcReconciler()
 	r.ModelCachePrep = ModelCachePrepNever
-	names := containerNames(r.constructDeploymentForCache(isvc, cachePrepTripwireModel(), resolveEffectiveModelCache(isvc, cachePrepTripwireModel()), draft, 1, "", "").Spec.Template.Spec.InitContainers)
+	names := containerNames(r.deploymentFor(isvc, cachePrepTripwireModel(), resolveEffectiveModelCache(isvc, cachePrepTripwireModel()), draft, 1, "", "").Spec.Template.Spec.InitContainers)
 	if slices.Contains(names, "model-cache-prep") || slices.Contains(names, "draft-model-cache-prep") {
 		t.Fatalf("initContainers = %v, want no prep", names)
 	}
@@ -286,7 +286,7 @@ func TestPrefetchDownloaderMatchesServingDownloaderUID(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			sc := cachePrepTripwireISvcReconciler()
 			sc.ModelCachePrep = ModelCachePrepNever
-			dep := sc.constructDeploymentForCache(tc.isvc, m, resolveEffectiveModelCache(tc.isvc, m), nil, 1, "", "")
+			dep := sc.deploymentFor(tc.isvc, m, resolveEffectiveModelCache(tc.isvc, m), nil, 1, "", "")
 			var servingUID *int64
 			for i := range dep.Spec.Template.Spec.InitContainers {
 				if dep.Spec.Template.Spec.InitContainers[i].Name == "model-downloader" {

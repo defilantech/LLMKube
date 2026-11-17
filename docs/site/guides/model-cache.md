@@ -145,9 +145,13 @@ declined with `RuntimeCacheClaimReadOnly`, and a prefetched service whose own
 with `RuntimeCacheFSGroupMismatch`: the prefetch writes the claim in the
 operator's group, and mounting it writable for the runtime cache would make
 kubelet re-own every staged file on each pod start. Remove that `fsGroup`, or
-set it to the operator's group. A Model whose
-cache key has not been computed yet is skipped silently, and the next
-reconcile applies the request. `persistence: Ephemeral` cannot carry
+set it to the operator's group; with `--default-fsgroup=0` there is no
+operator group to set it to, so any `fsGroup` of the service's own is
+declined. A Model that is not Ready yet and has no cache key is skipped
+silently, and a later reconcile applies the request; a Ready Model with no
+cache key is declined with `RuntimeCacheUnsupported`, because the pod mounts
+no cache claim and the cache would live in an emptyDir that dies with the pod.
+`persistence: Ephemeral` cannot carry
 `enabled: true`: the API server rejects that pair.
 
 Two replicas of one service share that one directory. On a node-local locking

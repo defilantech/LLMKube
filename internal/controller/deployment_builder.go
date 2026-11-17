@@ -537,10 +537,9 @@ func setCommandAndArgs(
 }
 
 // constructDeploymentForCache renders the Deployment for a service whose
-// effective modelCache has already been resolved. plan, when given, is the
-// runtime-cache decision the caller already made (runtimeCachePlanFor), so the
-// decision the reconcile warned about is the one it renders; without it the
-// decision is made here, with the cache claim's access modes unknown.
+// effective modelCache has already been resolved. plan is the runtime-cache
+// decision the caller made (runtimeCachePlanFor), so the decision the reconcile
+// warned about is the one it renders.
 func (r *InferenceServiceReconciler) constructDeploymentForCache(
 	isvc *inferencev1alpha1.InferenceService,
 	model *inferencev1alpha1.Model,
@@ -549,15 +548,9 @@ func (r *InferenceServiceReconciler) constructDeploymentForCache(
 	replicas int32,
 	hfEndpoint string,
 	draftHFEndpoint string,
-	plan ...runtimeCachePlan,
+	decision runtimeCachePlan,
 ) *appsv1.Deployment {
 	backend := resolveBackend(isvc)
-	var decision runtimeCachePlan
-	if len(plan) > 0 {
-		decision = plan[0]
-	} else {
-		decision = r.runtimeCachePlan(isvc, model, cache, backend)
-	}
 
 	labels := map[string]string{
 		"app":                           isvc.Name,

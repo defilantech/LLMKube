@@ -115,10 +115,11 @@ const (
 // runtimeCachePrepRemedy is the remedy for a runtime-cache-prep failure. The
 // downloader's remedy (turn the prep on, or name the uid the prep chowns to)
 // does not apply to the prep itself: its mkdir, chown and chmod run as root, so
-// a refusal comes from the share, and a read-only mount accepts no write at
-// all.
-const runtimeCachePrepRemedy = "runtime-cache-prep runs as root, so the refusal comes from the cache share, not from a uid setting: " +
-	"an NFS export with root_squash maps root to an unprivileged user and drops its chown, and a read-only export or claim accepts no write. " +
+// a refusal comes from the share or from the cache root's own ownership and
+// mode, and a read-only mount accepts no write at all.
+const runtimeCachePrepRemedy = "runtime-cache-prep runs as root, so the refusal comes from the cache share or from the cache root, not from a uid setting: " +
+	"an NFS export with root_squash maps root to an unprivileged user and drops its chown, a read-only export or claim accepts no write, " +
+	"and a cache root whose owner and mode admit neither root nor the prep's group refuses its mkdir. " +
 	"Use a claim whose export maps root to a user that owns the cache root (root_squash off, or a share that does not squash root), or a claim with a writable access mode"
 
 // modelTransferSignature pairs a diagnosis with the substrings that justify it.

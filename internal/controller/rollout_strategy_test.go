@@ -139,7 +139,7 @@ var _ = Describe("Rollout strategy (#2131)", func() {
 			model := gpuModelWithCount("strategy-gpu-default", 1)
 			isvc := strategyISVC("strategy-gpu-default", "strategy-gpu-default", 2)
 
-			expectRecreate(reconciler.constructDeploymentForCache(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 2, "", ""))
+			expectRecreate(reconciler.deploymentFor(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 2, "", ""))
 		})
 
 		It("keeps Recreate when strategy is Recreate", func() {
@@ -147,7 +147,7 @@ var _ = Describe("Rollout strategy (#2131)", func() {
 			isvc := strategyISVC("strategy-gpu-recreate", "strategy-gpu-recreate", 2)
 			isvc.Spec.RolloutPolicy = &inferencev1alpha1.RolloutPolicySpec{Strategy: inferencev1alpha1.RolloutStrategyRecreate}
 
-			expectRecreate(reconciler.constructDeploymentForCache(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 2, "", ""))
+			expectRecreate(reconciler.deploymentFor(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 2, "", ""))
 		})
 
 		DescribeTable("uses a one-at-a-time rolling update when strategy is OneAtATime",
@@ -157,7 +157,7 @@ var _ = Describe("Rollout strategy (#2131)", func() {
 				isvc := strategyISVC(name, name, replicas)
 				isvc.Spec.RolloutPolicy = &inferencev1alpha1.RolloutPolicySpec{Strategy: inferencev1alpha1.RolloutStrategyOneAtATime}
 
-				expectRollingOneAtATime(reconciler.constructDeploymentForCache(isvc, model, resolveEffectiveModelCache(isvc, model), nil, replicas, "", ""))
+				expectRollingOneAtATime(reconciler.deploymentFor(isvc, model, resolveEffectiveModelCache(isvc, model), nil, replicas, "", ""))
 			},
 			// One replica behaves like Recreate in effect: the only pod is
 			// replaced. The shape still has to be the same one, or the field
@@ -175,7 +175,7 @@ var _ = Describe("Rollout strategy (#2131)", func() {
 				"strategy alone must not turn on the drain-before-roll idle gate")
 			Expect(isvc.ShouldDeferRollout()).To(BeFalse())
 
-			deployment := reconciler.constructDeploymentForCache(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 2, "", "")
+			deployment := reconciler.deploymentFor(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 2, "", "")
 			Expect(*deployment.Spec.Replicas).To(Equal(int32(2)))
 			expectRollingOneAtATime(deployment)
 		})
@@ -187,7 +187,7 @@ var _ = Describe("Rollout strategy (#2131)", func() {
 			isvc := strategyISVC("strategy-cpu", "strategy-cpu", 2)
 			isvc.Spec.RolloutPolicy = &inferencev1alpha1.RolloutPolicySpec{Strategy: inferencev1alpha1.RolloutStrategyOneAtATime}
 
-			expectNoStrategy(reconciler.constructDeploymentForCache(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 2, "", ""))
+			expectNoStrategy(reconciler.deploymentFor(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 2, "", ""))
 		})
 
 		It("keeps Recreate for a DRA service whatever the field says", func() {
@@ -201,7 +201,7 @@ var _ = Describe("Rollout strategy (#2131)", func() {
 
 			// A replacement pod cannot get the claim while the old pod holds it,
 			// so DRA stays Recreate regardless (#2061).
-			expectRecreate(reconciler.constructDeploymentForCache(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 2, "", ""))
+			expectRecreate(reconciler.deploymentFor(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 2, "", ""))
 		})
 	})
 

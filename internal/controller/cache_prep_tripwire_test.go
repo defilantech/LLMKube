@@ -97,7 +97,7 @@ func cachePrepTripwireModelReconciler() *ModelReconciler {
 
 func TestCachePrepAlwaysTemplatesUnchanged(t *testing.T) {
 	r := cachePrepTripwireISvcReconciler()
-	dep := r.constructDeploymentForCache(cachePrepTripwireIsvc(), cachePrepTripwireModel(), resolveEffectiveModelCache(cachePrepTripwireIsvc(), cachePrepTripwireModel()), nil, 1, "", "")
+	dep := r.deploymentFor(cachePrepTripwireIsvc(), cachePrepTripwireModel(), resolveEffectiveModelCache(cachePrepTripwireIsvc(), cachePrepTripwireModel()), nil, 1, "", "")
 	if got := desiredTemplateHash(dep.Spec.Template); got != cachePrepTripwireDeploymentHash {
 		t.Errorf("cache-backed Deployment pod template drifted from base: desiredTemplateHash = %s, want %s\n"+
 			"every cache-backed pod would roll on upgrade; a builder changed shape for the default policy without an upgrade note",

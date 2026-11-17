@@ -250,7 +250,7 @@ func TestConstructDeployment_SGLangStallLivenessAndOverrides(t *testing.T) {
 	}
 
 	t.Run("stall detection renders the exec liveness probe", func(t *testing.T) {
-		c := container(r.constructDeploymentForCache(newISvc(), model, resolveEffectiveModelCache(newISvc(), model), nil, 1, "", ""))
+		c := container(r.deploymentFor(newISvc(), model, resolveEffectiveModelCache(newISvc(), model), nil, 1, "", ""))
 		if c.LivenessProbe == nil || c.LivenessProbe.Exec == nil {
 			t.Fatalf("liveness probe = %+v, want an exec probe", c.LivenessProbe)
 		}
@@ -260,7 +260,7 @@ func TestConstructDeployment_SGLangStallLivenessAndOverrides(t *testing.T) {
 		isvc.Spec.ProbeOverrides = &inferencev1alpha1.ProbeOverrides{
 			Liveness: &corev1.Probe{ProbeHandler: corev1.ProbeHandler{HTTPGet: &corev1.HTTPGetAction{Path: "/custom-health"}}},
 		}
-		c := container(r.constructDeploymentForCache(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", ""))
+		c := container(r.deploymentFor(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", ""))
 		if c.LivenessProbe.Exec != nil || c.LivenessProbe.HTTPGet == nil || c.LivenessProbe.HTTPGet.Path != "/custom-health" {
 			t.Fatalf("liveness probe = %+v, want the user's /custom-health override", c.LivenessProbe)
 		}

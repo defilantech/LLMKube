@@ -210,7 +210,7 @@ var _ = Describe("Multi-GPU Deployment Construction", func() {
 				},
 			}
 
-			deployment := reconciler.constructDeploymentForCache(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 0, "", "")
+			deployment := reconciler.deploymentFor(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 0, "", "")
 
 			Expect(deployment.Spec.Template.Spec.NodeSelector).To(
 				HaveKeyWithValue("accelerator", "amd"),
@@ -236,7 +236,7 @@ var _ = Describe("Multi-GPU Deployment Construction", func() {
 				},
 			}
 
-			deployment := reconciler.constructDeploymentForCache(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 0, "", "")
+			deployment := reconciler.deploymentFor(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 0, "", "")
 
 			for _, tol := range deployment.Spec.Template.Spec.Tolerations {
 				Expect(tol.Key).NotTo(ContainSubstring("nvidia.com/gpu"),
@@ -291,7 +291,7 @@ var _ = Describe("Multi-GPU Deployment Construction", func() {
 				},
 			}
 
-			deployment := reconciler.constructDeploymentForCache(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
+			deployment := reconciler.deploymentFor(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
 
 			By("verifying deployment is created")
 			Expect(deployment).NotTo(BeNil())
@@ -357,7 +357,7 @@ var _ = Describe("Multi-GPU Deployment Construction", func() {
 				},
 			}
 
-			deployment := reconciler.constructDeploymentForCache(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
+			deployment := reconciler.deploymentFor(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
 
 			By("verifying tensor split for 4 GPUs")
 			args := deployment.Spec.Template.Spec.Containers[0].Args
@@ -411,7 +411,7 @@ var _ = Describe("Multi-GPU Deployment Construction", func() {
 				},
 			}
 
-			deployment := reconciler.constructDeploymentForCache(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
+			deployment := reconciler.deploymentFor(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
 
 			By("verifying single GPU does NOT have multi-GPU flags")
 			args := deployment.Spec.Template.Spec.Containers[0].Args
@@ -461,7 +461,7 @@ var _ = Describe("Multi-GPU Deployment Construction", func() {
 				},
 			}
 
-			deployment := reconciler.constructDeploymentForCache(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
+			deployment := reconciler.deploymentFor(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
 
 			By("verifying CPU-only does NOT have GPU flags")
 			args := deployment.Spec.Template.Spec.Containers[0].Args
@@ -517,7 +517,7 @@ var _ = Describe("Multi-GPU Deployment Construction", func() {
 				},
 			}
 
-			deployment := reconciler.constructDeploymentForCache(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
+			deployment := reconciler.deploymentFor(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
 
 			By("verifying Model GPU count (4) takes precedence over InferenceService (2)")
 			args := deployment.Spec.Template.Spec.Containers[0].Args
@@ -570,7 +570,7 @@ var _ = Describe("Multi-GPU Deployment Construction", func() {
 				},
 			}
 
-			deployment := reconciler.constructDeploymentForCache(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
+			deployment := reconciler.deploymentFor(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
 
 			Expect(deployment.Spec.Template.Spec.InitContainers).To(HaveLen(1))
 			Expect(deployment.Spec.Template.Spec.InitContainers[0].Image).To(Equal(customImage))
@@ -622,22 +622,22 @@ var _ = Describe("Multi-GPU Deployment Construction", func() {
 		}
 
 		It("should default to 3 old ReplicaSets when unset", func() {
-			deployment := reconciler.constructDeploymentForCache(newISVC(nil), model, resolveEffectiveModelCache(newISVC(nil), model), nil, 1, "", "")
+			deployment := reconciler.deploymentFor(newISVC(nil), model, resolveEffectiveModelCache(newISVC(nil), model), nil, 1, "", "")
 			Expect(deployment.Spec.RevisionHistoryLimit).To(HaveValue(Equal(int32(3))))
 		})
 
 		It("should plumb an explicit value (including 0) onto the Deployment", func() {
 			for _, want := range []int32{0, 5} {
-				deployment := reconciler.constructDeploymentForCache(newISVC(&want), model, resolveEffectiveModelCache(newISVC(&want), model), nil, 1, "", "")
+				deployment := reconciler.deploymentFor(newISVC(&want), model, resolveEffectiveModelCache(newISVC(&want), model), nil, 1, "", "")
 				Expect(deployment.Spec.RevisionHistoryLimit).NotTo(BeNil())
 				Expect(*deployment.Spec.RevisionHistoryLimit).To(Equal(want))
 			}
 		})
 
 		It("should not change the pod template hash, so no pods restart", func() {
-			unset := reconciler.constructDeploymentForCache(newISVC(nil), model, resolveEffectiveModelCache(newISVC(nil), model), nil, 1, "", "")
+			unset := reconciler.deploymentFor(newISVC(nil), model, resolveEffectiveModelCache(newISVC(nil), model), nil, 1, "", "")
 			five := int32(5)
-			set := reconciler.constructDeploymentForCache(newISVC(&five), model, resolveEffectiveModelCache(newISVC(&five), model), nil, 1, "", "")
+			set := reconciler.deploymentFor(newISVC(&five), model, resolveEffectiveModelCache(newISVC(&five), model), nil, 1, "", "")
 			Expect(desiredTemplateHash(set.Spec.Template)).To(Equal(desiredTemplateHash(unset.Spec.Template)))
 		})
 	})
@@ -699,7 +699,7 @@ var _ = Describe("Multi-GPU Deployment Construction", func() {
 			isvc := newISVC(func(s *inferencev1alpha1.InferenceService) {
 				s.Spec.Runtime = RuntimeVLLM
 			})
-			d := newReconciler(true).constructDeploymentForCache(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
+			d := newReconciler(true).deploymentFor(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
 			// vLLM DefaultPort is 8000; the old hardcoded 8080 was wrong here.
 			Expect(scrapePort(d)).To(Equal("8000"))
 			Expect(d.Spec.Template.ObjectMeta.Annotations["prometheus.io/scrape"]).To(Equal("true"))
@@ -711,7 +711,7 @@ var _ = Describe("Multi-GPU Deployment Construction", func() {
 				s.Spec.Runtime = RuntimeVLLM
 				s.Spec.ContainerPort = &cp
 			})
-			d := newReconciler(true).constructDeploymentForCache(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
+			d := newReconciler(true).deploymentFor(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
 			Expect(scrapePort(d)).To(Equal("9090"))
 		})
 
@@ -719,12 +719,12 @@ var _ = Describe("Multi-GPU Deployment Construction", func() {
 			isvc := newISVC(func(s *inferencev1alpha1.InferenceService) {
 				s.Spec.Endpoint = &inferencev1alpha1.EndpointSpec{Port: 7070}
 			})
-			d := newReconciler(true).constructDeploymentForCache(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
+			d := newReconciler(true).deploymentFor(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
 			Expect(scrapePort(d)).To(Equal("7070"))
 		})
 
 		It("falls back to the llama.cpp default (8080) with no port hints", func() {
-			d := newReconciler(true).constructDeploymentForCache(newISVC(nil), model, resolveEffectiveModelCache(newISVC(nil), model), nil, 1, "", "")
+			d := newReconciler(true).deploymentFor(newISVC(nil), model, resolveEffectiveModelCache(newISVC(nil), model), nil, 1, "", "")
 			Expect(scrapePort(d)).To(Equal("8080"))
 		})
 
@@ -733,7 +733,7 @@ var _ = Describe("Multi-GPU Deployment Construction", func() {
 			isvc := newISVC(func(s *inferencev1alpha1.InferenceService) {
 				s.Spec.Runtime = RuntimeVLLM
 			})
-			d := newReconciler(true).constructDeploymentForCache(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
+			d := newReconciler(true).deploymentFor(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
 			containerPort := d.Spec.Template.Spec.Containers[0].Ports[0].ContainerPort
 			Expect(scrapePort(d)).To(Equal(fmt.Sprintf("%d", containerPort)))
 		})
@@ -742,7 +742,7 @@ var _ = Describe("Multi-GPU Deployment Construction", func() {
 			isvc := newISVC(func(s *inferencev1alpha1.InferenceService) {
 				s.Spec.Runtime = RuntimeVLLM
 			})
-			d := newReconciler(false).constructDeploymentForCache(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
+			d := newReconciler(false).deploymentFor(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
 			ann := d.Spec.Template.ObjectMeta.Annotations
 			Expect(ann).NotTo(HaveKey("prometheus.io/scrape"))
 			Expect(ann).NotTo(HaveKey("prometheus.io/port"))
@@ -788,7 +788,7 @@ var _ = Describe("Multi-GPU Deployment Construction", func() {
 					MaxPodLifetimeSeconds: &lifetime,
 				},
 			}
-			deployment := reconciler.constructDeploymentForCache(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
+			deployment := reconciler.deploymentFor(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
 			Expect(deployment.Spec.Template.Spec.ActiveDeadlineSeconds).To(BeNil())
 		})
 	})
@@ -844,7 +844,7 @@ var _ = Describe("Multi-GPU Deployment Construction", func() {
 				},
 			}
 
-			deployment := reconciler.constructDeploymentForCache(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
+			deployment := reconciler.deploymentFor(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
 
 			By("verifying nvidia.com/gpu toleration is present")
 			tolerations := deployment.Spec.Template.Spec.Tolerations
@@ -900,7 +900,7 @@ var _ = Describe("Multi-GPU Deployment Construction", func() {
 				},
 			}
 
-			deployment := reconciler.constructDeploymentForCache(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
+			deployment := reconciler.deploymentFor(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
 
 			By("verifying GPU resource limits use Intel resource key")
 			gpuLimit := deployment.Spec.Template.Spec.Containers[0].Resources.Limits["gpu.intel.com/i915"]
@@ -960,7 +960,7 @@ var _ = Describe("Multi-GPU Deployment Construction", func() {
 				},
 			}
 
-			deployment := reconciler.constructDeploymentForCache(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
+			deployment := reconciler.deploymentFor(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
 
 			By("verifying custom node selector is applied")
 			nodeSelector := deployment.Spec.Template.Spec.NodeSelector
@@ -1031,7 +1031,7 @@ var _ = Describe("Multi-GPU Deployment Construction", func() {
 				},
 			}
 
-			deployment := reconciler.constructDeploymentForCache(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
+			deployment := reconciler.deploymentFor(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
 
 			By("verifying topologySpreadConstraints pass through to the pod spec")
 			tsc := deployment.Spec.Template.Spec.TopologySpreadConstraints
@@ -1105,7 +1105,7 @@ var _ = Describe("Context Size Configuration", func() {
 				},
 			}
 
-			deployment := reconciler.constructDeploymentForCache(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
+			deployment := reconciler.deploymentFor(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
 
 			By("verifying --ctx-size flag is present with correct value")
 			args := deployment.Spec.Template.Spec.Containers[0].Args
@@ -1129,7 +1129,7 @@ var _ = Describe("Context Size Configuration", func() {
 				},
 			}
 
-			deployment := reconciler.constructDeploymentForCache(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
+			deployment := reconciler.deploymentFor(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
 
 			By("verifying --ctx-size flag with large value")
 			args := deployment.Spec.Template.Spec.Containers[0].Args
@@ -1152,7 +1152,7 @@ var _ = Describe("Context Size Configuration", func() {
 				},
 			}
 
-			deployment := reconciler.constructDeploymentForCache(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
+			deployment := reconciler.deploymentFor(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
 
 			By("verifying --ctx-size flag is NOT present")
 			args := deployment.Spec.Template.Spec.Containers[0].Args
@@ -1175,7 +1175,7 @@ var _ = Describe("Context Size Configuration", func() {
 				},
 			}
 
-			deployment := reconciler.constructDeploymentForCache(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
+			deployment := reconciler.deploymentFor(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
 
 			By("verifying --ctx-size flag is NOT present for zero value")
 			args := deployment.Spec.Template.Spec.Containers[0].Args
@@ -1201,7 +1201,7 @@ var _ = Describe("Context Size Configuration", func() {
 				},
 			}
 
-			deployment := reconciler.constructDeploymentForCache(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
+			deployment := reconciler.deploymentFor(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
 
 			By("verifying both GPU and context size flags are present")
 			args := deployment.Spec.Template.Spec.Containers[0].Args
@@ -1265,7 +1265,7 @@ var _ = Describe("Context Size Configuration", func() {
 				},
 			}
 
-			deployment := reconciler.constructDeploymentForCache(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
+			deployment := reconciler.deploymentFor(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
 
 			args := deployment.Spec.Template.Spec.Containers[0].Args
 			Expect(args).To(ContainElement("--parallel"))
@@ -1286,7 +1286,7 @@ var _ = Describe("Context Size Configuration", func() {
 				},
 			}
 
-			deployment := reconciler.constructDeploymentForCache(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
+			deployment := reconciler.deploymentFor(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
 
 			args := deployment.Spec.Template.Spec.Containers[0].Args
 			Expect(args).NotTo(ContainElement("--parallel"))
@@ -1308,7 +1308,7 @@ var _ = Describe("Context Size Configuration", func() {
 				},
 			}
 
-			deployment := reconciler.constructDeploymentForCache(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
+			deployment := reconciler.deploymentFor(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
 
 			args := deployment.Spec.Template.Spec.Containers[0].Args
 			Expect(args).To(ContainElement("--parallel"))
@@ -1370,7 +1370,7 @@ var _ = Describe("Context Size Configuration", func() {
 				},
 			}
 
-			deployment := reconciler.constructDeploymentForCache(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
+			deployment := reconciler.deploymentFor(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
 
 			args := deployment.Spec.Template.Spec.Containers[0].Args
 			Expect(args).To(ContainElements("--flash-attn", "on"))
@@ -1393,7 +1393,7 @@ var _ = Describe("Context Size Configuration", func() {
 				},
 			}
 
-			deployment := reconciler.constructDeploymentForCache(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
+			deployment := reconciler.deploymentFor(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
 
 			args := deployment.Spec.Template.Spec.Containers[0].Args
 			Expect(args).NotTo(ContainElement("--flash-attn"))
@@ -1418,7 +1418,7 @@ var _ = Describe("Context Size Configuration", func() {
 				},
 			}
 
-			deployment := reconciler.constructDeploymentForCache(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
+			deployment := reconciler.deploymentFor(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
 
 			args := deployment.Spec.Template.Spec.Containers[0].Args
 			Expect(args).NotTo(ContainElement("--flash-attn"))
@@ -1454,7 +1454,7 @@ var _ = Describe("Context Size Configuration", func() {
 				},
 			}
 
-			deployment := reconciler.constructDeploymentForCache(isvc, noGPUModel, resolveEffectiveModelCache(isvc, noGPUModel), nil, 1, "", "")
+			deployment := reconciler.deploymentFor(isvc, noGPUModel, resolveEffectiveModelCache(isvc, noGPUModel), nil, 1, "", "")
 
 			args := deployment.Spec.Template.Spec.Containers[0].Args
 			Expect(args).NotTo(ContainElement("--flash-attn"))
@@ -1515,7 +1515,7 @@ var _ = Describe("Context Size Configuration", func() {
 				},
 			}
 
-			deployment := reconciler.constructDeploymentForCache(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
+			deployment := reconciler.deploymentFor(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
 
 			args := deployment.Spec.Template.Spec.Containers[0].Args
 			Expect(args).To(ContainElement("--jinja"))
@@ -1538,7 +1538,7 @@ var _ = Describe("Context Size Configuration", func() {
 				},
 			}
 
-			deployment := reconciler.constructDeploymentForCache(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
+			deployment := reconciler.deploymentFor(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
 
 			args := deployment.Spec.Template.Spec.Containers[0].Args
 			Expect(args).NotTo(ContainElement("--jinja"))
@@ -1563,7 +1563,7 @@ var _ = Describe("Context Size Configuration", func() {
 				},
 			}
 
-			deployment := reconciler.constructDeploymentForCache(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
+			deployment := reconciler.deploymentFor(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
 
 			args := deployment.Spec.Template.Spec.Containers[0].Args
 			Expect(args).NotTo(ContainElement("--jinja"))
@@ -1623,7 +1623,7 @@ var _ = Describe("Context Size Configuration", func() {
 				},
 			}
 
-			deployment := reconciler.constructDeploymentForCache(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
+			deployment := reconciler.deploymentFor(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
 
 			args := deployment.Spec.Template.Spec.Containers[0].Args
 			Expect(args).To(ContainElements("--cache-type-k", "q4_0"))
@@ -1647,7 +1647,7 @@ var _ = Describe("Context Size Configuration", func() {
 				},
 			}
 
-			deployment := reconciler.constructDeploymentForCache(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
+			deployment := reconciler.deploymentFor(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
 
 			args := deployment.Spec.Template.Spec.Containers[0].Args
 			Expect(args).To(ContainElements("--cache-type-v", "q8_0"))
@@ -1672,7 +1672,7 @@ var _ = Describe("Context Size Configuration", func() {
 				},
 			}
 
-			deployment := reconciler.constructDeploymentForCache(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
+			deployment := reconciler.deploymentFor(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
 
 			args := deployment.Spec.Template.Spec.Containers[0].Args
 			Expect(args).To(ContainElements("--cache-type-k", "q4_0"))
@@ -1696,7 +1696,7 @@ var _ = Describe("Context Size Configuration", func() {
 				},
 			}
 
-			deployment := reconciler.constructDeploymentForCache(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
+			deployment := reconciler.deploymentFor(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
 
 			args := deployment.Spec.Template.Spec.Containers[0].Args
 			Expect(args).NotTo(ContainElement("--cache-type-k"))
@@ -1721,7 +1721,7 @@ var _ = Describe("Context Size Configuration", func() {
 				},
 			}
 
-			deployment := reconciler.constructDeploymentForCache(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
+			deployment := reconciler.deploymentFor(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
 			args := deployment.Spec.Template.Spec.Containers[0].Args
 			Expect(args).To(ContainElements("--cache-type-k", "turbo3"))
 		})
@@ -1747,7 +1747,7 @@ var _ = Describe("Context Size Configuration", func() {
 				},
 			}
 
-			deployment := reconciler.constructDeploymentForCache(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
+			deployment := reconciler.deploymentFor(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
 			args := deployment.Spec.Template.Spec.Containers[0].Args
 			Expect(args).To(ContainElements("--cache-type-k", "turbo3"))
 			Expect(args).To(ContainElements("--cache-type-v", "tbqp3"))
@@ -1773,7 +1773,7 @@ var _ = Describe("Context Size Configuration", func() {
 				},
 			}
 
-			deployment := reconciler.constructDeploymentForCache(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
+			deployment := reconciler.deploymentFor(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
 			args := deployment.Spec.Template.Spec.Containers[0].Args
 			Expect(args).To(ContainElements("--cache-type-k", "q5_1"))
 		})
@@ -1796,7 +1796,7 @@ var _ = Describe("Context Size Configuration", func() {
 				},
 			}
 
-			deployment := reconciler.constructDeploymentForCache(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
+			deployment := reconciler.deploymentFor(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
 			args := deployment.Spec.Template.Spec.Containers[0].Args
 			Expect(args).NotTo(ContainElement("--cache-type-k"))
 			Expect(args).To(ContainElements("--cache-type-v", "turbo4"))
@@ -1857,7 +1857,7 @@ var _ = Describe("Context Size Configuration", func() {
 				},
 			}
 
-			deployment := reconciler.constructDeploymentForCache(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
+			deployment := reconciler.deploymentFor(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
 
 			args := deployment.Spec.Template.Spec.Containers[0].Args
 			Expect(args).To(ContainElement("--cpu-moe"))
@@ -1880,7 +1880,7 @@ var _ = Describe("Context Size Configuration", func() {
 				},
 			}
 
-			deployment := reconciler.constructDeploymentForCache(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
+			deployment := reconciler.deploymentFor(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
 
 			args := deployment.Spec.Template.Spec.Containers[0].Args
 			Expect(args).NotTo(ContainElement("--cpu-moe"))
@@ -1905,7 +1905,7 @@ var _ = Describe("Context Size Configuration", func() {
 				},
 			}
 
-			deployment := reconciler.constructDeploymentForCache(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
+			deployment := reconciler.deploymentFor(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
 
 			args := deployment.Spec.Template.Spec.Containers[0].Args
 			Expect(args).NotTo(ContainElement("--cpu-moe"))
@@ -1966,7 +1966,7 @@ var _ = Describe("Context Size Configuration", func() {
 				},
 			}
 
-			deployment := reconciler.constructDeploymentForCache(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
+			deployment := reconciler.deploymentFor(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
 
 			args := deployment.Spec.Template.Spec.Containers[0].Args
 			Expect(args).To(ContainElements("--n-cpu-moe", "8"))
@@ -1989,7 +1989,7 @@ var _ = Describe("Context Size Configuration", func() {
 				},
 			}
 
-			deployment := reconciler.constructDeploymentForCache(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
+			deployment := reconciler.deploymentFor(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
 
 			args := deployment.Spec.Template.Spec.Containers[0].Args
 			Expect(args).NotTo(ContainElement("--n-cpu-moe"))
@@ -2014,7 +2014,7 @@ var _ = Describe("Context Size Configuration", func() {
 				},
 			}
 
-			deployment := reconciler.constructDeploymentForCache(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
+			deployment := reconciler.deploymentFor(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
 
 			args := deployment.Spec.Template.Spec.Containers[0].Args
 			Expect(args).NotTo(ContainElement("--n-cpu-moe"))
@@ -2075,7 +2075,7 @@ var _ = Describe("Context Size Configuration", func() {
 				},
 			}
 
-			deployment := reconciler.constructDeploymentForCache(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
+			deployment := reconciler.deploymentFor(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
 
 			args := deployment.Spec.Template.Spec.Containers[0].Args
 			Expect(args).To(ContainElement("--no-kv-offload"))
@@ -2098,7 +2098,7 @@ var _ = Describe("Context Size Configuration", func() {
 				},
 			}
 
-			deployment := reconciler.constructDeploymentForCache(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
+			deployment := reconciler.deploymentFor(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
 
 			args := deployment.Spec.Template.Spec.Containers[0].Args
 			Expect(args).NotTo(ContainElement("--no-kv-offload"))
@@ -2123,7 +2123,7 @@ var _ = Describe("Context Size Configuration", func() {
 				},
 			}
 
-			deployment := reconciler.constructDeploymentForCache(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
+			deployment := reconciler.deploymentFor(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
 
 			args := deployment.Spec.Template.Spec.Containers[0].Args
 			Expect(args).NotTo(ContainElement("--no-kv-offload"))
@@ -2181,7 +2181,7 @@ var _ = Describe("Context Size Configuration", func() {
 				},
 			}
 
-			deployment := reconciler.constructDeploymentForCache(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
+			deployment := reconciler.deploymentFor(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
 			args := deployment.Spec.Template.Spec.Containers[0].Args
 			Expect(args).To(ContainElements("--override-tensor", "exps=CPU"))
 			Expect(args).To(ContainElements("--override-tensor", "token_embd=CUDA0"))
@@ -2205,7 +2205,7 @@ var _ = Describe("Context Size Configuration", func() {
 				},
 			}
 
-			deployment := reconciler.constructDeploymentForCache(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
+			deployment := reconciler.deploymentFor(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
 			args := deployment.Spec.Template.Spec.Containers[0].Args
 			Expect(args).NotTo(ContainElement("--override-tensor"))
 		})
@@ -2227,7 +2227,7 @@ var _ = Describe("Context Size Configuration", func() {
 				},
 			}
 
-			deployment := reconciler.constructDeploymentForCache(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
+			deployment := reconciler.deploymentFor(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
 			args := deployment.Spec.Template.Spec.Containers[0].Args
 			Expect(args).NotTo(ContainElement("--override-tensor"))
 		})
@@ -2287,7 +2287,7 @@ var _ = Describe("Context Size Configuration", func() {
 				},
 			}
 
-			deployment := reconciler.constructDeploymentForCache(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
+			deployment := reconciler.deploymentFor(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
 			args := deployment.Spec.Template.Spec.Containers[0].Args
 			Expect(args).To(ContainElements("--batch-size", "2048"))
 		})
@@ -2309,7 +2309,7 @@ var _ = Describe("Context Size Configuration", func() {
 				},
 			}
 
-			deployment := reconciler.constructDeploymentForCache(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
+			deployment := reconciler.deploymentFor(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
 			args := deployment.Spec.Template.Spec.Containers[0].Args
 			Expect(args).NotTo(ContainElement("--batch-size"))
 		})
@@ -2333,7 +2333,7 @@ var _ = Describe("Context Size Configuration", func() {
 				},
 			}
 
-			deployment := reconciler.constructDeploymentForCache(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
+			deployment := reconciler.deploymentFor(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
 			args := deployment.Spec.Template.Spec.Containers[0].Args
 			Expect(args).NotTo(ContainElement("--batch-size"))
 		})
@@ -2393,7 +2393,7 @@ var _ = Describe("Context Size Configuration", func() {
 				},
 			}
 
-			deployment := reconciler.constructDeploymentForCache(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
+			deployment := reconciler.deploymentFor(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
 			args := deployment.Spec.Template.Spec.Containers[0].Args
 			Expect(args).To(ContainElements("--ubatch-size", "256"))
 		})
@@ -2415,7 +2415,7 @@ var _ = Describe("Context Size Configuration", func() {
 				},
 			}
 
-			deployment := reconciler.constructDeploymentForCache(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
+			deployment := reconciler.deploymentFor(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
 			args := deployment.Spec.Template.Spec.Containers[0].Args
 			Expect(args).NotTo(ContainElement("--ubatch-size"))
 		})
@@ -2439,7 +2439,7 @@ var _ = Describe("Context Size Configuration", func() {
 				},
 			}
 
-			deployment := reconciler.constructDeploymentForCache(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
+			deployment := reconciler.deploymentFor(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
 			args := deployment.Spec.Template.Spec.Containers[0].Args
 			Expect(args).NotTo(ContainElement("--ubatch-size"))
 		})
@@ -2563,7 +2563,7 @@ var _ = Describe("Context Size Configuration", func() {
 				},
 			}
 
-			deployment := reconciler.constructDeploymentForCache(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
+			deployment := reconciler.deploymentFor(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
 
 			container := deployment.Spec.Template.Spec.Containers[0]
 			Expect(container.Resources.Requests[corev1.ResourceMemory]).To(Equal(resource.MustParse("64Gi")))
@@ -2588,7 +2588,7 @@ var _ = Describe("Context Size Configuration", func() {
 				},
 			}
 
-			deployment := reconciler.constructDeploymentForCache(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
+			deployment := reconciler.deploymentFor(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
 
 			container := deployment.Spec.Template.Spec.Containers[0]
 			Expect(container.Resources.Requests[corev1.ResourceMemory]).To(Equal(resource.MustParse("64Gi")))
@@ -2612,7 +2612,7 @@ var _ = Describe("Context Size Configuration", func() {
 				},
 			}
 
-			deployment := reconciler.constructDeploymentForCache(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
+			deployment := reconciler.deploymentFor(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
 
 			container := deployment.Spec.Template.Spec.Containers[0]
 			Expect(container.Resources.Requests[corev1.ResourceMemory]).To(Equal(resource.MustParse("4Gi")))
@@ -2669,7 +2669,7 @@ var _ = Describe("Context Size Configuration", func() {
 					},
 				},
 			}
-			deployment := reconciler.constructDeploymentForCache(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
+			deployment := reconciler.deploymentFor(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
 			args := deployment.Spec.Template.Spec.Containers[0].Args
 			Expect(args).To(ContainElement("--no-warmup"))
 		})
@@ -2687,7 +2687,7 @@ var _ = Describe("Context Size Configuration", func() {
 					},
 				},
 			}
-			deployment := reconciler.constructDeploymentForCache(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
+			deployment := reconciler.deploymentFor(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
 			args := deployment.Spec.Template.Spec.Containers[0].Args
 			Expect(args).NotTo(ContainElement("--no-warmup"))
 		})
@@ -2707,7 +2707,7 @@ var _ = Describe("Context Size Configuration", func() {
 					},
 				},
 			}
-			deployment := reconciler.constructDeploymentForCache(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
+			deployment := reconciler.deploymentFor(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
 			args := deployment.Spec.Template.Spec.Containers[0].Args
 			Expect(args).NotTo(ContainElement("--no-warmup"))
 		})
@@ -2767,7 +2767,7 @@ var _ = Describe("Context Size Configuration", func() {
 
 		It("should include --reasoning-budget when budget is set (no message)", func() {
 			budget := int32(1024)
-			deployment := reconciler.constructDeploymentForCache(buildISVC(&budget, ""), model, resolveEffectiveModelCache(buildISVC(&budget, ""), model), nil, 1, "", "")
+			deployment := reconciler.deploymentFor(buildISVC(&budget, ""), model, resolveEffectiveModelCache(buildISVC(&budget, ""), model), nil, 1, "", "")
 			args := deployment.Spec.Template.Spec.Containers[0].Args
 			Expect(args).To(ContainElements("--reasoning-budget", "1024"))
 			Expect(args).NotTo(ContainElement("--reasoning-budget-message"))
@@ -2775,7 +2775,7 @@ var _ = Describe("Context Size Configuration", func() {
 
 		It("should include both flags when budget and message are set", func() {
 			budget := int32(2048)
-			deployment := reconciler.constructDeploymentForCache(buildISVC(&budget, "wrap it up"), model, resolveEffectiveModelCache(buildISVC(&budget, "wrap it up"), model), nil, 1, "", "")
+			deployment := reconciler.deploymentFor(buildISVC(&budget, "wrap it up"), model, resolveEffectiveModelCache(buildISVC(&budget, "wrap it up"), model), nil, 1, "", "")
 			args := deployment.Spec.Template.Spec.Containers[0].Args
 			Expect(args).To(ContainElements("--reasoning-budget", "2048"))
 			Expect(args).To(ContainElements("--reasoning-budget-message", "wrap it up"))
@@ -2783,20 +2783,20 @@ var _ = Describe("Context Size Configuration", func() {
 
 		It("should emit --reasoning-budget 0 to disable visible thinking", func() {
 			budget := int32(0)
-			deployment := reconciler.constructDeploymentForCache(buildISVC(&budget, ""), model, resolveEffectiveModelCache(buildISVC(&budget, ""), model), nil, 1, "", "")
+			deployment := reconciler.deploymentFor(buildISVC(&budget, ""), model, resolveEffectiveModelCache(buildISVC(&budget, ""), model), nil, 1, "", "")
 			args := deployment.Spec.Template.Spec.Containers[0].Args
 			Expect(args).To(ContainElements("--reasoning-budget", "0"))
 		})
 
 		It("should NOT emit reasoning-budget-message without budget", func() {
-			deployment := reconciler.constructDeploymentForCache(buildISVC(nil, "ignored"), model, resolveEffectiveModelCache(buildISVC(nil, "ignored"), model), nil, 1, "", "")
+			deployment := reconciler.deploymentFor(buildISVC(nil, "ignored"), model, resolveEffectiveModelCache(buildISVC(nil, "ignored"), model), nil, 1, "", "")
 			args := deployment.Spec.Template.Spec.Containers[0].Args
 			Expect(args).NotTo(ContainElement("--reasoning-budget"))
 			Expect(args).NotTo(ContainElement("--reasoning-budget-message"))
 		})
 
 		It("should NOT emit either flag when both are unset", func() {
-			deployment := reconciler.constructDeploymentForCache(buildISVC(nil, ""), model, resolveEffectiveModelCache(buildISVC(nil, ""), model), nil, 1, "", "")
+			deployment := reconciler.deploymentFor(buildISVC(nil, ""), model, resolveEffectiveModelCache(buildISVC(nil, ""), model), nil, 1, "", "")
 			args := deployment.Spec.Template.Spec.Containers[0].Args
 			Expect(args).NotTo(ContainElement("--reasoning-budget"))
 			Expect(args).NotTo(ContainElement("--reasoning-budget-message"))
@@ -2859,7 +2859,7 @@ var _ = Describe("Context Size Configuration", func() {
 				"qwen35moe.context_length=int:1048576",
 				"tokenizer.chat_template.thinking=bool:false",
 			}
-			deployment := reconciler.constructDeploymentForCache(buildISVC(overrides), model, resolveEffectiveModelCache(buildISVC(overrides), model), nil, 1, "", "")
+			deployment := reconciler.deploymentFor(buildISVC(overrides), model, resolveEffectiveModelCache(buildISVC(overrides), model), nil, 1, "", "")
 			args := deployment.Spec.Template.Spec.Containers[0].Args
 			Expect(args).To(ContainElements("--override-kv", "qwen35moe.context_length=int:1048576"))
 			Expect(args).To(ContainElements("--override-kv", "tokenizer.chat_template.thinking=bool:false"))
@@ -2874,19 +2874,19 @@ var _ = Describe("Context Size Configuration", func() {
 		})
 
 		It("should emit single --override-kv for one entry", func() {
-			deployment := reconciler.constructDeploymentForCache(buildISVC([]string{"foo=int:42"}), model, resolveEffectiveModelCache(buildISVC([]string{"foo=int:42"}), model), nil, 1, "", "")
+			deployment := reconciler.deploymentFor(buildISVC([]string{"foo=int:42"}), model, resolveEffectiveModelCache(buildISVC([]string{"foo=int:42"}), model), nil, 1, "", "")
 			args := deployment.Spec.Template.Spec.Containers[0].Args
 			Expect(args).To(ContainElements("--override-kv", "foo=int:42"))
 		})
 
 		It("should NOT emit --override-kv when slice is empty", func() {
-			deployment := reconciler.constructDeploymentForCache(buildISVC([]string{}), model, resolveEffectiveModelCache(buildISVC([]string{}), model), nil, 1, "", "")
+			deployment := reconciler.deploymentFor(buildISVC([]string{}), model, resolveEffectiveModelCache(buildISVC([]string{}), model), nil, 1, "", "")
 			args := deployment.Spec.Template.Spec.Containers[0].Args
 			Expect(args).NotTo(ContainElement("--override-kv"))
 		})
 
 		It("should NOT emit --override-kv when slice is nil", func() {
-			deployment := reconciler.constructDeploymentForCache(buildISVC(nil), model, resolveEffectiveModelCache(buildISVC(nil), model), nil, 1, "", "")
+			deployment := reconciler.deploymentFor(buildISVC(nil), model, resolveEffectiveModelCache(buildISVC(nil), model), nil, 1, "", "")
 			args := deployment.Spec.Template.Spec.Containers[0].Args
 			Expect(args).NotTo(ContainElement("--override-kv"))
 		})
@@ -2945,7 +2945,7 @@ var _ = Describe("Context Size Configuration", func() {
 				},
 			}
 
-			deployment := reconciler.constructDeploymentForCache(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
+			deployment := reconciler.deploymentFor(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
 
 			args := deployment.Spec.Template.Spec.Containers[0].Args
 			Expect(args).To(ContainElements("--seed", "42"))
@@ -2969,7 +2969,7 @@ var _ = Describe("Context Size Configuration", func() {
 				},
 			}
 
-			deployment := reconciler.constructDeploymentForCache(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
+			deployment := reconciler.deploymentFor(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
 
 			args := deployment.Spec.Template.Spec.Containers[0].Args
 			Expect(args).NotTo(ContainElement("--seed"))
@@ -3030,7 +3030,7 @@ var _ = Describe("Context Size Configuration", func() {
 				},
 			}
 
-			deployment := reconciler.constructDeploymentForCache(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
+			deployment := reconciler.deploymentFor(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
 
 			rcnGot := deployment.Spec.Template.Spec.RuntimeClassName
 			Expect(rcnGot).NotTo(BeNil())
@@ -3052,7 +3052,7 @@ var _ = Describe("Context Size Configuration", func() {
 				},
 			}
 
-			deployment := reconciler.constructDeploymentForCache(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
+			deployment := reconciler.deploymentFor(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
 
 			Expect(deployment.Spec.Template.Spec.RuntimeClassName).To(BeNil())
 		})
@@ -3114,7 +3114,7 @@ var _ = Describe("Context Size Configuration", func() {
 				},
 			}
 
-			deployment := reconciler.constructDeploymentForCache(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
+			deployment := reconciler.deploymentFor(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
 
 			ann := deployment.Spec.Template.Annotations
 			Expect(ann).To(HaveKeyWithValue("infercost.ai/backend", "vllm"))
@@ -3140,7 +3140,7 @@ var _ = Describe("Context Size Configuration", func() {
 				},
 			}
 
-			deployment := reconciler.constructDeploymentForCache(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
+			deployment := reconciler.deploymentFor(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
 
 			podLabels := deployment.Spec.Template.Labels
 			Expect(podLabels).To(HaveKeyWithValue("team", "platform"))
@@ -3170,7 +3170,7 @@ var _ = Describe("Context Size Configuration", func() {
 				},
 			}
 
-			deployment := reconciler.constructDeploymentForCache(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
+			deployment := reconciler.deploymentFor(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
 
 			podLabels := deployment.Spec.Template.Labels
 			Expect(podLabels).To(HaveKeyWithValue("app", "collision-service"))
@@ -3193,7 +3193,7 @@ var _ = Describe("Context Size Configuration", func() {
 				},
 			}
 
-			deployment := reconciler.constructDeploymentForCache(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
+			deployment := reconciler.deploymentFor(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
 
 			selector := deployment.Spec.Selector.MatchLabels
 			// User labels MUST NOT bleed into the selector (selector is immutable
@@ -3218,7 +3218,7 @@ var _ = Describe("Context Size Configuration", func() {
 				},
 			}
 
-			deployment := reconciler.constructDeploymentForCache(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
+			deployment := reconciler.deploymentFor(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
 
 			// Startup disruption protection is on by default (#660): a not-yet-Ready
 			// service gets only the karpenter.sh/do-not-disrupt annotation, with no
@@ -3257,7 +3257,7 @@ var _ = Describe("constructDeploymentForCache additional cases", func() {
 			ObjectMeta: metav1.ObjectMeta{Name: "s", Namespace: "default"},
 			Spec:       inferencev1alpha1.InferenceServiceSpec{ModelRef: "m"},
 		}
-		deployment := reconciler.constructDeploymentForCache(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
+		deployment := reconciler.deploymentFor(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
 		Expect(deployment.Spec.Template.Spec.Containers[0].Image).To(Equal(llamaCppCPUImage))
 	})
 
@@ -3274,7 +3274,7 @@ var _ = Describe("constructDeploymentForCache additional cases", func() {
 				Endpoint: &inferencev1alpha1.EndpointSpec{Port: 3000},
 			},
 		}
-		deployment := reconciler.constructDeploymentForCache(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
+		deployment := reconciler.deploymentFor(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
 		container := deployment.Spec.Template.Spec.Containers[0]
 		Expect(container.Args).To(ContainElement("3000"))
 		Expect(container.Ports[0].ContainerPort).To(Equal(int32(3000)))
@@ -3293,7 +3293,7 @@ var _ = Describe("constructDeploymentForCache additional cases", func() {
 				Resources: &inferencev1alpha1.InferenceResourceRequirements{CPU: "2", Memory: "4Gi"},
 			},
 		}
-		deployment := reconciler.constructDeploymentForCache(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
+		deployment := reconciler.deploymentFor(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
 		requests := deployment.Spec.Template.Spec.Containers[0].Resources.Requests
 		Expect(requests[corev1.ResourceCPU]).To(Equal(resource.MustParse("2")))
 		Expect(requests[corev1.ResourceMemory]).To(Equal(resource.MustParse("4Gi")))
@@ -3312,7 +3312,7 @@ var _ = Describe("constructDeploymentForCache additional cases", func() {
 			ObjectMeta: metav1.ObjectMeta{Name: "s", Namespace: "default"},
 			Spec:       inferencev1alpha1.InferenceServiceSpec{ModelRef: "m"},
 		}
-		deployment := reconciler.constructDeploymentForCache(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
+		deployment := reconciler.deploymentFor(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
 		Expect(deployment.Spec.Template.Spec.Tolerations).To(BeEmpty())
 		Expect(deployment.Spec.Template.Spec.NodeSelector).To(BeEmpty())
 		Expect(deployment.Spec.Strategy.Type).To(Equal(appsv1.DeploymentStrategyType("")))
@@ -3334,7 +3334,7 @@ var _ = Describe("constructDeploymentForCache additional cases", func() {
 			ObjectMeta: metav1.ObjectMeta{Name: "s", Namespace: "default"},
 			Spec:       inferencev1alpha1.InferenceServiceSpec{ModelRef: "m"},
 		}
-		deployment := reconciler.constructDeploymentForCache(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
+		deployment := reconciler.deploymentFor(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
 		args := deployment.Spec.Template.Spec.Containers[0].Args
 		Expect(args).To(ContainElement("--n-gpu-layers"))
 		Expect(args).To(ContainElement("32"))
@@ -3352,7 +3352,7 @@ var _ = Describe("constructDeploymentForCache additional cases", func() {
 			ObjectMeta: metav1.ObjectMeta{Name: "s", Namespace: "default"},
 			Spec:       inferencev1alpha1.InferenceServiceSpec{ModelRef: "m"},
 		}
-		deployment := reconciler.constructDeploymentForCache(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
+		deployment := reconciler.deploymentFor(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
 
 		var hasPVC bool
 		for _, v := range deployment.Spec.Template.Spec.Volumes {
@@ -3387,7 +3387,7 @@ var _ = Describe("constructDeploymentForCache additional cases", func() {
 				},
 			},
 		}
-		deployment := reconciler.constructDeploymentForCache(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
+		deployment := reconciler.deploymentFor(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
 
 		volumes := deployment.Spec.Template.Spec.Volumes
 		Expect(volumes).To(HaveLen(2))
@@ -3443,7 +3443,7 @@ var _ = Describe("Security Context Configuration", func() {
 				},
 			}
 
-			deployment := reconciler.constructDeploymentForCache(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
+			deployment := reconciler.deploymentFor(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
 
 			podSecCtx := deployment.Spec.Template.Spec.SecurityContext
 			Expect(podSecCtx).NotTo(BeNil())
@@ -3461,7 +3461,7 @@ var _ = Describe("Security Context Configuration", func() {
 				},
 			}
 
-			deployment := reconciler.constructDeploymentForCache(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
+			deployment := reconciler.deploymentFor(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
 
 			containerSecCtx := deployment.Spec.Template.Spec.Containers[0].SecurityContext
 			Expect(containerSecCtx).NotTo(BeNil())
@@ -3480,7 +3480,7 @@ var _ = Describe("Security Context Configuration", func() {
 				},
 			}
 
-			deployment := reconciler.constructDeploymentForCache(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
+			deployment := reconciler.deploymentFor(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
 
 			Expect(deployment.Spec.Template.Spec.InitContainers).To(HaveLen(1))
 			initSecCtx := deployment.Spec.Template.Spec.InitContainers[0].SecurityContext
@@ -3504,7 +3504,7 @@ var _ = Describe("Security Context Configuration", func() {
 				},
 			}
 
-			deployment := reconciler.constructDeploymentForCache(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
+			deployment := reconciler.deploymentFor(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
 
 			podSecCtx := deployment.Spec.Template.Spec.SecurityContext
 			Expect(podSecCtx).NotTo(BeNil())
@@ -3538,7 +3538,7 @@ var _ = Describe("Security Context Configuration", func() {
 				},
 			}
 
-			deployment := openshiftReconciler.constructDeploymentForCache(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
+			deployment := openshiftReconciler.deploymentFor(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
 
 			podSecCtx := deployment.Spec.Template.Spec.SecurityContext
 			Expect(podSecCtx).NotTo(BeNil())
@@ -3564,7 +3564,7 @@ var _ = Describe("Security Context Configuration", func() {
 				},
 			}
 
-			deployment := reconciler.constructDeploymentForCache(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
+			deployment := reconciler.deploymentFor(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
 
 			podSecCtx := deployment.Spec.Template.Spec.SecurityContext
 			Expect(podSecCtx).NotTo(BeNil())
@@ -3591,7 +3591,7 @@ var _ = Describe("Security Context Configuration", func() {
 				},
 			}
 
-			deployment := reconciler.constructDeploymentForCache(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
+			deployment := reconciler.deploymentFor(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
 
 			podSecCtx := deployment.Spec.Template.Spec.SecurityContext
 			Expect(podSecCtx).NotTo(BeNil())
@@ -3617,7 +3617,7 @@ var _ = Describe("Security Context Configuration", func() {
 				},
 			}
 
-			deployment := reconciler.constructDeploymentForCache(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
+			deployment := reconciler.deploymentFor(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
 
 			containerSecCtx := deployment.Spec.Template.Spec.Containers[0].SecurityContext
 			Expect(containerSecCtx).NotTo(BeNil())
@@ -3651,7 +3651,7 @@ var _ = Describe("Security Context Configuration", func() {
 				},
 			}
 
-			deployment := reconciler.constructDeploymentForCache(isvc, cachedModel, resolveEffectiveModelCache(isvc, cachedModel), nil, 1, "", "")
+			deployment := reconciler.deploymentFor(isvc, cachedModel, resolveEffectiveModelCache(isvc, cachedModel), nil, 1, "", "")
 
 			Expect(deployment.Spec.Template.Spec.InitContainers).To(HaveLen(2))
 			initSecCtx := deployment.Spec.Template.Spec.InitContainers[1].SecurityContext
@@ -3683,7 +3683,7 @@ var _ = Describe("Security Context Configuration", func() {
 				},
 			}
 
-			deployment := reconciler.constructDeploymentForCache(isvc, cachedModel, resolveEffectiveModelCache(isvc, cachedModel), nil, 1, "", "")
+			deployment := reconciler.deploymentFor(isvc, cachedModel, resolveEffectiveModelCache(isvc, cachedModel), nil, 1, "", "")
 
 			initSecCtx := deployment.Spec.Template.Spec.InitContainers[1].SecurityContext
 			Expect(initSecCtx).NotTo(BeNil())
@@ -3721,7 +3721,7 @@ var _ = Describe("Security Context Configuration", func() {
 				},
 			}
 
-			deployment := reconciler.constructDeploymentForCache(isvc, cachedModel, resolveEffectiveModelCache(isvc, cachedModel), nil, 1, "", "")
+			deployment := reconciler.deploymentFor(isvc, cachedModel, resolveEffectiveModelCache(isvc, cachedModel), nil, 1, "", "")
 
 			initSecCtx := deployment.Spec.Template.Spec.InitContainers[1].SecurityContext
 			Expect(initSecCtx).NotTo(BeNil())
@@ -4186,7 +4186,7 @@ var _ = Describe("PersonaPlex Runtime Deployment Construction", func() {
 			},
 		}
 
-		deployment := reconciler.constructDeploymentForCache(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
+		deployment := reconciler.deploymentFor(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
 		container := deployment.Spec.Template.Spec.Containers[0]
 
 		By("verifying container name")
@@ -4281,7 +4281,7 @@ var _ = Describe("Generic Runtime Deployment Construction", func() {
 			},
 		}
 
-		deployment := reconciler.constructDeploymentForCache(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
+		deployment := reconciler.deploymentFor(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
 
 		By("verifying container name is generic, not llama-server")
 		container := deployment.Spec.Template.Spec.Containers[0]
@@ -4361,7 +4361,7 @@ var _ = Describe("Generic Runtime Deployment Construction", func() {
 			},
 		}
 
-		deployment := reconciler.constructDeploymentForCache(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
+		deployment := reconciler.deploymentFor(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
 		container := deployment.Spec.Template.Spec.Containers[0]
 
 		By("using the custom entrypoint, not vllm serve")
@@ -4401,7 +4401,7 @@ var _ = Describe("Generic Runtime Deployment Construction", func() {
 			},
 		}
 
-		deployment := reconciler.constructDeploymentForCache(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
+		deployment := reconciler.deploymentFor(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
 		container := deployment.Spec.Template.Spec.Containers[0]
 
 		By("using the overridden entrypoint")
@@ -4466,7 +4466,7 @@ var _ = Describe("Generic Runtime Deployment Construction", func() {
 			},
 		}
 
-		deployment := reconciler.constructDeploymentForCache(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
+		deployment := reconciler.deploymentFor(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
 		container := deployment.Spec.Template.Spec.Containers[0]
 
 		By("verifying startup probe is overridden to HTTP")
@@ -4504,7 +4504,7 @@ var _ = Describe("Generic Runtime Deployment Construction", func() {
 			},
 		}
 
-		deployment := reconciler.constructDeploymentForCache(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
+		deployment := reconciler.deploymentFor(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
 		container := deployment.Spec.Template.Spec.Containers[0]
 
 		By("verifying containerPort override works for llamacpp")
@@ -4553,7 +4553,7 @@ var _ = Describe("constructDeploymentForCache Regression Tests", func() {
 				},
 			}
 
-			deployment := reconciler.constructDeploymentForCache(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
+			deployment := reconciler.deploymentFor(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
 
 			By("verifying container basics")
 			Expect(deployment.Spec.Template.Spec.Containers).To(HaveLen(1))
@@ -4666,7 +4666,7 @@ var _ = Describe("constructDeploymentForCache Regression Tests", func() {
 				},
 			}
 
-			deployment := reconciler.constructDeploymentForCache(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
+			deployment := reconciler.deploymentFor(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
 			container := deployment.Spec.Template.Spec.Containers[0]
 
 			By("verifying custom image")
@@ -4841,7 +4841,7 @@ var _ = Describe("constructDeploymentForCache Regression Tests", func() {
 				},
 			}
 
-			deployment := reconciler.constructDeploymentForCache(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
+			deployment := reconciler.deploymentFor(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
 			container := deployment.Spec.Template.Spec.Containers[0]
 
 			By("verifying multi-GPU args")
@@ -4895,7 +4895,7 @@ var _ = Describe("constructDeploymentForCache Regression Tests", func() {
 				},
 			}
 
-			deployment := reconciler.constructDeploymentForCache(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
+			deployment := reconciler.deploymentFor(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
 
 			By("verifying init containers exist for model download")
 			Expect(deployment.Spec.Template.Spec.InitContainers).NotTo(BeEmpty())
@@ -4933,7 +4933,7 @@ var _ = Describe("constructDeploymentForCache Regression Tests", func() {
 				},
 			}
 
-			deployment := reconciler.constructDeploymentForCache(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
+			deployment := reconciler.deploymentFor(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
 
 			By("verifying deployment labels")
 			Expect(deployment.Labels["app"]).To(Equal("label-svc"))
@@ -4970,7 +4970,7 @@ var _ = Describe("constructDeploymentForCache Regression Tests", func() {
 				Spec:       inferencev1alpha1.InferenceServiceSpec{ModelRef: "label-model"},
 			}
 
-			deployment := reconciler.constructDeploymentForCache(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
+			deployment := reconciler.deploymentFor(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
 
 			selector := deployment.Spec.Selector.MatchLabels
 			Expect(selector).NotTo(HaveKey("inference.llmkube.dev/model"),
@@ -5001,11 +5001,11 @@ var _ = Describe("constructDeploymentForCache Regression Tests", func() {
 				Spec:       inferencev1alpha1.InferenceServiceSpec{ModelRef: "model-q4"},
 			}
 
-			deploymentBefore := reconciler.constructDeploymentForCache(isvc, before, resolveEffectiveModelCache(isvc, before), nil, 1, "", "")
+			deploymentBefore := reconciler.deploymentFor(isvc, before, resolveEffectiveModelCache(isvc, before), nil, 1, "", "")
 
 			// User edits spec.modelRef to swap quantizations.
 			isvc.Spec.ModelRef = "model-q5"
-			deploymentAfter := reconciler.constructDeploymentForCache(isvc, after, resolveEffectiveModelCache(isvc, after), nil, 1, "", "")
+			deploymentAfter := reconciler.deploymentFor(isvc, after, resolveEffectiveModelCache(isvc, after), nil, 1, "", "")
 
 			// The selector must be byte-identical so an apiserver Update on
 			// the Deployment does not trip the "field is immutable" check.
@@ -5079,7 +5079,7 @@ var _ = Describe("AMD Vulkan Deployment Construction", func() {
 			},
 		}
 
-		deployment := reconciler.constructDeploymentForCache(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
+		deployment := reconciler.deploymentFor(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
 		container := deployment.Spec.Template.Spec.Containers[0]
 
 		Expect(container.Image).To(Equal(llamaCppVulkanImage))
@@ -5104,7 +5104,7 @@ var _ = Describe("AMD Vulkan Deployment Construction", func() {
 			},
 		}
 
-		deployment := reconciler.constructDeploymentForCache(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
+		deployment := reconciler.deploymentFor(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
 		Expect(deployment.Spec.Template.Spec.SecurityContext).NotTo(BeNil())
 		Expect(deployment.Spec.Template.Spec.SecurityContext.SupplementalGroups).To(ContainElement(int64(44)))
 	})
@@ -5121,7 +5121,7 @@ var _ = Describe("AMD Vulkan Deployment Construction", func() {
 			},
 		}
 
-		deployment := reconciler.constructDeploymentForCache(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
+		deployment := reconciler.deploymentFor(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
 		Expect(deployment.Spec.Template.Spec.Containers[0].Image).To(Equal("ghcr.io/example/custom-vulkan:dev"))
 	})
 
@@ -5137,7 +5137,7 @@ var _ = Describe("AMD Vulkan Deployment Construction", func() {
 			},
 		}
 
-		deployment := reconciler.constructDeploymentForCache(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
+		deployment := reconciler.deploymentFor(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
 		container := deployment.Spec.Template.Spec.Containers[0]
 		gpuLimit := container.Resources.Limits[amdGPUResourceName]
 		Expect(gpuLimit).To(Equal(resource.MustParse("1")))
@@ -5157,7 +5157,7 @@ var _ = Describe("AMD Vulkan Deployment Construction", func() {
 			},
 		}
 
-		deployment := reconciler.constructDeploymentForCache(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
+		deployment := reconciler.deploymentFor(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
 		container := deployment.Spec.Template.Spec.Containers[0]
 		Expect(container.Image).To(Equal(llamaCppROCmImage))
 		gpuLimit := container.Resources.Limits[vulkanDRIResourceName]
@@ -5181,7 +5181,7 @@ var _ = Describe("AMD Vulkan Deployment Construction", func() {
 			},
 		}
 
-		deployment := reconciler.constructDeploymentForCache(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
+		deployment := reconciler.deploymentFor(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
 		Expect(deployment.Spec.Template.Spec.Containers[0].Image).To(Equal("ghcr.io/example/custom-rocm:dev"))
 	})
 })
@@ -5263,7 +5263,7 @@ var _ = Describe("Vulkan DRI render GID in supplementalGroups (#1560)", func() {
 			},
 		}
 
-		deployment := reconciler.constructDeploymentForCache(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
+		deployment := reconciler.deploymentFor(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
 		podSecCtx := deployment.Spec.Template.Spec.SecurityContext
 		Expect(podSecCtx).NotTo(BeNil())
 		// The render GID the operator flagged must be a supplementary group so
@@ -5285,7 +5285,7 @@ var _ = Describe("Vulkan DRI render GID in supplementalGroups (#1560)", func() {
 			},
 		}
 
-		deployment := reconciler.constructDeploymentForCache(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
+		deployment := reconciler.deploymentFor(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
 		podSecCtx := deployment.Spec.Template.Spec.SecurityContext
 		Expect(podSecCtx).NotTo(BeNil())
 		// CUDA does not request the DRI render node, so no render GID is added.
@@ -5315,7 +5315,7 @@ var _ = Describe("Vulkan DRI render GID in supplementalGroups (#1560)", func() {
 			},
 		}
 
-		deployment := disabledReconciler.constructDeploymentForCache(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
+		deployment := disabledReconciler.deploymentFor(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
 		podSecCtx := deployment.Spec.Template.Spec.SecurityContext
 		Expect(podSecCtx).NotTo(BeNil())
 		Expect(podSecCtx.SupplementalGroups).To(BeEmpty())
@@ -5340,7 +5340,7 @@ var _ = Describe("Vulkan DRI render GID in supplementalGroups (#1560)", func() {
 			},
 		}
 
-		deployment := reconciler.constructDeploymentForCache(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
+		deployment := reconciler.deploymentFor(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
 		podSecCtx := deployment.Spec.Template.Spec.SecurityContext
 		Expect(podSecCtx).NotTo(BeNil())
 		// The user's group is respected verbatim; the operator's default is not
@@ -5385,7 +5385,7 @@ var _ = Describe("constructDeploymentForCache model cache PVC wiring (#728, Task
 			DefaultFSGroup:     102,
 			ModelCacheMode:     ModelCacheModePerService,
 		}
-		deployment := reconciler.constructDeploymentForCache(newISVC(), newModel(), resolveEffectiveModelCache(newISVC(), newModel()), nil, 1, "", "")
+		deployment := reconciler.deploymentFor(newISVC(), newModel(), resolveEffectiveModelCache(newISVC(), newModel()), nil, 1, "", "")
 		vol := findCacheVolume(deployment)
 		Expect(vol).NotTo(BeNil())
 		Expect(vol.PersistentVolumeClaim).NotTo(BeNil())
@@ -5399,7 +5399,7 @@ var _ = Describe("constructDeploymentForCache model cache PVC wiring (#728, Task
 			DefaultFSGroup:     102,
 			// ModelCacheMode left empty: must resolve to shared.
 		}
-		deployment := reconciler.constructDeploymentForCache(newISVC(), newModel(), resolveEffectiveModelCache(newISVC(), newModel()), nil, 1, "", "")
+		deployment := reconciler.deploymentFor(newISVC(), newModel(), resolveEffectiveModelCache(newISVC(), newModel()), nil, 1, "", "")
 		vol := findCacheVolume(deployment)
 		Expect(vol).NotTo(BeNil())
 		Expect(vol.PersistentVolumeClaim).NotTo(BeNil())
@@ -5413,7 +5413,7 @@ var _ = Describe("constructDeploymentForCache model cache PVC wiring (#728, Task
 			DefaultFSGroup:     102,
 			ModelCacheMode:     ModelCacheModeShared,
 		}
-		deployment := reconciler.constructDeploymentForCache(newISVC(), newModel(), resolveEffectiveModelCache(newISVC(), newModel()), nil, 1, "", "")
+		deployment := reconciler.deploymentFor(newISVC(), newModel(), resolveEffectiveModelCache(newISVC(), newModel()), nil, 1, "", "")
 		vol := findCacheVolume(deployment)
 		Expect(vol).NotTo(BeNil())
 		Expect(vol.PersistentVolumeClaim).NotTo(BeNil())
@@ -5466,7 +5466,7 @@ var _ = Describe("DRA Passthrough (resource.k8s.io/v1)", func() {
 			},
 		}
 
-		deployment := reconciler.constructDeploymentForCache(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
+		deployment := reconciler.deploymentFor(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
 		container := deployment.Spec.Template.Spec.Containers[0]
 		Expect(container.Resources.Claims).To(HaveLen(1))
 		Expect(container.Resources.Claims[0].Name).To(Equal("gpu"))
@@ -5486,7 +5486,7 @@ var _ = Describe("DRA Passthrough (resource.k8s.io/v1)", func() {
 			},
 		}
 
-		deployment := reconciler.constructDeploymentForCache(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
+		deployment := reconciler.deploymentFor(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
 		Expect(deployment.Spec.Template.Spec.ResourceClaims).To(HaveLen(1))
 		Expect(deployment.Spec.Template.Spec.ResourceClaims[0].Name).To(Equal("gpu"))
 		Expect(*deployment.Spec.Template.Spec.ResourceClaims[0].ResourceClaimName).To(Equal("gpu-claim"))
@@ -5510,7 +5510,7 @@ var _ = Describe("DRA Passthrough (resource.k8s.io/v1)", func() {
 			},
 		}
 
-		deployment := reconciler.constructDeploymentForCache(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
+		deployment := reconciler.deploymentFor(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
 		Expect(deployment.Spec.Template.Spec.NodeSelector).To(HaveKeyWithValue("nvidia.com/gpu", "present"))
 		Expect(deployment.Spec.Template.Spec.Tolerations).To(HaveLen(1))
 		Expect(deployment.Spec.Strategy.Type).To(Equal(appsv1.RecreateDeploymentStrategyType))
@@ -5540,7 +5540,7 @@ var _ = Describe("DRA Passthrough (resource.k8s.io/v1)", func() {
 				},
 			}
 
-			deployment := reconciler.constructDeploymentForCache(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
+			deployment := reconciler.deploymentFor(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
 			Expect(deployment.Spec.Template.Spec.Tolerations).To(Equal(wantTolerations))
 			Expect(deployment.Spec.Template.Spec.NodeSelector).To(HaveKeyWithValue("pool", "gpu"))
 			Expect(deployment.Spec.Strategy.Type).To(Equal(appsv1.RecreateDeploymentStrategyType))
@@ -5569,7 +5569,7 @@ var _ = Describe("DRA Passthrough (resource.k8s.io/v1)", func() {
 			},
 		}
 
-		deployment := reconciler.constructDeploymentForCache(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
+		deployment := reconciler.deploymentFor(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
 		container := deployment.Spec.Template.Spec.Containers[0]
 		Expect(container.Args).To(ContainElement("--n-gpu-layers"))
 		Expect(container.Args).To(ContainElement("--flash-attn"))
@@ -5589,7 +5589,7 @@ var _ = Describe("DRA Passthrough (resource.k8s.io/v1)", func() {
 			},
 		}
 
-		deployment := reconciler.constructDeploymentForCache(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
+		deployment := reconciler.deploymentFor(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
 		container := deployment.Spec.Template.Spec.Containers[0]
 		Expect(container.Resources.Limits).NotTo(HaveKey(corev1.ResourceName("nvidia.com/gpu")))
 	})
@@ -5611,7 +5611,7 @@ var _ = Describe("DRA Passthrough (resource.k8s.io/v1)", func() {
 			},
 		}
 
-		deployment := reconciler.constructDeploymentForCache(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
+		deployment := reconciler.deploymentFor(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
 		container := deployment.Spec.Template.Spec.Containers[0]
 		Expect(container.Resources.Limits).NotTo(HaveKey(corev1.ResourceName("nvidia.com/gpu")))
 		Expect(container.Resources.Claims).To(Equal([]corev1.ResourceClaim{{Name: "gpu"}}))
@@ -5631,7 +5631,7 @@ var _ = Describe("DRA Passthrough (resource.k8s.io/v1)", func() {
 			},
 		}
 
-		deployment := reconciler.constructDeploymentForCache(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
+		deployment := reconciler.deploymentFor(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
 		container := deployment.Spec.Template.Spec.Containers[0]
 		Expect(container.Resources.Limits).To(HaveKeyWithValue(corev1.ResourceName("nvidia.com/gpu"), resource.MustParse("2")))
 		Expect(container.Resources.Claims).To(BeEmpty())
@@ -5648,7 +5648,7 @@ var _ = Describe("DRA Passthrough (resource.k8s.io/v1)", func() {
 			},
 		}
 
-		deployment := reconciler.constructDeploymentForCache(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
+		deployment := reconciler.deploymentFor(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
 		container := deployment.Spec.Template.Spec.Containers[0]
 		Expect(container.Resources.Claims).To(BeNil())
 	})
@@ -5666,7 +5666,7 @@ var _ = Describe("DRA Passthrough (resource.k8s.io/v1)", func() {
 			},
 		}
 
-		deployment := reconciler.constructDeploymentForCache(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
+		deployment := reconciler.deploymentFor(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
 		Expect(deployment.Spec.Template.Spec.ResourceClaims).To(HaveLen(1))
 		Expect(*deployment.Spec.Template.Spec.ResourceClaims[0].ResourceClaimTemplateName).To(Equal("gpu-template"))
 	})
@@ -5718,7 +5718,7 @@ var _ = Describe("constructDeploymentForCache coverage", func() {
 			},
 		}
 
-		deployment := reconciler.constructDeploymentForCache(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
+		deployment := reconciler.deploymentFor(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
 		probe := deployment.Spec.Template.Spec.Containers[0].ReadinessProbe
 		Expect(probe).NotTo(BeNil())
 		Expect(probe.HTTPGet.Path).To(Equal("/ready"))
@@ -5756,7 +5756,7 @@ var _ = Describe("constructDeploymentForCache coverage", func() {
 			},
 		}
 
-		deployment := reconciler.constructDeploymentForCache(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
+		deployment := reconciler.deploymentFor(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
 		tolerations := deployment.Spec.Template.Spec.Tolerations
 		Expect(tolerations).To(HaveLen(2))
 

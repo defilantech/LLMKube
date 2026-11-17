@@ -72,7 +72,7 @@ func buildMemberPods(t *testing.T) (*corev1.Pod, *corev1.Pod, string) {
 	t.Helper()
 	isvc, model := multiNodeFixture()
 	r := &InferenceServiceReconciler{ModelCachePath: "/models", ModelCacheMode: ModelCacheModePerService}
-	pods, hash, err := r.constructMemberPods(isvc, model, resolveEffectiveModelCache(isvc, model), nil, "", "")
+	pods, hash, err := r.memberPodsFor(isvc, model, resolveEffectiveModelCache(isvc, model), nil, "", "")
 	if err != nil {
 		t.Fatalf("constructMemberPods: %v", err)
 	}
@@ -217,7 +217,7 @@ func TestConstructMemberPodsAutoTP(t *testing.T) {
 	isvc, model := multiNodeFixture()
 	isvc.Spec.VLLMConfig = nil
 	r := &InferenceServiceReconciler{ModelCachePath: "/models", ModelCacheMode: ModelCacheModePerService}
-	pods, _, err := r.constructMemberPods(isvc, model, resolveEffectiveModelCache(isvc, model), nil, "", "")
+	pods, _, err := r.memberPodsFor(isvc, model, resolveEffectiveModelCache(isvc, model), nil, "", "")
 	if err != nil {
 		t.Fatalf("constructMemberPods: %v", err)
 	}
@@ -234,13 +234,13 @@ func TestConstructMemberPodsAutoTP(t *testing.T) {
 func TestConstructMemberPodsHashStableAndSpecSensitive(t *testing.T) {
 	isvc, model := multiNodeFixture()
 	r := &InferenceServiceReconciler{ModelCachePath: "/models", ModelCacheMode: ModelCacheModePerService}
-	_, h1, _ := r.constructMemberPods(isvc, model, resolveEffectiveModelCache(isvc, model), nil, "", "")
-	_, h2, _ := r.constructMemberPods(isvc, model, resolveEffectiveModelCache(isvc, model), nil, "", "")
+	_, h1, _ := r.memberPodsFor(isvc, model, resolveEffectiveModelCache(isvc, model), nil, "", "")
+	_, h2, _ := r.memberPodsFor(isvc, model, resolveEffectiveModelCache(isvc, model), nil, "", "")
 	if h1 != h2 {
 		t.Fatalf("hash not stable: %s vs %s", h1, h2)
 	}
 	isvc.Spec.MultiNode.Members[1].Fabric.IBHCA = "rocep1s0f0"
-	_, h3, _ := r.constructMemberPods(isvc, model, resolveEffectiveModelCache(isvc, model), nil, "", "")
+	_, h3, _ := r.memberPodsFor(isvc, model, resolveEffectiveModelCache(isvc, model), nil, "", "")
 	if h3 == h1 {
 		t.Fatalf("hash must change when a member's fabric changes")
 	}
@@ -299,7 +299,7 @@ func TestMultiNodeResourceClaimsConflict(t *testing.T) {
 	// The reconciler path rejects through constructMemberPods before any
 	// member pod is rendered.
 	r := &InferenceServiceReconciler{ModelCachePath: "/models", ModelCacheMode: ModelCacheModePerService}
-	if _, _, err := r.constructMemberPods(isvc, claimsModel(), resolveEffectiveModelCache(isvc, claimsModel()), nil, "", ""); err == nil {
+	if _, _, err := r.memberPodsFor(isvc, claimsModel(), resolveEffectiveModelCache(isvc, claimsModel()), nil, "", ""); err == nil {
 		t.Fatal("constructMemberPods must reject multiNode with resourceClaims")
 	}
 
@@ -545,12 +545,12 @@ func TestConstructMemberPodsHashIgnoresStatus(t *testing.T) {
 	isvc, model := multiNodeFixture()
 	r := &InferenceServiceReconciler{ModelCachePath: "/models", ModelCacheMode: ModelCacheModePerService}
 	isvc.Status.Phase = PhaseCreating
-	podsCreating, h1, err := r.constructMemberPods(isvc, model, resolveEffectiveModelCache(isvc, model), nil, "", "")
+	podsCreating, h1, err := r.memberPodsFor(isvc, model, resolveEffectiveModelCache(isvc, model), nil, "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	isvc.Status.Phase = PhaseReady
-	podsReady, h2, err := r.constructMemberPods(isvc, model, resolveEffectiveModelCache(isvc, model), nil, "", "")
+	podsReady, h2, err := r.memberPodsFor(isvc, model, resolveEffectiveModelCache(isvc, model), nil, "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -930,7 +930,7 @@ func TestConstructMemberPodsMemoryPrep(t *testing.T) {
 		},
 	}
 	r := &InferenceServiceReconciler{ModelCachePath: "/models", ModelCacheMode: ModelCacheModePerService, InitContainerImage: "mirror.example/curl:1"}
-	pods, _, err := r.constructMemberPods(isvc, model, resolveEffectiveModelCache(isvc, model), nil, "", "")
+	pods, _, err := r.memberPodsFor(isvc, model, resolveEffectiveModelCache(isvc, model), nil, "", "")
 	if err != nil {
 		t.Fatalf("constructMemberPods: %v", err)
 	}
@@ -967,7 +967,7 @@ func TestConstructMemberPodsMemoryPrep(t *testing.T) {
 
 	// Sysctls alone must not drop the cache.
 	isvc.Spec.MultiNode.Memory.DropPageCacheBeforeBoot = false
-	pods, _, err = r.constructMemberPods(isvc, model, resolveEffectiveModelCache(isvc, model), nil, "", "")
+	pods, _, err = r.memberPodsFor(isvc, model, resolveEffectiveModelCache(isvc, model), nil, "", "")
 	if err != nil {
 		t.Fatalf("constructMemberPods: %v", err)
 	}
@@ -999,7 +999,7 @@ func TestMultiNodeMemoryPrepScriptOrder(t *testing.T) {
 func TestConstructMemberPodsMemoryUnsetIsInert(t *testing.T) {
 	isvc, model := multiNodeFixture()
 	r := &InferenceServiceReconciler{ModelCachePath: "/models", ModelCacheMode: ModelCacheModePerService}
-	basePods, baseHash, err := r.constructMemberPods(isvc, model, resolveEffectiveModelCache(isvc, model), nil, "", "")
+	basePods, baseHash, err := r.memberPodsFor(isvc, model, resolveEffectiveModelCache(isvc, model), nil, "", "")
 	if err != nil {
 		t.Fatalf("constructMemberPods: %v", err)
 	}
@@ -1008,7 +1008,7 @@ func TestConstructMemberPodsMemoryUnsetIsInert(t *testing.T) {
 	}
 
 	isvc.Spec.MultiNode.Memory = &inferencev1alpha1.MultiNodeMemory{}
-	emptyPods, emptyHash, err := r.constructMemberPods(isvc, model, resolveEffectiveModelCache(isvc, model), nil, "", "")
+	emptyPods, emptyHash, err := r.memberPodsFor(isvc, model, resolveEffectiveModelCache(isvc, model), nil, "", "")
 	if err != nil {
 		t.Fatalf("constructMemberPods: %v", err)
 	}
@@ -1017,7 +1017,7 @@ func TestConstructMemberPodsMemoryUnsetIsInert(t *testing.T) {
 	}
 
 	isvc.Spec.MultiNode.Memory.DropPageCacheBeforeBoot = true
-	_, dropHash, err := r.constructMemberPods(isvc, model, resolveEffectiveModelCache(isvc, model), nil, "", "")
+	_, dropHash, err := r.memberPodsFor(isvc, model, resolveEffectiveModelCache(isvc, model), nil, "", "")
 	if err != nil {
 		t.Fatalf("constructMemberPods: %v", err)
 	}
@@ -1066,7 +1066,7 @@ func TestConstructMemberPodsMemoryPrepRunsAfterDownloader(t *testing.T) {
 	isvc, model := multiNodeFixture()
 	isvc.Spec.MultiNode.Memory = &inferencev1alpha1.MultiNodeMemory{DropPageCacheBeforeBoot: true}
 	r := &InferenceServiceReconciler{ModelCachePath: "/models", ModelCacheMode: ModelCacheModePerService}
-	pods, _, err := r.constructMemberPods(isvc, model, resolveEffectiveModelCache(isvc, model), nil, "", "")
+	pods, _, err := r.memberPodsFor(isvc, model, resolveEffectiveModelCache(isvc, model), nil, "", "")
 	if err != nil {
 		t.Fatalf("constructMemberPods: %v", err)
 	}
