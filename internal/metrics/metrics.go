@@ -195,7 +195,7 @@ var (
 			Name: "llmkube_router_endpoint_load",
 			Help: "Router proxy load estimate for one pod of a LoadAware backend.",
 		},
-		[]string{labelRouter, labelBackend, "endpoint"},
+		[]string{labelRouter, labelBackend, "endpoint", "pod", "node"},
 	)
 
 	// RouterEndpointMetricsFresh is 1 while the router proxy holds a scrape
@@ -205,7 +205,7 @@ var (
 			Name: "llmkube_router_endpoint_metrics_fresh",
 			Help: "Whether the router proxy holds a fresh engine-metrics sample for a pod (1) or not (0).",
 		},
-		[]string{labelRouter, labelBackend, "endpoint"},
+		[]string{labelRouter, labelBackend, "endpoint", "pod", "node"},
 	)
 
 	// RouterDispatchRetriesTotal counts requests the router proxy retried on a
@@ -227,7 +227,7 @@ var (
 			Name: "llmkube_router_endpoint_prefill_tokens",
 			Help: "Estimated uncached prompt tokens this router proxy replica has in flight to one pod, released at the first response byte.",
 		},
-		[]string{labelRouter, labelBackend, "endpoint"},
+		[]string{labelRouter, labelBackend, "endpoint", "pod", "node"},
 	)
 
 	// RouterPrefillTokensEstimatedTotal counts the estimated uncached prompt
@@ -238,7 +238,7 @@ var (
 			Name: "llmkube_router_prefill_tokens_estimated_total",
 			Help: "Estimated uncached prompt tokens this router proxy replica has sent to one pod.",
 		},
-		[]string{labelRouter, labelBackend, "endpoint"},
+		[]string{labelRouter, labelBackend, "endpoint", "pod", "node"},
 	)
 
 	// RouterPlacementsTotal counts the router proxy's placement decisions for

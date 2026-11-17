@@ -21,6 +21,7 @@ import (
 	"strings"
 	"testing"
 
+	corev1 "k8s.io/api/core/v1"
 	discoveryv1 "k8s.io/api/discovery/v1"
 )
 
@@ -66,5 +67,26 @@ func TestValidateEndpointSource(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), "endpointSource") {
 			t.Errorf("incomplete source %+v: err = %v, want an endpointSource error", src, err)
 		}
+	}
+}
+
+func TestReadyEndpointsNamePodAndNode(t *testing.T) {
+	yes := true
+	node := "gpu-1"
+	s := &discoveryv1.EndpointSlice{Endpoints: []discoveryv1.Endpoint{
+		{Addresses: []string{"10.0.0.1"}, Conditions: discoveryv1.EndpointConditions{Ready: &yes},
+			TargetRef: &corev1.ObjectReference{Kind: "Pod", Name: "qwen-abc"}, NodeName: &node},
+		// A target that is not a Pod names no pod; no NodeName names no node.
+		{Addresses: []string{"10.0.0.2"}, TargetRef: &corev1.ObjectReference{Kind: "Node", Name: "gpu-2"}},
+		{Addresses: []string{"10.0.0.3"}},
+	}}
+	got := ReadyEndpoints([]*discoveryv1.EndpointSlice{s}, 8000)
+	want := []ReadyEndpoint{
+		{URL: "http://10.0.0.1:8000", EndpointTarget: EndpointTarget{Pod: "qwen-abc", Node: "gpu-1"}},
+		{URL: "http://10.0.0.2:8000"},
+		{URL: "http://10.0.0.3:8000"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("ReadyEndpoints = %+v, want %+v", got, want)
 	}
 }

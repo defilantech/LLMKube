@@ -369,7 +369,7 @@ func TestPrefillConcurrentDispatchEndsAtZero(t *testing.T) {
 func TestTrackPrefillCountsEstimatedTokens(t *testing.T) {
 	cfg, _ := loadAwareBackend("http://unused")
 	d := NewDispatcher(cfg, WithRouterLabel("r-count"))
-	c := prommetrics.RouterPrefillTokensEstimatedTotal.WithLabelValues("r-count", "qwen", "ep")
+	c := prommetrics.RouterPrefillTokensEstimatedTotal.WithLabelValues("r-count", "qwen", "ep", "", "")
 	before := testutil.ToFloat64(c)
 	d.trackPrefill("qwen", "ep", 1000)()
 	d.trackPrefill("qwen", "ep", 2000)()
@@ -388,10 +388,37 @@ func TestSetEndpointsDropsDepartedPrefillCounterSeries(t *testing.T) {
 	d.trackPrefill("qwen", "http://10.0.0.1:8000", 1000)()
 	d.trackPrefill("qwen", "http://10.0.0.2:8000", 1000)()
 	d.SetEndpoints("qwen", []string{"http://10.0.0.2:8000"})
-	if prommetrics.RouterPrefillTokensEstimatedTotal.DeleteLabelValues("r-leave", "qwen", "http://10.0.0.1:8000") {
+	if prommetrics.RouterPrefillTokensEstimatedTotal.DeleteLabelValues("r-leave", "qwen", "http://10.0.0.1:8000", "", "") {
 		t.Error("estimated-tokens series of the departed endpoint survived")
 	}
-	if !prommetrics.RouterPrefillTokensEstimatedTotal.DeleteLabelValues("r-leave", "qwen", "http://10.0.0.2:8000") {
+	if !prommetrics.RouterPrefillTokensEstimatedTotal.DeleteLabelValues("r-leave", "qwen", "http://10.0.0.2:8000", "", "") {
 		t.Error("estimated-tokens series of the kept endpoint is missing")
+	}
+}
+
+func TestTrackPrefillCountsUnderPodAndNode(t *testing.T) {
+	d := NewDispatcher(&Config{}, WithRouterLabel("r-count-target"))
+	d.SetReadyEndpoints("qwen", []ReadyEndpoint{{URL: "http://10.0.0.1:8000", EndpointTarget: EndpointTarget{Pod: "qwen-a", Node: "gpu-1"}}})
+	d.trackPrefill("qwen", "http://10.0.0.1:8000", 250)()
+	c := prommetrics.RouterPrefillTokensEstimatedTotal.WithLabelValues("r-count-target", "qwen", "http://10.0.0.1:8000", "qwen-a", "gpu-1")
+	if got := testutil.ToFloat64(c); got != 250 {
+		t.Errorf("prefill counter under the endpoint's pod and node = %v, want 250", got)
+	}
+	d.SetEndpoints("qwen", nil)
+	if prommetrics.RouterPrefillTokensEstimatedTotal.DeleteLabelValues("r-count-target", "qwen", "http://10.0.0.1:8000", "qwen-a", "gpu-1") {
+		t.Error("a departed endpoint's labelled prefill counter survived")
+	}
+}
+
+// Without a load scraper (no metrics profile) nothing else drops the series, so
+// a URL taken over by another Pod must drop the old pod's counter itself.
+func TestSetReadyEndpointsDropsReplacedPodCounterWithoutScraper(t *testing.T) {
+	d := NewDispatcher(&Config{}, WithRouterLabel("r-reuse-noscrape"))
+	ep := "http://10.0.0.1:8000"
+	d.SetReadyEndpoints("qwen", []ReadyEndpoint{{URL: ep, EndpointTarget: EndpointTarget{Pod: "qwen-old", Node: "gpu-1"}}})
+	d.trackPrefill("qwen", ep, 50)()
+	d.SetReadyEndpoints("qwen", []ReadyEndpoint{{URL: ep, EndpointTarget: EndpointTarget{Pod: "qwen-new", Node: "gpu-1"}}})
+	if prommetrics.RouterPrefillTokensEstimatedTotal.DeleteLabelValues("r-reuse-noscrape", "qwen", ep, "qwen-old", "gpu-1") {
+		t.Error("prefill counter of the replaced pod survived")
 	}
 }

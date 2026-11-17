@@ -28,6 +28,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+
 	prommetrics "github.com/defilantech/llmkube/internal/metrics"
 )
 
@@ -120,6 +122,8 @@ type Dispatcher struct {
 	// set without the caller passing the Backend.
 	endpoints sync.Map // backendName -> []string
 	loads     sync.Map // healthKey -> *endpointLoad
+	// targets names the Pod and node behind an endpoint, for metric labels.
+	targets sync.Map // healthKey -> EndpointTarget
 
 	// prefillMu guards prefillLedger, the prefill counts not yet released,
 	// so the janitor can release one whose body never produced a byte.
@@ -432,15 +436,46 @@ func (d *Dispatcher) SetEndpoints(name string, endpoints []string) {
 		if !keep[ep] {
 			d.health.Delete(healthKey(name, ep))
 			d.loads.Delete(healthKey(name, ep))
+			d.targets.Delete(healthKey(name, ep))
 			// Backends without a metrics profile have no scraper to drop
-			// this per-pod series, so departure drops it here.
-			prommetrics.RouterPrefillTokensEstimatedTotal.DeleteLabelValues(d.routerName, name, ep)
+			// this per-pod series, so departure drops it here, whatever
+			// pod and node it was labelled with.
+			prommetrics.RouterPrefillTokensEstimatedTotal.DeletePartialMatch(prometheus.Labels{
+				"router": d.routerName, "backend": name, "endpoint": ep,
+			})
 		}
 	}
 	d.endpoints.Store(name, next)
 	if !slices.Equal(prev, next) {
 		d.pollTransition(name)
 	}
+}
+
+// SetReadyEndpoints is SetEndpoints for endpoints that name their Pod and
+// node. A URL now behind a different Pod or node (a reused pod IP) drops the
+// series labelled with the old one, since its counts were the old pod's.
+func (d *Dispatcher) SetReadyEndpoints(name string, eps []ReadyEndpoint) {
+	urls := make([]string, 0, len(eps))
+	for _, ep := range eps {
+		urls = append(urls, ep.URL)
+		key := healthKey(name, ep.URL)
+		if v, ok := d.targets.Load(key); ok {
+			if old := v.(EndpointTarget); old != ep.EndpointTarget {
+				prommetrics.RouterPrefillTokensEstimatedTotal.DeleteLabelValues(d.routerName, name, ep.URL, old.Pod, old.Node)
+			}
+		}
+		d.targets.Store(key, ep.EndpointTarget)
+	}
+	d.SetEndpoints(name, urls)
+}
+
+// targetOf returns the Pod and node behind a backend's endpoint, empty when
+// unknown (a configured endpoint list, or before the first slice sync).
+func (d *Dispatcher) targetOf(backend, endpoint string) EndpointTarget {
+	if v, ok := d.targets.Load(healthKey(backend, endpoint)); ok {
+		return v.(EndpointTarget)
+	}
+	return EndpointTarget{}
 }
 
 // liveEndpoints returns the endpoint set dispatch uses for backend: the set
