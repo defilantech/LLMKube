@@ -868,12 +868,13 @@ status:
 
 `phase` is the coarse summary; the conditions tell the full story.
 
-When the spec itself is invalid, `Validated` is `False`, `phase` is `Failed`, and the operator changes nothing in the router-proxy: a new router gets no proxy, and an existing one keeps serving the last config that compiled. The message lists every problem, and the reason is one of these:
+When `Validated` is `False`, `phase` is `Failed`, and the operator changes nothing in the router-proxy: a new router gets no proxy, and an existing one keeps serving the last config that compiled. The message lists every problem, and the reason is one of these:
 
 | Reason | Meaning |
 | --- | --- |
 | `SpecInvalid` | The spec breaks a rule the schema cannot express, such as a sensitive rule routed to a cloud backend or a `defaultRoute` naming no backend. |
 | `ClassifierNotImplemented` | `policy.classification.mode` is `detector` or `hybrid`, which need the in-proxy classifier that is not built yet ([#441](https://github.com/defilantech/LLMKube/issues/441)), and nothing else in the spec is invalid. Set `header-only`. See [Where the classification comes from](#where-the-classification-comes-from). |
+| `BackendResolutionFailed` | The backends `spec.backendSelector` resolves cannot serve as they stand: a ref-less `backends` entry that names no selected service, or a selector that selects nothing while `spec.backends` is empty. The message names the entry. |
 
 When the data plane cannot serve, `Available` flips to `False` with one of these reasons:
 
