@@ -195,7 +195,7 @@ var (
 			Name: "llmkube_router_endpoint_load",
 			Help: "Router proxy load estimate for one pod of a LoadAware backend.",
 		},
-		[]string{labelRouter, labelBackend, "endpoint", "pod", "node"},
+		[]string{labelRouter, labelBackend, "endpoint", "target_pod", "target_node"},
 	)
 
 	// RouterEndpointMetricsFresh is 1 while the router proxy holds a scrape
@@ -205,7 +205,7 @@ var (
 			Name: "llmkube_router_endpoint_metrics_fresh",
 			Help: "Whether the router proxy holds a fresh engine-metrics sample for a pod (1) or not (0).",
 		},
-		[]string{labelRouter, labelBackend, "endpoint", "pod", "node"},
+		[]string{labelRouter, labelBackend, "endpoint", "target_pod", "target_node"},
 	)
 
 	// RouterDispatchRetriesTotal counts requests the router proxy retried on a
@@ -227,7 +227,7 @@ var (
 			Name: "llmkube_router_endpoint_prefill_tokens",
 			Help: "Estimated uncached prompt tokens this router proxy replica has in flight to one pod, released at the first response byte.",
 		},
-		[]string{labelRouter, labelBackend, "endpoint", "pod", "node"},
+		[]string{labelRouter, labelBackend, "endpoint", "target_pod", "target_node"},
 	)
 
 	// RouterPrefillTokensEstimatedTotal counts the estimated uncached prompt
@@ -238,7 +238,7 @@ var (
 			Name: "llmkube_router_prefill_tokens_estimated_total",
 			Help: "Estimated uncached prompt tokens this router proxy replica has sent to one pod.",
 		},
-		[]string{labelRouter, labelBackend, "endpoint", "pod", "node"},
+		[]string{labelRouter, labelBackend, "endpoint", "target_pod", "target_node"},
 	)
 
 	// RouterPlacementsTotal counts the router proxy's placement decisions for
@@ -303,13 +303,15 @@ var (
 
 	// RouterSessionBindingsCreatedTotal counts session keys bound to a pod
 	// where this replica held no binding. Bindings live in replica memory, so
-	// it is an upper bound on sessions started: a proxy restart, a session
-	// hashed to another replica, or one idle past idleTimeout binds again.
-	// Moving a bound session is a placement (migrated or spill), not a binding.
+	// it is an upper bound on sessions started while the table has room: a
+	// proxy restart, a session hashed to another replica, or one idle past
+	// idleTimeout binds again. A session that starts while the table is full
+	// falls back unbound and is not counted. Moving a bound session is a
+	// placement (migrated or spill), not a binding.
 	RouterSessionBindingsCreatedTotal = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "llmkube_router_session_bindings_created_total",
-			Help: "Session keys this router proxy replica bound to a pod while holding no binding for them; an upper bound on sessions started.",
+			Help: "Session keys this router proxy replica bound to a pod while holding no binding for them; an upper bound on sessions started while the table has room. Sessions that start while it is full are not counted.",
 		},
 		[]string{labelRouter, labelBackend},
 	)
