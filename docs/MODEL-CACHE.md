@@ -201,12 +201,15 @@ container with bad weights.
   exact bytes that were hashed. A later start skips re-hashing gigabytes only
   while all three still agree; a missing, stale or differently-sized file is
   hashed once and re-stamped. On a FUSE cache (`stat -f -c %t` reports
-  `65735546`, which includes BlobFuse and virtiofs) a stamp whose digest and
-  size match is a hit even when the modification time differs, and the stamp
-  is refreshed to the time this mount sees: a rename there can land a new
-  modification time that every other mount reports. A same-size in-place
-  rewrite is caught by the modification time only where it is compared, so
-  not on a FUSE cache. The stamp is written to a temp file and renamed,
+  `65735546`, which includes BlobFuse and virtiofs) nodes can report
+  different modification times for the same file: a BlobFuse rename copies
+  the blob, so other nodes see the copy's time, while the node that wrote it
+  keeps reporting its local copy's. There a stamp whose digest and size match
+  is also a hit when the file's modification time lies between the one the
+  stamp recorded and the stamp file's own, so the file last changed before it
+  was stamped. A file replaced or rewritten after it was stamped misses and is
+  hashed again, and a hit never rewrites the stamp. The stamp is written to a
+  temp file and renamed,
   so a concurrent reader never sees a truncated one. The metal agent's model
   store writes and reads the same triple, so a stamp from either side is
   legible to the other, and a bare-digest stamp from an older agent release is

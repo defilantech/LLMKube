@@ -17,18 +17,20 @@ limitations under the License.
 package controller
 
 import (
-	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
-	"syscall"
 	"testing"
+	"time"
 
 	inferencev1alpha1 "github.com/defilantech/llmkube/api/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
+
+const fuseStampHit = "(stamp hit, skipped re-hashing)"
 
 // fuseStampModel is a single pinned file, pinned to the bytes "pinned bytes".
 func fuseStampModel(digest string) *inferencev1alpha1.Model {
@@ -44,332 +46,189 @@ func fuseStampModel(digest string) *inferencev1alpha1.Model {
 	}
 }
 
-// fuseStampDownloader is the generated downloader for model: the serving
-// pod's, or the prefetch Job's when prefetch is set.
-func fuseStampDownloader(t *testing.T, model *inferencev1alpha1.Model, prefetch bool) corev1.Container {
+// fuseStampDownloader is the generated model-downloader for model: the
+// serving pod's, or the prefetch Job's when prefetch is set.
+func fuseStampDownloader(t *testing.T, model *inferencev1alpha1.Model, prefetch bool) *corev1.Container {
 	t.Helper()
-	var containers []corev1.Container
 	if prefetch {
 		r := &ModelReconciler{InitContainerImage: defaultPrefetchImage}
 		job, err := r.buildPrefetchJob(t.Context(), model, "", "")
 		if err != nil {
 			t.Fatal(err)
 		}
-		containers = job.Spec.Template.Spec.InitContainers
-	} else {
-		storage := buildModelStorageConfig(model, nil, resolveEffectiveModelCache(nil, model), "default", true, ModelCacheModeShared, "", defaultPrefetchImage, 0, ModelCachePrepAlways, DefaultInitContainerUser, nil, "")
-		containers = storage.initContainers
+		return downloaderOf(t, job.Spec.Template.Spec.InitContainers)
 	}
-	for i := range containers {
-		if containers[i].Name == "model-downloader" {
-			return containers[i]
-		}
-	}
-	t.Fatal("missing downloader")
-	return corev1.Container{}
+	storage := buildModelStorageConfig(model, nil, resolveEffectiveModelCache(nil, model), "default", true, ModelCacheModeShared, "", defaultPrefetchImage, 0, ModelCachePrepAlways, DefaultInitContainerUser, nil, "")
+	return downloaderOf(t, storage.initContainers)
 }
 
-// fuseStatPath puts a stat answering -f as fs would first on PATH, beside a
-// broken sha256sum: a case whose stamp must be a hit fails if anything reads
-// the file's bytes. The shim defers to the real stat directly, because the
-// command reads sizes and mtimes in the same call.
-func fuseStatPath(t *testing.T, fs string) string {
+// setMtime sets path's modification time to the unix second given.
+func setMtime(t *testing.T, path string, unix int64) {
 	t.Helper()
-	realStat, err := exec.LookPath("stat")
-	if err != nil {
-		t.Fatal(err)
-	}
-	bin := t.TempDir()
-	// "unknown" answers -f from the host, so the probe directory's own
-	// filesystem is the one classified; every other name is the shim's answer
-	// for any path.
-	shimFS := fs
-	if fs == "unknown" {
-		shimFS = "unavailable"
-	}
-	shim := strings.ReplaceAll(fakeStatScript(shimFS), `"$REAL_STAT"`, fmt.Sprintf("%q", filepath.Join(bin, "real-stat")))
-	if err := os.WriteFile(filepath.Join(bin, "stat"), []byte(shim), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(bin, "real-stat"), []byte("#!/bin/sh\nexec "+realStat+" \"$@\"\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	broken := "#!/bin/sh\necho 'the stamp was not a hit: the file was re-hashed' >&2\nexit 1\n"
-	if err := os.WriteFile(filepath.Join(bin, "sha256sum"), []byte(broken), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	return bin
-}
-
-// runStampDownloader runs a downloader's command with its own env, with dir
-// as the cache directory.
-func runStampDownloader(t *testing.T, c corev1.Container, dir string, prefetch bool) (string, error) {
-	t.Helper()
-	return runDownloaderEnv(t, c, prefetch, "CACHE_DIR="+dir)
-}
-
-// runDownloaderEnv runs a downloader's command with its own env plus extra.
-func runDownloaderEnv(t *testing.T, c corev1.Container, prefetch bool, extra ...string) (string, error) {
-	t.Helper()
-	cmd := exec.Command("sh", "-c", c.Command[2])
-	cmd.Env = os.Environ()
-	for _, env := range c.Env {
-		cmd.Env = append(cmd.Env, env.Name+"="+env.Value)
-	}
-	if prefetch {
-		cmd.Env = append(cmd.Env, "LLMKUBE_PREFETCH_STAGER=true")
-	}
-	cmd.Env = append(cmd.Env, extra...)
-	out, err := cmd.CombinedOutput()
-	return string(out), err
-}
-
-// TestModelInitSHA256FUSEStampTolerance pins where a stamp's mtime still
-// gates: every non-FUSE cache keeps the full triple, and a FUSE cache (where
-// a publish rename lands a Last-Modified the writing mount does not report)
-// accepts a digest+size match and refreshes the stamp (#2393).
-func TestModelInitSHA256FUSEStampTolerance(t *testing.T) {
-	requireInitShellEnvironment(t)
-	realStat, err := exec.LookPath("stat")
-	if err != nil {
-		t.Fatal(err)
-	}
-	digest := strings.ToLower(sha256Hex([]byte("pinned bytes")))
-	model := fuseStampModel(digest)
-
-	cases := []struct {
-		fs       string // fakeStatScript's name for the filesystem
-		prefetch bool
-		state    string
-		wantHit  bool
-	}{
-		{"fuse", false, "matching", true},
-		{"fuse", false, "stale-mtime", true},
-		{"fuse", false, "in-place-rewrite", true},
-		{"fuse", false, "size-changed", false},
-		{"fuse", true, "matching", true},
-		{"fuse", true, "stale-mtime", true},
-		{"fuse", true, "in-place-rewrite", true},
-		{"fuse", true, "size-changed", false},
-		{"ext4", false, "matching", true},
-		{"ext4", false, "stale-mtime", false},
-		{"ext4", false, "in-place-rewrite", false},
-		{"ext4", false, "size-changed", false},
-		{"unknown", false, "stale-mtime", false},
-		{"unavailable", false, "stale-mtime", false},
-	}
-	for _, tc := range cases {
-		role := "serving"
-		if tc.prefetch {
-			role = "prefetch"
-		}
-		t.Run(tc.fs+"/"+role+"/"+tc.state, func(t *testing.T) {
-			dir := t.TempDir()
-			path := filepath.Join(dir, "model.gguf")
-			if err := os.WriteFile(path, []byte("pinned bytes"), 0o644); err != nil {
-				t.Fatal(err)
-			}
-			// The stamp the publishing mount wrote, right after its rename.
-			if err := os.WriteFile(path+".sha256", []byte(stampTriple(t, path, digest)), 0o644); err != nil {
-				t.Fatal(err)
-			}
-			stampInode := fileInode(t, path+".sha256")
-			switch tc.state {
-			case "stale-mtime":
-				shiftMtime(t, path, 300)
-			case "in-place-rewrite":
-				// A new inode, so the mtime moves as it does for a writer
-				// that replaces the file rather than writing through it.
-				// Equal length: the stamp's size field must not tell them apart.
-				if err := os.WriteFile(path+".rewrite", []byte("pinned bytez"), 0o644); err != nil {
-					t.Fatal(err)
-				}
-				if err := os.Rename(path+".rewrite", path); err != nil {
-					t.Fatal(err)
-				}
-				shiftMtime(t, path, 300)
-			case "size-changed":
-				if err := os.WriteFile(path, []byte("pinned bytes, longer"), 0o644); err != nil {
-					t.Fatal(err)
-				}
-				shiftMtime(t, path, 300)
-			}
-			wantStamp := stampTriple(t, path, digest)
-			var out string
-			var err error
-			if tc.wantHit {
-				// A stat that defers to the real one, so the command's own
-				// CACHE_DIR walk answers the magic the case names.
-				bin := t.TempDir()
-				if err := os.WriteFile(filepath.Join(bin, "stat"), []byte(fakeStatScript(tc.fs)), 0o755); err != nil {
-					t.Fatal(err)
-				}
-				out, err = runDownloaderEnv(t, fuseStampDownloader(t, model, tc.prefetch), tc.prefetch,
-					"CACHE_DIR="+dir, "PATH="+bin+":"+os.Getenv("PATH"), "REAL_STAT="+realStat)
-			} else {
-				out, err = runStampDownloader(t, fuseStampDownloader(t, model, tc.prefetch), dir, tc.prefetch)
-			}
-			if got := strings.Contains(out, "(stamp hit, skipped re-hashing)"); got != tc.wantHit {
-				t.Fatalf("stamp hit = %v, want %v: %v\n%s", got, tc.wantHit, err, out)
-			}
-			if !tc.wantHit {
-				return
-			}
-			// A refresh renames a new file over the stamp, so its inode
-			// changes even within the same second.
-			if tc.state == "matching" && fileInode(t, path+".sha256") != stampInode {
-				t.Errorf("stamp mtime moved on a matching triple: inode %d -> %d", stampInode, fileInode(t, path+".sha256"))
-			}
-			if got := readOrFail(t, path+".sha256"); got != wantStamp {
-				t.Errorf("stamp after hit = %q, want %q", got, wantStamp)
-			}
-		})
+	ts := time.Unix(unix, 0)
+	if err := os.Chtimes(path, ts, ts); err != nil {
+		t.Fatalf("chtimes %s: %v", path, err)
 	}
 }
 
-// TestFUSERecheckStamp drives llmkube_accept_stamp alone: which stamps it
-// accepts for a given $cache_fs, and the stamp it leaves behind.
-func TestFUSERecheckStamp(t *testing.T) {
-	requireInitShellEnvironment(t)
-	digest := strings.ToLower(sha256Hex([]byte("pinned bytes")))
-	cases := []struct {
-		name        string
-		fs          string
-		stamp       string // "-" is the matching triple, "" writes no stamp
-		sizeDelta   int    // bytes appended to the file after the stamp is written
-		mtimeDelta  int    // seconds added to the file after the stamp is written
-		readOnly    bool
-		wantAccept  bool
-		wantRefresh bool
-		wantWarning bool
-	}{
-		{name: "matching-triple", fs: "fuse", stamp: "-", wantAccept: true},
-		{name: "fuse-stale-mtime", fs: "fuse", stamp: "-", mtimeDelta: 300, wantAccept: true, wantRefresh: true},
-		{name: "fuse-different-size", fs: "fuse", stamp: "-", sizeDelta: 3, wantAccept: false},
-		{name: "ext4-stale-mtime", fs: "ext4", stamp: "-", mtimeDelta: 300, wantAccept: false},
-		{name: "unknown-stale-mtime", fs: "unknown", stamp: "-", mtimeDelta: 300, wantAccept: false},
-		{name: "empty-stamp-fuse", fs: "fuse", wantAccept: false},
-		{name: "empty-stamp-ext4", fs: "ext4", wantAccept: false},
-		{name: "bare-digest-fuse", fs: "fuse", stamp: digest, wantAccept: false},
-		{name: "bare-digest-ext4", fs: "ext4", stamp: digest, wantAccept: false},
-		{name: "garbage-fuse", fs: "fuse", stamp: "not a stamp", wantAccept: false},
-		{name: "fuse-stale-mtime-readonly-stamp", fs: "fuse", stamp: "-", mtimeDelta: 300, readOnly: true, wantAccept: true, wantWarning: true},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			dir := t.TempDir()
-			path := filepath.Join(dir, "model.gguf")
-			if err := os.WriteFile(path, []byte("pinned bytes"), 0o644); err != nil {
-				t.Fatal(err)
-			}
-			stamp := tc.stamp
-			if stamp == "-" {
-				stamp = stampTriple(t, path, digest)
-			}
-			if tc.stamp != "" {
-				if err := os.WriteFile(path+".sha256", []byte(stamp), 0o644); err != nil {
-					t.Fatal(err)
-				}
-			}
-			if tc.sizeDelta > 0 {
-				if err := os.WriteFile(path, []byte("pinned bytes"+strings.Repeat("x", tc.sizeDelta)), 0o644); err != nil {
-					t.Fatal(err)
-				}
-			}
-			if tc.mtimeDelta > 0 {
-				shiftMtime(t, path, tc.mtimeDelta)
-			}
-			stampMtime, stampInode := int64(0), uint64(0)
-			if tc.stamp != "" {
-				stampMtime, stampInode = fileModUnix(t, path+".sha256"), fileInode(t, path+".sha256")
-			}
-			// A stamp is refreshed to the mtime this mount sees, so after a
-			// refresh it describes the file as it is now.
-			wantStamp := stamp
-			if tc.wantRefresh {
-				wantStamp = stampTriple(t, path, digest)
-			}
-			if tc.readOnly {
-				if err := os.Chmod(dir, 0o555); err != nil { // #nosec G302 -- the test needs a directory the uid cannot write
-					t.Fatal(err)
-				}
-				t.Cleanup(func() { _ = os.Chmod(dir, 0o755) }) // #nosec G302 -- restores the temp dir
-			}
-
-			// The gate set, then one check of model.gguf: the scene a restart
-			// of the downloader sets up, with its caller removed.
-			script := sha256VerifyFns + `llmkube_check_sha256 model.gguf`
-			scriptPath := filepath.Join(t.TempDir(), "check.sh")
-			if err := os.WriteFile(scriptPath, []byte("#!/bin/sh\n"+script+"\n"), 0o755); err != nil {
-				t.Fatal(err)
-			}
-			cmd := exec.Command("sh", scriptPath)
-			cmd.Args = []string{"sh", scriptPath, "model.gguf"}
-			cmd.Dir = dir
-			// cacheStagingPrologue sets cache_fs from CACHE_DIR's magic; this
-			// test drives the check without the prologue, so it passes the
-			// classification directly. "unknown" is an image whose stat has no
-			// -f, which the prologue also records as unknown.
-			fsValue := fuseSuperMagic
-			if tc.fs == "ext4" {
-				fsValue = "ef53"
-			}
-			if tc.fs == "unknown" {
-				fsValue = "unknown"
-			}
-			cmd.Env = append(os.Environ(),
-				"MODEL_SHA256="+digest,
-				"CACHE_DIR="+dir,
-				"cache_fs="+fsValue,
-				"MODEL=model",
-				"PATH="+fuseStatPath(t, tc.fs)+":"+os.Getenv("PATH"),
-			)
-			out, err := cmd.CombinedOutput()
-			if accepted := err == nil; accepted != tc.wantAccept {
-				t.Fatalf("accept = %v, want %v: %v\n%s", accepted, tc.wantAccept, err, out)
-			}
-			if !tc.wantAccept {
-				return
-			}
-			got := readOrFail(t, path+".sha256")
-			writeable := true
-			if tc.readOnly {
-				writeable = false
-			}
-			// A refresh renames a new file over the stamp, so its inode
-			// changes even within the same second.
-			refreshed := fileModUnix(t, path+".sha256") != stampMtime || fileInode(t, path+".sha256") != stampInode || got != stamp
-			if refreshed != (tc.wantRefresh && writeable) {
-				t.Errorf("stamp refreshed = %v, want %v (stamp %q)", refreshed, tc.wantRefresh && writeable, got)
-			}
-			if warned := strings.Contains(string(out), "WARNING: could not refresh the stamp"); warned != tc.wantWarning {
-				t.Errorf("refresh warning = %v, want %v: %s", warned, tc.wantWarning, out)
-			}
-			if !tc.wantRefresh && got != wantStamp {
-				t.Errorf("stamp = %q, want %q", got, wantStamp)
-			}
-		})
-	}
-}
-
-func fileInode(t *testing.T, path string) uint64 {
-	t.Helper()
-	fi, err := os.Stat(path)
-	if err != nil {
-		t.Fatalf("stat %s: %v", path, err)
-	}
-	st, ok := fi.Sys().(*syscall.Stat_t)
-	if !ok {
-		return 0
-	}
-	return st.Ino
-}
-
-func fileModUnix(t *testing.T, path string) int64 {
+// fileMtime is path's modification time in unix seconds.
+func fileMtime(t *testing.T, path string) int64 {
 	t.Helper()
 	fi, err := os.Stat(path)
 	if err != nil {
 		t.Fatalf("stat %s: %v", path, err)
 	}
 	return fi.ModTime().Unix()
+}
+
+// stageStamp lays out a cached file and its stamp as one mount reports them:
+// the file's bytes and mtime, the stamp's recorded "<digest> <size> <mtime>",
+// and the stamp file's own mtime. It returns the stamp.
+func stageStamp(t *testing.T, path string, body []byte, digest string, size, dataMtime, recorded, stampMtime int64) string {
+	t.Helper()
+	stamp := digest + " " + strconv.FormatInt(size, 10) + " " + strconv.FormatInt(recorded, 10)
+	if err := os.WriteFile(path, body, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path+".sha256", []byte(stamp), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	setMtime(t, path, dataMtime)
+	setMtime(t, path+".sha256", stampMtime)
+	return stamp
+}
+
+// statShimEnv puts a stat that answers -f as fs would (fakeStatScript) first
+// on PATH, for a script run outside runDownloaderOnFS.
+func statShimEnv(t *testing.T, fs string) []string {
+	t.Helper()
+	realStat, err := exec.LookPath("stat")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bin := t.TempDir()
+	if err := os.WriteFile(filepath.Join(bin, "stat"), []byte(fakeStatScript(fs)), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return []string{"PATH=" + bin + ":" + os.Getenv("PATH"), "REAL_STAT=" + realStat}
+}
+
+// TestFUSEStampOrdering pins when a stamp vouches for a cached file (#2393).
+// Everywhere, the stamp's exact digest, size and mtime are a hit. On a FUSE
+// cache, where the mtime one mount reports for a renamed file is not the one
+// another reports (a blobfuse2 rename copies the blob, and the writing node's
+// file cache keeps reporting its local copy's time), a stamp whose digest and
+// size match is also a hit when the file's mtime lies between the mtime the
+// stamp recorded and the time the stamp itself was written: the file last
+// changed before it was stamped. A hit never rewrites the stamp, so nothing
+// vouches for bytes no one hashed. Anything else re-hashes, and a file whose
+// bytes no longer match the pin fails closed.
+func TestFUSEStampOrdering(t *testing.T) {
+	requireInitShellEnvironment(t)
+	pinned := []byte("pinned bytes")
+	swapped := []byte("pinned bytez") // same size, other bytes
+	digest := strings.ToLower(sha256Hex(pinned))
+	size := int64(len(pinned))
+	base := time.Now().Add(-time.Hour).Unix()
+
+	for _, tc := range []struct {
+		name     string
+		fs       string
+		prefetch bool
+		body     []byte
+		size     int64 // the size the stamp records
+		data     int64 // the file's mtime on this mount
+		recorded int64 // the mtime the stamp records
+		stamped  int64 // the stamp file's own mtime on this mount
+		envFrom  []string
+		wantHit  bool
+	}{
+		{name: "ext4 exact triple", fs: "ext4", body: pinned, size: size, data: base, recorded: base, stamped: base + 1, wantHit: true},
+		{name: "fuse exact triple on the writing node", fs: "fuse", body: pinned, size: size, data: base - 300, recorded: base - 300, stamped: base, wantHit: true},
+		{name: "fuse rename landed a later mtime (#2393)", fs: "fuse", body: pinned, size: size, data: base, recorded: base - 300, stamped: base + 1, wantHit: true},
+		{name: "fuse rename landed a later mtime, prefetch Job", fs: "fuse", prefetch: true, body: pinned, size: size, data: base, recorded: base - 300, stamped: base + 1, wantHit: true},
+		{name: "fuse data and stamp in the same second", fs: "fuse", body: pinned, size: size, data: base, recorded: base - 300, stamped: base, wantHit: true},
+		{name: "busybox fuse", fs: "busybox-fuse", body: pinned, size: size, data: base, recorded: base - 300, stamped: base + 1, wantHit: true},
+		{name: "fuse file replaced after it was stamped", fs: "fuse", body: swapped, size: size, data: base + 60, recorded: base - 300, stamped: base},
+		{name: "fuse file older than the stamp records", fs: "fuse", body: pinned, size: size, data: base - 600, recorded: base - 300, stamped: base},
+		{name: "fuse size differs", fs: "fuse", body: pinned, size: size + 1, data: base, recorded: base - 300, stamped: base + 1},
+		{name: "ext4 moved mtime", fs: "ext4", body: pinned, size: size, data: base, recorded: base - 300, stamped: base + 1},
+		{name: "filesystem unknown", fs: "unavailable", body: pinned, size: size, data: base, recorded: base - 300, stamped: base + 1},
+		{name: "EnvFrom cannot claim FUSE", fs: "ext4", body: pinned, size: size, data: base, recorded: base - 300, stamped: base + 1,
+			envFrom: []string{"cache_fs=65735546", "_llmkube_stamp_fs=65735546"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "model.gguf")
+			stamp := stageStamp(t, path, tc.body, digest, tc.size, tc.data, tc.recorded, tc.stamped)
+			out, err := runDownloaderOnFS(t, fuseStampDownloader(t, fuseStampModel(digest), tc.prefetch), dir, tc.fs, tc.envFrom...)
+			hit := strings.Contains(out, fuseStampHit)
+			if hit != tc.wantHit {
+				t.Fatalf("stamp hit = %v, want %v:\n%s", hit, tc.wantHit, out)
+			}
+			got := readOrFail(t, path+".sha256")
+			switch {
+			case tc.wantHit:
+				if err != nil {
+					t.Fatalf("downloader failed on a stamp hit: %v\n%s", err, out)
+				}
+				if got != stamp || fileMtime(t, path+".sha256") != tc.stamped {
+					t.Errorf("a stamp hit rewrote the stamp: %q, was %q", got, stamp)
+				}
+			case string(tc.body) == string(pinned):
+				if err != nil {
+					t.Fatalf("re-hash of the pinned bytes failed: %v\n%s", err, out)
+				}
+				if want := stampTriple(t, path, digest); got != want {
+					t.Errorf("stamp after the re-hash = %q, want %q", got, want)
+				}
+			default:
+				if err == nil || !strings.Contains(out, "mismatch") {
+					t.Fatalf("bytes that no longer match the pin were served: err=%v\n%s", err, out)
+				}
+				if got != stamp {
+					t.Errorf("a failed check rewrote the stamp: %q, was %q", got, stamp)
+				}
+			}
+		})
+	}
+}
+
+// TestFUSEStampMarkerPath: the single-file downloader's rejection-marker guard
+// checks the cached copy before the cache prologue runs. It must classify the
+// filesystem the same way as the main path, from nothing the pod's environment
+// can set.
+func TestFUSEStampMarkerPath(t *testing.T) {
+	requireInitShellEnvironment(t)
+	pinned := []byte("pinned bytes")
+	digest := strings.ToLower(sha256Hex(pinned))
+	base := time.Now().Add(-time.Hour).Unix()
+	script := buildModelInitCommand(false, false, true, false, true, RefreshPolicyIfNotPresent)
+
+	for _, tc := range []struct {
+		name    string
+		fs      string
+		envFrom []string
+		wantHit bool
+	}{
+		{name: "fuse keeps the pinned copy without re-hashing", fs: "fuse", wantHit: true},
+		{name: "EnvFrom cannot claim FUSE", fs: "ext4", envFrom: []string{"cache_fs=65735546", "_llmkube_stamp_fs=65735546"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "model.gguf")
+			stageStamp(t, path, pinned, digest, int64(len(pinned)), base, base-300, base+1)
+			if err := os.WriteFile(path+"."+digest+".sha256-rejected", []byte(digest), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			env := append(append([]string{"LLMKUBE_PREFETCH_STAGER=false"}, tc.envFrom...), statShimEnv(t, tc.fs)...)
+			out, err := runVerifyScriptEnv(t, script, "http://127.0.0.1:1/model.gguf", path, digest, env...)
+			if err != nil || !strings.Contains(out, "kept the pinned cached copy") {
+				t.Fatalf("the marker guard did not keep the pinned copy: %v\n%s", err, out)
+			}
+			if hit := strings.Contains(out, fuseStampHit); hit != tc.wantHit {
+				t.Fatalf("stamp hit = %v, want %v:\n%s", hit, tc.wantHit, out)
+			}
+		})
+	}
 }
