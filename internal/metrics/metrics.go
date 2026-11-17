@@ -301,6 +301,19 @@ var (
 		[]string{labelRouter, labelBackend},
 	)
 
+	// RouterSessionBindingsCreatedTotal counts session keys bound to a pod
+	// where this replica held no binding. Bindings live in replica memory, so
+	// it is an upper bound on sessions started: a proxy restart, a session
+	// hashed to another replica, or one idle past idleTimeout binds again.
+	// Moving a bound session is a placement (migrated or spill), not a binding.
+	RouterSessionBindingsCreatedTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "llmkube_router_session_bindings_created_total",
+			Help: "Session keys this router proxy replica bound to a pod while holding no binding for them; an upper bound on sessions started.",
+		},
+		[]string{labelRouter, labelBackend},
+	)
+
 	RouterBackendHealth = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
 			Name: "llmkube_router_backend_health",
@@ -697,6 +710,7 @@ var RouterCollectors = []prometheus.Collector{
 	RouterPrefixMatchRatio,
 	RouterPrefixChangedPlacementsTotal,
 	RouterSessionBindings,
+	RouterSessionBindingsCreatedTotal,
 	RouterFirstTokenSeconds,
 	RouterBudgetUtilization,
 	RouterTokenBudgetUtilization,

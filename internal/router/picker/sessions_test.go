@@ -576,3 +576,37 @@ func TestSessionsMigrationReasonUsesBoundEndpoint(t *testing.T) {
 		})
 	}
 }
+
+func TestSessionsOnBindCountsOnlyNewBindings(t *testing.T) {
+	s := NewSessions(0, 2)
+	binds := 0
+	s.OnBind = func() { binds++ }
+	expect := func(step string, want int) {
+		t.Helper()
+		if binds != want {
+			t.Fatalf("%s: OnBind ran %d times, want %d", step, binds, want)
+		}
+	}
+
+	bindToA(t, s, t0)
+	expect("first request", 1)
+	place(t, s, 1, []Candidate{pod("a", 0, 0, 0.1)}, t0, "a", Sticky, ReasonNone)
+	expect("sticky turn", 1)
+	place(t, s, 1, []Candidate{pod("a", 20, 2, 0.1), pod("b", 0, 0, 0.1), pod("z", 50, 0, 0.1)}, t0, "b", Spill, ReasonWaiting)
+	expect("spill", 1)
+	place(t, s, 1, []Candidate{pod("c", 0, 0, 0.1)}, t0, "c", Migrated, ReasonNotReady)
+	expect("migration off a departed pod", 1)
+
+	later := t0.Add(31 * time.Minute)
+	c := pod("c", 0, 0, 0.1)
+	c.Sample.At = later
+	place(t, s, 1, []Candidate{c}, later, "c", LeastLoaded, ReasonNone)
+	expect("first request after the binding expired", 2)
+
+	place(t, s, 2, []Candidate{c}, later, "c", LeastLoaded, ReasonNone)
+	expect("second key", 3)
+	if _, res, _, _ := s.Place(3, []Candidate{c}, later, 0, "c", 0, nil); res != Fallback {
+		t.Fatalf("full table: result %q, want fallback", res)
+	}
+	expect("full table fallback binds nothing", 3)
+}

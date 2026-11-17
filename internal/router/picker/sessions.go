@@ -65,6 +65,10 @@ type Sessions struct {
 	oldest time.Time
 	// scans counts full-table expiry scans, for tests.
 	scans int
+	// OnBind, when set, runs under the table's lock each time a session key
+	// is newly bound: a first request, or the first after its binding
+	// expired. Moving a bound session is not a new binding.
+	OnBind func()
 }
 
 // NewSessions returns an empty table. An idle of zero or less means
@@ -138,6 +142,9 @@ func (s *Sessions) Place(key uint64, cands []Candidate, now time.Time, tieStart 
 			s.oldest = now
 		}
 		s.bindings[key] = binding{endpoint: ep, lastSeen: now, promptBytes: bodyBytes}
+		if s.OnBind != nil {
+			s.OnBind()
+		}
 		return ep, res, ReasonNone, EstimateTokens(bodyBytes)
 	}
 

@@ -90,6 +90,7 @@ The router-proxy binary serves `RouterRegistry` ([`cmd/router-proxy/main.go`](ht
 | `llmkube_router_request_duration_seconds` | histogram | `backend`, `router`, `rule` | Duration of router-proxy requests. |
 | `llmkube_router_requests_total` | counter | `backend`, `classification`, `outcome`, `router`, `rule` | Total number of router-proxy requests. |
 | `llmkube_router_session_bindings` | gauge | `backend`, `router` | Session-to-pod bindings held by the router proxy for a backend. |
+| `llmkube_router_session_bindings_created_total` | counter | `backend`, `router` | Session keys this router proxy replica bound to a pod while holding no binding for them; an upper bound on sessions started. |
 | `llmkube_router_shadow_request_duration_seconds` | histogram | `backend`, `router`, `rule` | Duration of mirrored shadow requests, from send to the end of the discarded response. |
 | `llmkube_router_shadow_requests_total` | counter | `backend`, `outcome`, `router`, `rule` | Requests a shadow rule mirrored to a backend, by outcome (ok, error, dropped). |
 | `llmkube_router_token_budget_utilization` | gauge | `budget`, `router`, `scope` | Fraction of a token budget consumed in its rolling window (0.0 to 1.0+). |
