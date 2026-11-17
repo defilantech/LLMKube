@@ -44,37 +44,37 @@ func TestParseEngineGaugesExactNames(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = f.Close() }()
-	running, waiting, kv, err := parseEngineGauges(f, vllmProfile)
+	running, waiting, kv, _, err := parseEngineGauges(f, vllmProfile)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if running != 7 || waiting != 2 || kv != 0.42 {
 		t.Errorf("parsed running=%v waiting=%v kv=%v, want 7, 2 (not 4: _by_reason is a different metric), 0.42", running, waiting, kv)
 	}
-	if _, _, _, err := parseEngineGauges(strings.NewReader("vllm:kv_cache_usage_perc 0.1\n"), vllmProfile); err == nil {
+	if _, _, _, _, err := parseEngineGauges(strings.NewReader("vllm:kv_cache_usage_perc 0.1\n"), vllmProfile); err == nil {
 		t.Error("a body without running and waiting must be an error")
 	}
 	two := "vllm:num_requests_running{engine=\"0\"} 1\nvllm:num_requests_running{engine=\"1\"} 2\nvllm:num_requests_waiting 0\n"
-	if r, _, _, _ := parseEngineGauges(strings.NewReader(two), vllmProfile); r != 3 {
+	if r, _, _, _, _ := parseEngineGauges(strings.NewReader(two), vllmProfile); r != 3 {
 		t.Errorf("label sets must sum: running = %v, want 3", r)
 	}
 
 	// Non-finite values must never reach the picker: the line is skipped as if absent.
 	nan := "vllm:num_requests_running{engine=\"0\"} NaN\nvllm:num_requests_running{engine=\"1\"} 4\nvllm:num_requests_waiting 1\n"
-	if r, w, _, err := parseEngineGauges(strings.NewReader(nan), vllmProfile); err != nil || r != 4 || w != 1 {
+	if r, w, _, _, err := parseEngineGauges(strings.NewReader(nan), vllmProfile); err != nil || r != 4 || w != 1 {
 		t.Errorf("a NaN running line must be skipped: running=%v waiting=%v err=%v, want 4, 1, nil", r, w, err)
 	}
 	onlyNaN := "vllm:num_requests_running NaN\nvllm:num_requests_waiting 1\n"
-	if _, _, _, err := parseEngineGauges(strings.NewReader(onlyNaN), vllmProfile); err == nil {
+	if _, _, _, _, err := parseEngineGauges(strings.NewReader(onlyNaN), vllmProfile); err == nil {
 		t.Error("a body whose only running line is NaN must be an error (running missing)")
 	}
 	inf := "vllm:num_requests_running +Inf\nvllm:num_requests_running 2\nvllm:num_requests_waiting -Inf\nvllm:num_requests_waiting 1\nvllm:kv_cache_usage_perc +Inf\n"
-	if r, w, kv, err := parseEngineGauges(strings.NewReader(inf), vllmProfile); err != nil || r != 2 || w != 1 || kv != 0 {
+	if r, w, kv, _, err := parseEngineGauges(strings.NewReader(inf), vllmProfile); err != nil || r != 2 || w != 1 || kv != 0 {
 		t.Errorf("infinite lines must be skipped: running=%v waiting=%v kv=%v err=%v, want 2, 1, 0, nil", r, w, kv, err)
 	}
 	// A negative value is clamped to 0 before summing.
 	neg := "vllm:num_requests_running -3\nvllm:num_requests_running 2\nvllm:num_requests_waiting -1\n"
-	if r, w, _, err := parseEngineGauges(strings.NewReader(neg), vllmProfile); err != nil || r != 2 || w != 0 {
+	if r, w, _, _, err := parseEngineGauges(strings.NewReader(neg), vllmProfile); err != nil || r != 2 || w != 0 {
 		t.Errorf("negative values must clamp to 0: running=%v waiting=%v err=%v, want 2, 0, nil", r, w, err)
 	}
 }
@@ -426,8 +426,9 @@ func TestLoadScraperRecordsPressureHistograms(t *testing.T) {
 }
 
 // TestLoadScraperPressureHistogramsSkipUnknowns: no utilization series without
-// a concurrency limit, no KV series for a profile without a KV gauge, and
-// nothing at all for a pod whose scrape failed.
+// a concurrency limit, no KV series for a profile without a KV gauge or an
+// engine that doesn't expose the profile's one, and nothing at all for a pod
+// whose scrape failed.
 func TestLoadScraperWaitingHistogramResolvesOverload(t *testing.T) {
 	const router = "r-pressure-overload"
 	resetPressureSeries(router)
@@ -478,6 +479,22 @@ func TestLoadScraperPressureHistogramsSkipUnknowns(t *testing.T) {
 	}
 	if prommetrics.RouterEndpointKVUsage.DeleteLabelValues(router, "qwen", good.URL, "", "") {
 		t.Error("KV usage recorded for a profile without a KV gauge")
+	}
+
+	// The profile names a KV gauge the engine's exposition lacks.
+	noGauge := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("vllm:num_requests_running 3\nvllm:num_requests_waiting 0\n"))
+	}))
+	defer noGauge.Close()
+	cfg = scrapedConfig()
+	d = NewDispatcher(cfg)
+	d.SetEndpoints("qwen", []string{noGauge.URL})
+	NewLoadScraper(cfg, d, router, slog.New(slog.NewTextHandler(io.Discard, nil))).scrapeOnce(context.Background())
+	if !prommetrics.RouterEndpointRunningRequests.DeleteLabelValues(router, "qwen", noGauge.URL, "", "") {
+		t.Fatal("running histogram missing for the pod without a KV gauge")
+	}
+	if prommetrics.RouterEndpointKVUsage.DeleteLabelValues(router, "qwen", noGauge.URL, "", "") {
+		t.Error("KV usage recorded for an exposition without the profile's KV gauge")
 	}
 	for name, vec := range pressureHistograms {
 		if vec.DeleteLabelValues(router, "qwen", down.URL, "", "") {
