@@ -234,6 +234,14 @@ func (r *ModelRouterReconciler) resolveBackend(
 			if err != nil {
 				return wire, status, err
 			}
+			// Only endpoint backends get it: the proxy reads it per pod, beside the
+			// engine samples it scrapes, so other routers keep their hash.
+			if isvc != nil {
+				wire.ConcurrencyLimit, err = r.compileConcurrencyLimit(ctx, isvc)
+				if err != nil {
+					return wire, status, fmt.Errorf("backend %q concurrency limit: %w", b.Name, err)
+				}
+			}
 			r.warnSessionAffinityIgnored(mr, b)
 			r.warnPrefixAffinityIgnored(mr, b)
 			status.Address = svcAddr
@@ -686,6 +694,28 @@ func (r *ModelRouterReconciler) compileModelInfo(
 		}
 	}
 	return out, nil
+}
+
+// compileConcurrencyLimit is servedConcurrencyLimit for a backend's
+// InferenceService. A lookup error other than NotFound is returned, as in
+// compileModelInfo.
+func (r *ModelRouterReconciler) compileConcurrencyLimit(
+	ctx context.Context,
+	isvc *inferencev1alpha1.InferenceService,
+) (int32, error) {
+	var model *inferencev1alpha1.Model
+	if isvc.Spec.ModelRef != "" {
+		m := &inferencev1alpha1.Model{}
+		err := r.Get(ctx, types.NamespacedName{Name: isvc.Spec.ModelRef, Namespace: isvc.Namespace}, m)
+		switch {
+		case err == nil:
+			model = m
+		case !errors.IsNotFound(err):
+			return 0, fmt.Errorf("get Model %s: %w", isvc.Spec.ModelRef, err)
+		}
+	}
+	n := servedConcurrencyLimit(isvc, servedByMetalAgent(isvc, model))
+	return int32(n), nil //nolint:gosec // G115: every source is an int32 field or a flag parsed at 32 bits
 }
 
 // runtimeSetByMetalAgent reports whether an unset runtime is left to the

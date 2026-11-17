@@ -2131,6 +2131,86 @@ func TestCompileBalancingRoundRobinDropsAffinity(t *testing.T) {
 	}
 }
 
+// TestCompileRouterConfigConcurrencyLimit pins which backends carry the
+// InferenceService's concurrency limit to the proxy: endpoint backends, from
+// the flag the runtime gets; service backends never, so their hash is kept.
+func TestCompileRouterConfigConcurrencyLimit(t *testing.T) {
+	i32 := func(v int32) *int32 { return &v }
+	tests := []struct {
+		name        string
+		resolution  string
+		isvc        inferencev1alpha1.InferenceServiceSpec
+		accelerator string // seeds the referenced Model when set
+		want        int32
+	}{
+		{
+			name:       "vLLM --max-num-seqs in extraArgs",
+			resolution: inferencev1alpha1.RouterBackendResolutionEndpoint,
+			isvc:       inferencev1alpha1.InferenceServiceSpec{Runtime: RuntimeVLLM, ExtraArgs: []string{"--max-num-seqs", "104"}},
+			want:       104,
+		},
+		{
+			name:       "vLLM parallelSlots",
+			resolution: inferencev1alpha1.RouterBackendResolutionEndpoint,
+			isvc:       inferencev1alpha1.InferenceServiceSpec{Runtime: RuntimeVLLM, ParallelSlots: i32(128)},
+			want:       128,
+		},
+		{
+			name:        "metal-agent at one slot leaves the engine its default",
+			resolution:  inferencev1alpha1.RouterBackendResolutionEndpoint,
+			isvc:        inferencev1alpha1.InferenceServiceSpec{ParallelSlots: i32(1)},
+			accelerator: "metal",
+		},
+		{
+			name: "a service backend carries no limit",
+			isvc: inferencev1alpha1.InferenceServiceSpec{Runtime: RuntimeVLLM, ParallelSlots: i32(128)},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mr := canonicalModelRouter()
+			mr.Spec.Backends[0].Resolution = tt.resolution
+			isvc := &inferencev1alpha1.InferenceService{
+				ObjectMeta: metav1.ObjectMeta{Name: "qwen3-coder", Namespace: testBuilderNs},
+				Spec:       tt.isvc,
+			}
+			secret := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{Name: "anthropic-key", Namespace: testBuilderNs},
+				Data:       map[string][]byte{"ANTHROPIC_API_KEY": []byte("test")},
+			}
+			objs := []client.Object{isvc, secret}
+			if tt.accelerator != "" {
+				isvc.Spec.ModelRef = "qwen3-coder-model"
+				objs = append(objs, &inferencev1alpha1.Model{
+					ObjectMeta: metav1.ObjectMeta{Name: "qwen3-coder-model", Namespace: testBuilderNs},
+					Spec:       inferencev1alpha1.ModelSpec{Hardware: &inferencev1alpha1.HardwareSpec{Accelerator: tt.accelerator}},
+				})
+			}
+			r := newRouterReconcilerForTest(t, mr, objs...)
+			compiled, err := r.compileRouterConfig(context.Background(), mr)
+			if err != nil {
+				t.Fatalf("compileRouterConfig: %v", err)
+			}
+			var raw struct {
+				Backends []map[string]any `json:"backends"`
+			}
+			if err := json.Unmarshal(compiled.JSON, &raw); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			got, present := raw.Backends[0]["concurrencyLimit"]
+			if tt.want == 0 {
+				if present {
+					t.Errorf("concurrencyLimit = %v, want the key absent", got)
+				}
+				return
+			}
+			if got != float64(tt.want) {
+				t.Errorf("concurrencyLimit = %v, want %d", got, tt.want)
+			}
+		})
+	}
+}
+
 // TestServedConcurrencyLimit pins the per-runtime flag each limit is read
 // from, extraArgs first because the runtime keeps their value.
 func TestServedConcurrencyLimit(t *testing.T) {
