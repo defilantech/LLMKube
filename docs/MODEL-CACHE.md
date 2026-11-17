@@ -989,7 +989,7 @@ spec:
   need none), a Metal Model, a pre-staged `pvc://` or `oci://` source,
   `spec.skipModelInit`, caching disabled on the operator, `persistence:
   Ephemeral` or a Model whose cache key has not been computed yet.
-- `persistence: Ephemeral` cannot be combined with it: the API server rejects
+- `persistence: Ephemeral` cannot carry `enabled: true`: the API server rejects
   the pair, because an emptyDir leaves no claim to keep a cache on.
 - Two replicas of one service share that one directory. On a node-local
   locking filesystem such as BlobFuse, locks do not exclude across nodes (the
