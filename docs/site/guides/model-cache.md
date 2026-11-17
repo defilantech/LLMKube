@@ -246,8 +246,8 @@ nodes; a Job that cannot be scheduled is reported on the Model as
 `PrefetchUnschedulable` and never finishes on its own. A
 service can also require that its weights were staged before it starts, with
 `spec.modelCache.prefetch: true`; it then creates no pods until the prefetch
-into its claim succeeds, and its pods mount the claim read-only with no
-downloader. See the Prefetch section of `docs/MODEL-CACHE.md` for the full
+into its claim succeeds, and its pods mount the weights at `/models` read-only
+with no downloader. See the Prefetch section of `docs/MODEL-CACHE.md` for the full
 contract, including the `PrefetchTargetMismatch` and `PrefetchSkipped`
 conditions, and `PrefetchWaiting`, which a Model reports while its prefetch
 waits for another Model's prefetch of the same source into the same claim.
@@ -795,7 +795,9 @@ before each pod start. LLMKube sets `fsGroupChangePolicy: OnRootMismatch` next
 to the default `fsGroup` on inference pods and the prefetch Job, so after the
 first pass kubelet skips that walk. A `spec.podSecurityContext` you supply
 replaces the operator default, so add `fsGroupChangePolicy: OnRootMismatch`
-next to your own `fsGroup` there.
+next to your own `fsGroup` there. A pod with `runtimeCache` enabled gets
+`OnRootMismatch` from the operator when your context sets an `fsGroup` and no
+policy, because the runtime cache mounts the claim writable.
 
 ### Cache inspection with `llmkube cache list`
 

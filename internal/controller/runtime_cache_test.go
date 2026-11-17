@@ -433,6 +433,9 @@ func TestConstructDeployment_RuntimeCache(t *testing.T) {
 	t.Run("user mount at vllm's default path wins for that cache only", assertRuntimeCacheUserMountAtDefaultPath)
 	t.Run("user mount at the operator's path wins", assertRuntimeCacheUserMountAtOperatorPath)
 	t.Run("a prefetched cache is writable while /models stays read-only", assertRuntimeCachePrefetchedWritable)
+	t.Run("a user fsGroup gets OnRootMismatch on a runtime-cache pod", assertRuntimeCacheFSGroupPolicy)
+	t.Run("a user fsGroupChangePolicy is kept", assertRuntimeCacheKeepsUserFSGroupChangePolicy)
+	t.Run("without the runtime cache the user context is unchanged", assertRuntimeCacheNoFSGroupPolicyWithoutFeature)
 	t.Run("multinode members each carry the mount, env and prep", assertRuntimeCacheMultiNodeMembers)
 }
 
@@ -605,16 +608,7 @@ func assertRuntimeCacheUserMountAtOperatorPath(t *testing.T) {
 
 func assertRuntimeCachePrefetchedWritable(t *testing.T) {
 	t.Helper()
-	m := runtimeCacheTestModel(func(m *inferencev1alpha1.Model) {
-		m.Status.Prefetch = []inferencev1alpha1.PrefetchStatus{{
-			ClaimName:          "svc-model-cache",
-			CacheKey:           runtimeCacheTestKey,
-			Phase:              inferencev1alpha1.PrefetchPhaseSucceeded,
-			JobName:            "svc-prefetch",
-			ObservedGeneration: m.Generation,
-		}}
-	})
-	pod := renderRuntimeCachePod(runtimeCacheTestService(RuntimeVLLM, runtimeCacheTestEnabled(true), nil), m)
+	pod := renderRuntimeCachePod(runtimeCacheTestService(RuntimeVLLM, runtimeCacheTestEnabled(true), nil), runtimeCachePrefetchedModel())
 	vol := volumeNamed(pod, "model-cache")
 	if vol == nil || vol.PersistentVolumeClaim == nil {
 		t.Fatal("no model-cache claim volume")
@@ -628,6 +622,75 @@ func assertRuntimeCachePrefetchedWritable(t *testing.T) {
 	singleMountAt(t, pod.Containers[0].VolumeMounts, runtimeCacheMountPath)
 	if prepInitContainer(pod) == nil {
 		t.Error("no runtime-cache-prep init container on the prefetch path")
+	}
+}
+
+// runtimeCachePrefetchedModel is the Model a service with modelCache.prefetch:
+// true sees once its Job has staged the per-service claim.
+func runtimeCachePrefetchedModel() *inferencev1alpha1.Model {
+	return runtimeCacheTestModel(func(m *inferencev1alpha1.Model) {
+		m.Status.Prefetch = []inferencev1alpha1.PrefetchStatus{{
+			ClaimName:          "svc-model-cache",
+			CacheKey:           runtimeCacheTestKey,
+			Phase:              inferencev1alpha1.PrefetchPhaseSucceeded,
+			JobName:            "svc-prefetch",
+			ObservedGeneration: m.Generation,
+		}}
+	})
+}
+
+// The runtime cache mounts the claim writable, so kubelet's default
+// fsGroupChangePolicy (Always) would re-own the whole claim, staged weights
+// included, on every pod start. A context the user supplied is never changed
+// in their spec, so the policy goes onto the pod's copy.
+func assertRuntimeCacheFSGroupPolicy(t *testing.T) {
+	t.Helper()
+	fsGroup := int64(5000)
+	isvc := runtimeCacheTestService(RuntimeVLLM, runtimeCacheTestEnabled(true), func(s *inferencev1alpha1.InferenceServiceSpec) {
+		s.PodSecurityContext = &corev1.PodSecurityContext{FSGroup: &fsGroup}
+	})
+	pod := renderRuntimeCachePod(isvc, runtimeCachePrefetchedModel())
+	if pod.SecurityContext == nil || pod.SecurityContext.FSGroup == nil || *pod.SecurityContext.FSGroup != fsGroup {
+		t.Fatalf("pod security context = %+v, want the user's fsGroup %d", pod.SecurityContext, fsGroup)
+	}
+	if pod.SecurityContext.FSGroupChangePolicy == nil || *pod.SecurityContext.FSGroupChangePolicy != corev1.FSGroupChangeOnRootMismatch {
+		t.Errorf("fsGroupChangePolicy = %v, want OnRootMismatch next to the user's fsGroup",
+			pod.SecurityContext.FSGroupChangePolicy)
+	}
+	if isvc.Spec.PodSecurityContext.FSGroupChangePolicy != nil {
+		t.Error("the operator wrote fsGroupChangePolicy into the InferenceService spec")
+	}
+}
+
+func assertRuntimeCacheKeepsUserFSGroupChangePolicy(t *testing.T) {
+	t.Helper()
+	fsGroup := int64(5000)
+	always := corev1.FSGroupChangeAlways
+	isvc := runtimeCacheTestService(RuntimeVLLM, runtimeCacheTestEnabled(true), func(s *inferencev1alpha1.InferenceServiceSpec) {
+		s.PodSecurityContext = &corev1.PodSecurityContext{FSGroup: &fsGroup, FSGroupChangePolicy: &always}
+	})
+	pod := renderRuntimeCachePod(isvc, runtimeCachePrefetchedModel())
+	if pod.SecurityContext == nil || pod.SecurityContext.FSGroupChangePolicy == nil ||
+		*pod.SecurityContext.FSGroupChangePolicy != corev1.FSGroupChangeAlways {
+		t.Errorf("fsGroupChangePolicy = %v, want the user's Always",
+			pod.SecurityContext.FSGroupChangePolicy)
+	}
+}
+
+func assertRuntimeCacheNoFSGroupPolicyWithoutFeature(t *testing.T) {
+	t.Helper()
+	fsGroup := int64(5000)
+	isvc := runtimeCacheTestService(RuntimeVLLM, &inferencev1alpha1.ModelCacheSpec{Prefetch: true}, func(s *inferencev1alpha1.InferenceServiceSpec) {
+		s.PodSecurityContext = &corev1.PodSecurityContext{FSGroup: &fsGroup}
+	})
+	pod := renderRuntimeCachePod(isvc, runtimeCachePrefetchedModel())
+	if pod.SecurityContext == nil || pod.SecurityContext.FSGroupChangePolicy != nil {
+		t.Errorf("fsGroupChangePolicy = %v, want none without the runtime cache",
+			pod.SecurityContext.FSGroupChangePolicy)
+	}
+	vol := volumeNamed(pod, "model-cache")
+	if vol == nil || vol.PersistentVolumeClaim == nil || !vol.PersistentVolumeClaim.ReadOnly {
+		t.Error("want the prefetched claim read-only without the runtime cache")
 	}
 }
 

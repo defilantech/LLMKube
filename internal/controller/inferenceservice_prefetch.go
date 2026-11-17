@@ -146,7 +146,7 @@ func (r *InferenceServiceReconciler) prefetchGate(isvc *inferencev1alpha1.Infere
 		}
 		g.satisfied = true
 		g.reason = ReasonPrefetchComplete
-		g.message = fmt.Sprintf("Model %q is prefetched into cache claim %q (job %q); pods mount it read-only", model.Name, g.claim, entry.JobName)
+		g.message = fmt.Sprintf("Model %q is prefetched into cache claim %q (job %q); pods mount it read-only at /models", model.Name, g.claim, entry.JobName)
 	}
 	return g
 }

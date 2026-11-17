@@ -462,11 +462,13 @@ With the field set:
   replica change other than to zero waits with the template, and a
   `multiNode` group that loses a member is recreated only once the
   prefetch finishes.
-- Once staged, the serving pods only consume the cache: the claim is
-  mounted read-only, there is no `model-cache-prep` or `model-downloader`
-  init container, and a `model-verify` init container checks the files the
-  Job recorded on the entry are present (and hashes a single file against
-  `spec.sha256` when one is pinned). If a file is missing the pod fails with
+- Once staged, the serving pods only consume the cache: the weights are
+  mounted read-only at `/models`, there is no `model-cache-prep` or
+  `model-downloader` init container, and a `model-verify` init container checks
+  the files the Job recorded on the entry are present (and hashes a single file
+  against `spec.sha256` when one is pinned). `spec.modelCache.runtimeCache.enabled`
+  adds a second, writable mount of the same claim at `/runtime-cache`; the
+  `/models` mount stays read-only. If a file is missing the pod fails with
   `PrefetchedFilesMissing` (surfaced on the `ModelTransferHealthy`
   condition) rather than downloading on the serving node. The prefetch sets
   no Hub-offline variable: set `spec.hubOffline: true` when the runtime
@@ -476,7 +478,10 @@ With the field set:
   in the operator's group (`--default-fsgroup`), whatever the requesting
   service's `podSecurityContext` says, and its prep hands the cache root to
   that group. Because the serving pods mount the claim read-only, the kubelet
-  does not apply their own `fsGroup` to it. So a pod that reads a prefetched
+  does not apply their own `fsGroup` to it, except with `runtimeCache` enabled:
+  that mounts the claim writable, so the operator sets
+  `fsGroupChangePolicy: OnRootMismatch` instead (see `fsGroupChangePolicy`
+  below). So a pod that reads a prefetched
   cache also runs in the Job's group: unless that group is already the pod's
   `fsGroup`, its `runAsGroup` or one of its `supplementalGroups`, the operator
   adds it to the pod's `supplementalGroups`. That covers a
@@ -1351,9 +1356,9 @@ securityContext:
 
 With `OnRootMismatch`, kubelet skips the walk when the volume root already has the `fsGroup` GID, group `rwx` and the setgid bit, which is the state the first full pass leaves and, under `modelCache.prep: always`, the `model-cache-prep` step (`chown 0:<fsGroup>`, `chmod g+rwX`) keeps. If anything changes the root's group, the next start does the full walk again. On `fsGroupPolicy: None` backends kubelet changes no ownership at all, so the setting has no effect there.
 
-A user-supplied `spec.podSecurityContext` replaces the operator default entirely, so it does not get this setting. If you supply your own context on a large cache, add `fsGroupChangePolicy: OnRootMismatch` next to your `fsGroup`. When the default fsGroup is disabled (`--default-fsgroup=0`, the OpenShift preset), the operator sets neither field.
+A user-supplied `spec.podSecurityContext` replaces the operator default entirely, so it does not get this setting. If you supply your own context on a large cache, add `fsGroupChangePolicy: OnRootMismatch` next to your `fsGroup`. A pod with `runtimeCache` enabled is the exception: the claim is mounted writable there, so the operator sets `OnRootMismatch` itself when your context has an `fsGroup` and no policy of its own. When the default fsGroup is disabled (`--default-fsgroup=0`, the OpenShift preset), the operator sets neither field.
 
-One consequence of skipping the walk: kubelet no longer re-grants group write on every file at each start, so files keep the modes their writer gave them. That is fine for the operator's own paths, because every downloader runs as the same init-image user and the serving containers mount the cache read-only. If you switch `--init-container-image` to an image with a different UID on a cache that is already populated, a resumed download into a directory the old UID created can fail with `permission denied`; delete that model's cache directory (or fix its ownership once) and let it download again.
+One consequence of skipping the walk: kubelet no longer re-grants group write on every file at each start, so files keep the modes their writer gave them. That is fine for the operator's own paths, because every downloader runs as the same init-image user and the serving containers mount the cache read-only at `/models`. If you switch `--init-container-image` to an image with a different UID on a cache that is already populated, a resumed download into a directory the old UID created can fail with `permission denied`; delete that model's cache directory (or fix its ownership once) and let it download again.
 
 ### Shared-cache group-write multi-tenancy
 
