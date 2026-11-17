@@ -195,9 +195,13 @@ func publishInferenceServiceConfig(isvc *inferencev1alpha1.InferenceService, mod
 	if model == nil {
 		return
 	}
+	// The metal-agent runs the engine natively, so no image applies.
+	var image string
+	if !metal {
+		image = servingImage(isvc, resolveBackend(isvc), model, overrides)
+	}
 	llmkubemetrics.PublishInferenceServiceConfig(isvc.Name, isvc.Namespace,
-		resolveGPUCount(isvc, model), isvc.Generation, runtimeNameLabel(isvc),
-		servingImage(isvc, resolveBackend(isvc), model, overrides))
+		resolveGPUCount(isvc, model), isvc.Generation, runtimeNameLabel(isvc), image)
 }
 
 // nolint:unparam // ctrl.Result is always zero but callers take &result to signal status-update path

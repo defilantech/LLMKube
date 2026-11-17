@@ -117,7 +117,7 @@ var (
 	InferenceServiceConfigInfo = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
 			Name: "llmkube_inferenceservice_config_info",
-			Help: "The spec generation and serving image an InferenceService runs. Value is always 1; a new generation replaces the series.",
+			Help: "The spec generation and serving image an InferenceService runs; the image is empty when the metal-agent runs it. Value is always 1; a new generation replaces the series.",
 		},
 		[]string{"inferenceservice", labelNamespace, "generation", "runtime", "image"},
 	)

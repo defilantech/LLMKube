@@ -356,4 +356,19 @@ func TestPublishInferenceServiceConfig(t *testing.T) {
 	if got := testutil.ToFloat64(llmkubemetrics.InferenceServiceConfigInfo.WithLabelValues(name, ns, "7", "vllm", "vllm/vllm-openai:nightly")); got != 1 {
 		t.Errorf("config_info = %f, want 1", got)
 	}
+
+	// The metal-agent runs the engine natively: no image, so a default-image
+	// bump does not mark the service as changed.
+	agentRun := &inferencev1alpha1.InferenceService{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns, Generation: 8},
+		Spec:       inferencev1alpha1.InferenceServiceSpec{Runtime: inferencev1alpha1.RuntimeOMLX},
+		Status:     inferencev1alpha1.InferenceServiceStatus{Phase: PhaseReady},
+	}
+	metalModel := &inferencev1alpha1.Model{Spec: inferencev1alpha1.ModelSpec{
+		Hardware: &inferencev1alpha1.HardwareSpec{Accelerator: "metal"},
+	}}
+	publishInferenceServiceConfig(agentRun, metalModel, nil)
+	if got := testutil.ToFloat64(llmkubemetrics.InferenceServiceConfigInfo.WithLabelValues(name, ns, "8", inferencev1alpha1.RuntimeOMLX, "")); got != 1 {
+		t.Errorf("config_info for an agent-run service = %f, want 1 with an empty image", got)
+	}
 }
