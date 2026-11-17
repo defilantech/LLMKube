@@ -2285,6 +2285,7 @@ func TestServedConcurrencyLimit(t *testing.T) {
 		{"vLLM data-parallel product past int32 is unknown", inferencev1alpha1.InferenceServiceSpec{Runtime: RuntimeVLLM, ExtraArgs: []string{"--max-num-seqs", "65536", "-dp", "65536"}}, false, 0},
 		{"vLLM spec.command leaves parallelSlots unrendered", inferencev1alpha1.InferenceServiceSpec{Runtime: RuntimeVLLM, Command: []string{"vllm", "serve"}, ParallelSlots: i32(128)}, false, 0},
 		{"vLLM spec.command reads spec.args", inferencev1alpha1.InferenceServiceSpec{Runtime: RuntimeVLLM, Command: []string{"vllm", "serve"}, Args: []string{"m", "--max-num-seqs", "96"}, ParallelSlots: i32(128)}, false, 96},
+		{"SGLang spec.command reads spec.args", inferencev1alpha1.InferenceServiceSpec{Runtime: RuntimeSGLANG, Command: []string{"python3", "-m", "sglang.launch_server"}, Args: []string{"--max-running-requests", "48"}}, false, 48},
 		{"SGLang spec.command leaves sglangConfig unrendered", inferencev1alpha1.InferenceServiceSpec{Runtime: RuntimeSGLANG, Command: []string{"python3", "-m", "sglang.launch_server"}, SGLangConfig: &inferencev1alpha1.SGLangConfig{MaxRunningRequests: i32(64)}}, false, 0},
 		{"llama.cpp spec.command keeps the rendered args, not spec.args", inferencev1alpha1.InferenceServiceSpec{Command: []string{"/app/llama-server"}, Args: []string{"--parallel", "8"}, ParallelSlots: i32(4)}, false, 4},
 	}
