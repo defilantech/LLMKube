@@ -214,9 +214,10 @@ func TestEndpointWatcherLabelsEndpointsWithPodAndNode(t *testing.T) {
 	go w.Start(ctx)
 	waitForSet(t, d, "a", []string{"http://10.0.0.1:8080"})
 
-	d.trackPrefill("a", "http://10.0.0.1:8080", 10)()
 	c := prommetrics.RouterPrefillTokensEstimatedTotal.WithLabelValues("r-watch-target", "a", "http://10.0.0.1:8080", "qwen-abc", "gpu-1")
-	if got := testutil.ToFloat64(c); got != 10 {
-		t.Errorf("prefill counter under the slice's pod and node = %v, want 10", got)
+	before := testutil.ToFloat64(c)
+	d.trackPrefill("a", "http://10.0.0.1:8080", 10)()
+	if got := testutil.ToFloat64(c) - before; got != 10 {
+		t.Errorf("prefill counter under the slice's pod and node rose by %v, want 10", got)
 	}
 }

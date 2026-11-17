@@ -465,6 +465,7 @@ func TestDispatchSessionMigrationReason(t *testing.T) {
 func TestPlaceCountsNewSessionBindings(t *testing.T) {
 	d, b, _ := balancedDispatcher([]string{"x-session-affinity"}, 2, WithRouterLabel("r-bind"))
 	created := prommetrics.RouterSessionBindingsCreatedTotal.WithLabelValues("r-bind", "qwen")
+	before := testutil.ToFloat64(created)
 	for _, agent := range []string{"agent-1", "agent-1", "agent-2", "agent-1"} {
 		h := http.Header{}
 		h.Set("X-Session-Affinity", agent)
@@ -472,7 +473,7 @@ func TestPlaceCountsNewSessionBindings(t *testing.T) {
 	}
 	// A request without a session key binds nothing.
 	d.place(b, http.Header{}, nil)
-	if got := testutil.ToFloat64(created); got != 2 {
-		t.Errorf("session_bindings_created_total = %v, want 2 (two keys, repeats are sticky)", got)
+	if got := testutil.ToFloat64(created) - before; got != 2 {
+		t.Errorf("session_bindings_created_total rose by %v, want 2 (two keys, repeats are sticky)", got)
 	}
 }
