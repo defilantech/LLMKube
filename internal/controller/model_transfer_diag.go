@@ -267,10 +267,7 @@ var modelTransferSignatures = []modelTransferSignature{
 		// the downloader cannot write: "mkdir: can't create directory
 		// '/models/<key>': Permission denied". A write failure inside curl
 		// prints only "curl: (23) ... on write", which is also a full disk, so
-		// that spelling is deliberately not matched on its own. A refused
-		// chown prints EPERM instead ("chown: changing ownership of ...
-		// Operation not permitted"), which is how an NFS export with
-		// root_squash rejects the prep's ownership step.
+		// that spelling is deliberately not matched on its own.
 		//
 		// It comes last so a more specific cause wins when a message carries
 		// both. It only fires for a container that writes the cache
@@ -291,7 +288,7 @@ var modelTransferSignatures = []modelTransferSignature{
 			"operator default fsGroup is disabled (--default-fsgroup=0, the OpenShift preset), the prep chowns the " +
 			"root to --init-container-user (chart value controllerManager.initContainer.user, default 101) unless " +
 			"spec.podSecurityContext.runAsUser is set: set that flag to the uid --init-container-image runs as",
-		matches: []string{"permission denied", "operation not permitted"},
+		matches: []string{"permission denied"},
 	},
 }
 

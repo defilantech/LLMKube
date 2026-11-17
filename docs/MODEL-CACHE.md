@@ -1011,7 +1011,7 @@ spec:
   `RuntimeCacheFSGroupMismatch`: the prefetch writes the claim in the
   operator's group, and mounting it writable for the runtime cache would make
   kubelet re-own every staged file on each pod start. Remove that `fsGroup`,
-  set it to the operator's group, or use `perService` cache mode. A Model
+  or set it to the operator's group. A Model
   whose cache key has not been computed yet is skipped silently, and the next
   reconcile applies the request. Only a service that sets the field itself is
   warned: a `Model.spec.modelCache.runtimeCache` block reaches every service

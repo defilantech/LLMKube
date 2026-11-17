@@ -144,8 +144,8 @@ declined with `RuntimeCacheClaimReadOnly`, and a prefetched service whose own
 `podSecurityContext.fsGroup` differs from the operator's group is declined
 with `RuntimeCacheFSGroupMismatch`: the prefetch writes the claim in the
 operator's group, and mounting it writable for the runtime cache would make
-kubelet re-own every staged file on each pod start. Remove that `fsGroup`, set
-it to the operator's group, or use `perService` cache mode. A Model whose
+kubelet re-own every staged file on each pod start. Remove that `fsGroup`, or
+set it to the operator's group. A Model whose
 cache key has not been computed yet is skipped silently, and the next
 reconcile applies the request. `persistence: Ephemeral` cannot carry
 `enabled: true`: the API server rejects that pair.
