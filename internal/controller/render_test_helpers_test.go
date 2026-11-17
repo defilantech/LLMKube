@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 
@@ -28,6 +29,8 @@ import (
 // pass the plan the reconcile warned about; a test that renders a service
 // directly derives it here, so the rendering is the one a reconcile of the same
 // spec makes.
+//
+//nolint:unparam // draftHFEndpoint is parameterized to mirror the builder's signature even though no test passes one
 func (r *InferenceServiceReconciler) deploymentFor(
 	isvc *inferencev1alpha1.InferenceService,
 	model *inferencev1alpha1.Model,
@@ -42,6 +45,8 @@ func (r *InferenceServiceReconciler) deploymentFor(
 }
 
 // memberPodsFor is deploymentFor for the multiNode path.
+//
+//nolint:unparam // the draft and endpoint parameters mirror the builder's signature even though no test passes one
 func (r *InferenceServiceReconciler) memberPodsFor(
 	isvc *inferencev1alpha1.InferenceService,
 	model *inferencev1alpha1.Model,
