@@ -530,3 +530,141 @@ func TestLoadScraperRecordsRealVLLMNightlyBytes(t *testing.T) {
 		}
 	}
 }
+
+func scrapeFailures(t *testing.T, router, ep, pod, node string) float64 {
+	t.Helper()
+	return testutil.ToFloat64(prommetrics.RouterEndpointLoadScrapeFailuresTotal.WithLabelValues(router, "qwen", ep, pod, node))
+}
+
+// TestLoadScraperCountsFailedScrapes: each failure mode that leaves a live pod
+// without a sample counts once per scrape, under the pod's labels; a good
+// scrape counts nothing.
+func TestLoadScraperCountsFailedScrapes(t *testing.T) {
+	const router = "r-scrape-fail"
+	prommetrics.RouterEndpointLoadScrapeFailuresTotal.DeletePartialMatch(prometheus.Labels{"router": router})
+	body, _ := os.ReadFile("testdata/vllm-metrics.txt")
+	good := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write(body) }))
+	defer good.Close()
+	status := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "engine down", http.StatusServiceUnavailable)
+	}))
+	defer status.Close()
+	parse := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("# no engine gauges here\nother_metric 1\n"))
+	}))
+	defer parse.Close()
+	unblock := make(chan struct{})
+	slow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-unblock:
+		case <-r.Context().Done():
+		}
+	}))
+	defer slow.Close()
+	defer close(unblock)
+
+	cfg := scrapedConfig()
+	d := NewDispatcher(cfg)
+	d.SetReadyEndpoints("qwen", []ReadyEndpoint{
+		{URL: good.URL, EndpointTarget: EndpointTarget{Pod: "good", Node: "n1"}},
+		{URL: status.URL, EndpointTarget: EndpointTarget{Pod: "status", Node: "n1"}},
+		{URL: parse.URL, EndpointTarget: EndpointTarget{Pod: "parse", Node: "n2"}},
+		{URL: slow.URL, EndpointTarget: EndpointTarget{Pod: "slow", Node: "n2"}},
+	})
+	s := NewLoadScraper(cfg, d, router, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	s.scrapeOnce(context.Background())
+	s.scrapeOnce(context.Background())
+
+	for _, tc := range []struct{ ep, pod, node string }{
+		{status.URL, "status", "n1"}, {parse.URL, "parse", "n2"}, {slow.URL, "slow", "n2"},
+	} {
+		if got := scrapeFailures(t, router, tc.ep, tc.pod, tc.node); got != 2 {
+			t.Errorf("%s: failures = %v, want 2 (one per scrape)", tc.pod, got)
+		}
+	}
+	if prommetrics.RouterEndpointLoadScrapeFailuresTotal.DeleteLabelValues(router, "qwen", good.URL, "good", "n1") {
+		t.Error("a good scrape counted as a failure")
+	}
+}
+
+// A scrape cut short by shutdown says nothing about the pod and must not count.
+func TestLoadScraperDoesNotCountShutdownAsFailure(t *testing.T) {
+	const router = "r-scrape-shutdown"
+	prommetrics.RouterEndpointLoadScrapeFailuresTotal.DeletePartialMatch(prometheus.Labels{"router": router})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "engine down", http.StatusServiceUnavailable)
+	}))
+	defer srv.Close()
+
+	cfg := scrapedConfig()
+	d := NewDispatcher(cfg)
+	d.SetEndpoints("qwen", []string{srv.URL})
+	s := NewLoadScraper(cfg, d, router, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	s.scrapeOnce(ctx)
+
+	if prommetrics.RouterEndpointLoadScrapeFailuresTotal.DeleteLabelValues(router, "qwen", srv.URL, "", "") {
+		t.Error("a scrape cancelled by shutdown counted as a failure")
+	}
+}
+
+func TestLoadScraperDropsDepartedEndpointFailureCounter(t *testing.T) {
+	const router = "r-scrape-fail-depart"
+	prommetrics.RouterEndpointLoadScrapeFailuresTotal.DeletePartialMatch(prometheus.Labels{"router": router})
+	down := func() *httptest.Server {
+		return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			http.Error(w, "engine down", http.StatusServiceUnavailable)
+		}))
+	}
+	keep, gone := down(), down()
+	defer keep.Close()
+	defer gone.Close()
+
+	cfg := scrapedConfig()
+	d := NewDispatcher(cfg)
+	d.SetEndpoints("qwen", []string{keep.URL, gone.URL})
+	s := NewLoadScraper(cfg, d, router, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	s.scrapeOnce(context.Background())
+	d.SetEndpoints("qwen", []string{keep.URL})
+	s.scrapeOnce(context.Background())
+
+	if prommetrics.RouterEndpointLoadScrapeFailuresTotal.DeleteLabelValues(router, "qwen", gone.URL, "", "") {
+		t.Error("failure counter of the departed endpoint survived")
+	}
+	if !prommetrics.RouterEndpointLoadScrapeFailuresTotal.DeleteLabelValues(router, "qwen", keep.URL, "", "") {
+		t.Error("failure counter of the kept endpoint is missing")
+	}
+}
+
+// A pod that left while its failing scrape was in flight is gone, not
+// unsampled: counting it would leave a series nothing deletes.
+func TestLoadScraperDoesNotCountFailureOfDepartedEndpoint(t *testing.T) {
+	const router = "r-scrape-fail-leave"
+	prommetrics.RouterEndpointLoadScrapeFailuresTotal.DeletePartialMatch(prometheus.Labels{"router": router})
+	started, release := make(chan struct{}), make(chan struct{})
+	leaving := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(started)
+		<-release
+		http.Error(w, "engine down", http.StatusServiceUnavailable)
+	}))
+	defer leaving.Close()
+
+	cfg := scrapedConfig()
+	d := NewDispatcher(cfg)
+	d.SetEndpoints("qwen", []string{leaving.URL})
+	s := NewLoadScraper(cfg, d, router, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	done := make(chan struct{})
+	go func() {
+		s.scrapeOnce(context.Background())
+		close(done)
+	}()
+	<-started
+	d.SetEndpoints("qwen", nil)
+	close(release)
+	<-done
+
+	if prommetrics.RouterEndpointLoadScrapeFailuresTotal.DeleteLabelValues(router, "qwen", leaving.URL, "", "") {
+		t.Error("a pod that left mid-scrape has a failure counter series")
+	}
+}

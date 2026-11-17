@@ -81,6 +81,7 @@ The router-proxy binary serves `RouterRegistry` ([`cmd/router-proxy/main.go`](ht
 | `llmkube_router_dispatch_retries_total` | counter | `backend`, `reason`, `router` | Requests the router proxy retried on a fresh connection, by reason. |
 | `llmkube_router_endpoint_kv_usage` | histogram | `backend`, `endpoint`, `router`, `target_node`, `target_pod` | Engine KV-cache use (0 to 1) of one pod, one observation per router proxy load sample. |
 | `llmkube_router_endpoint_load` | gauge | `backend`, `endpoint`, `router`, `target_node`, `target_pod` | Router proxy load estimate for one pod of a LoadAware backend. |
+| `llmkube_router_endpoint_load_scrape_failures_total` | counter | `backend`, `endpoint`, `router`, `target_node`, `target_pod` | Engine-metrics scrapes of one pod that failed (timeout, unreachable, bad status or parse), so recorded no sample: the gaps in the router's pressure histograms. |
 | `llmkube_router_endpoint_metrics_fresh` | gauge | `backend`, `endpoint`, `router`, `target_node`, `target_pod` | Whether the router proxy holds a fresh engine-metrics sample for a pod (1) or not (0). |
 | `llmkube_router_endpoint_prefill_tokens` | gauge | `backend`, `endpoint`, `router`, `target_node`, `target_pod` | Estimated uncached prompt tokens this router proxy replica has in flight to one pod, released at the first response byte. |
 | `llmkube_router_endpoint_running_requests` | histogram | `backend`, `endpoint`, `router`, `target_node`, `target_pod` | Engine running requests of one pod, one observation per router proxy load sample. |

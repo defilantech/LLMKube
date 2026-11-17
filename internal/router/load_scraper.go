@@ -133,6 +133,12 @@ func (s *LoadScraper) scrapeOnce(ctx context.Context) {
 				}
 				if err != nil {
 					s.logger.Debug("engine metrics scrape failed", "backend", tgt.backend, "endpoint", ep, "error", err)
+					if s.stillLive(tgt.backend, ep) {
+						k := s.countScrapeFailure(tgt.backend, ep)
+						mu.Lock()
+						observed[k] = struct{}{}
+						mu.Unlock()
+					}
 					if errors.Is(err, errPollUnreachable) {
 						s.disp.recordPollFailure(tgt.backend, ep, err)
 					} else {
@@ -197,6 +203,14 @@ func (s *LoadScraper) deleteSeries(k gaugeKey) {
 	prommetrics.RouterEndpointSlotUtilization.DeleteLabelValues(lvs...)
 	prommetrics.RouterEndpointRunningRequests.DeleteLabelValues(lvs...)
 	prommetrics.RouterEndpointWaitingRequests.DeleteLabelValues(lvs...)
+	prommetrics.RouterEndpointLoadScrapeFailuresTotal.DeleteLabelValues(lvs...)
+}
+
+// countScrapeFailure records a live pod's failed scrape and returns its key.
+func (s *LoadScraper) countScrapeFailure(backend, ep string) gaugeKey {
+	t := s.disp.targetOf(backend, ep)
+	prommetrics.RouterEndpointLoadScrapeFailuresTotal.WithLabelValues(s.routerName, backend, ep, t.Pod, t.Node).Inc()
+	return gaugeKey{backend, ep, t.Pod, t.Node}
 }
 
 // observeSample records one stored sample in the pressure histograms. KV is

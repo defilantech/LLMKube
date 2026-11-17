@@ -276,6 +276,17 @@ var (
 		[]string{labelRouter, labelBackend, "endpoint", "target_pod", "target_node"},
 	)
 
+	// RouterEndpointLoadScrapeFailuresTotal counts the samples the pressure
+	// histograms miss. A busy engine answers its metrics path slowest, so
+	// failures cluster at peak load and the histograms under-read it.
+	RouterEndpointLoadScrapeFailuresTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "llmkube_router_endpoint_load_scrape_failures_total",
+			Help: "Engine-metrics scrapes of one pod that failed (timeout, unreachable, bad status or parse), so recorded no sample: the gaps in the router's pressure histograms.",
+		},
+		[]string{labelRouter, labelBackend, "endpoint", "target_pod", "target_node"},
+	)
+
 	RouterEndpointWaitingRequests = prometheus.NewHistogramVec(
 		prometheus.HistogramOpts{
 			Name:    "llmkube_router_endpoint_waiting_requests",
@@ -788,6 +799,7 @@ var RouterCollectors = []prometheus.Collector{
 	RouterEndpointSlotUtilization,
 	RouterEndpointRunningRequests,
 	RouterEndpointWaitingRequests,
+	RouterEndpointLoadScrapeFailuresTotal,
 	RouterDispatchRetriesTotal,
 	RouterEndpointPrefillTokens,
 	RouterPrefillTokensEstimatedTotal,
