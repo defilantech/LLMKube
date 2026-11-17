@@ -1466,8 +1466,7 @@ func cachePrepInitContainer(initImage string, resolvedFSGroup, ownerUID int64) c
 	}
 }
 
-// cachePrepSecurityContext is the security context both cache prep containers
-// run under (model-cache-prep and runtime-cache-prep).
+// cachePrepSecurityContext is the security context model-cache-prep runs under.
 func cachePrepSecurityContext() *corev1.SecurityContext {
 	return &corev1.SecurityContext{
 		// Root (uid 0), required for the exec'd chown to keep CAP_CHOWN.

@@ -27,8 +27,8 @@ import (
 
 // deploymentFor renders the Deployment a test asserts on. Production callers
 // pass the plan the reconcile warned about; a test that renders a service
-// directly derives it here, so the rendering is the one a reconcile of the same
-// spec makes.
+// directly derives it here with runtimeCachePlan, which reads no claim, so a
+// case whose claim changes the plan passes it explicitly.
 //
 //nolint:unparam // draftHFEndpoint is parameterized to mirror the builder's signature even though no test passes one
 func (r *InferenceServiceReconciler) deploymentFor(

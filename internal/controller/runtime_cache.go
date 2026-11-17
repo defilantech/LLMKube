@@ -180,12 +180,12 @@ func (r *InferenceServiceReconciler) runtimeCachePlan(
 		return runtimeCachePlan{reason: ReasonRuntimeCacheUnsupported, message: "spec.modelCache.runtimeCache.enabled is ignored: persistence is Ephemeral, so the Pod mounts an emptyDir that dies with it"}
 	case effectiveModelCacheKey(model) == "":
 		if model.Status.Phase != PhaseReady {
-			// Transient: the key is derived when the Model reconciles, and the
-			// next pass applies the request.
+			// The key can still arrive while the Model is not Ready; a Ready
+			// Model with no key never gets one and is declined below.
 			return runtimeCachePlan{}
 		}
 		return runtimeCachePlan{reason: ReasonRuntimeCacheUnsupported, message: fmt.Sprintf(
-			"spec.modelCache.runtimeCache.enabled is ignored: model %q has no cache key (a source the runtime resolves itself, or a local source), so the Pod mounts no cache claim and the runtime's cache would live in an emptyDir that dies with the Pod",
+			"spec.modelCache.runtimeCache.enabled is ignored: model %q has no cache key (a source the runtime resolves itself, or a local source), so the Pod mounts no cache claim and the runtime's caches stay in the container's writable layer, which dies with the Pod",
 			model.Name)}
 	}
 	// A user volume takes a cache over only when it is mounted at that cache's
