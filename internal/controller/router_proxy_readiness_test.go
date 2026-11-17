@@ -57,11 +57,11 @@ func readinessListenerArgs(t *testing.T, args []string) []string {
 // routerproxy-*.golden files.
 func TestRouterDeploymentBuilderReadinessRequiredListeners(t *testing.T) {
 	r := &ModelRouterReconciler{RouterProxyImage: "ghcr.io/test/router-proxy:v1"}
-	base := r.newRouterDeployment(canonicalModelRouter(), "hash", false).Spec.Template.Spec.Containers[0]
+	base := r.newRouterDeployment(canonicalModelRouter(), &compiledConfig{Hash: "hash"}).Spec.Template.Spec.Containers[0]
 
 	mr := canonicalModelRouter()
 	mr.Spec.Proxy = &inferencev1alpha1.RouterProxySpec{ReadinessRequiredListeners: []int32{15008, 15006}}
-	got := r.newRouterDeployment(mr, "hash", false).Spec.Template.Spec.Containers[0]
+	got := r.newRouterDeployment(mr, &compiledConfig{Hash: "hash"}).Spec.Template.Spec.Containers[0]
 
 	if got.ReadinessProbe == nil || got.ReadinessProbe.HTTPGet == nil {
 		t.Fatalf("readiness probe = %+v, want an HTTP GET", got.ReadinessProbe)
@@ -90,11 +90,11 @@ func TestRouterDeploymentBuilderReadinessRequiredListeners(t *testing.T) {
 // empty list renders like an unset one, so neither rolls the proxy.
 func TestRouterDeploymentBuilderReadinessRequiredListenersEmpty(t *testing.T) {
 	r := &ModelRouterReconciler{RouterProxyImage: "ghcr.io/test/router-proxy:v1"}
-	base := r.newRouterDeployment(canonicalModelRouter(), "hash", false)
+	base := r.newRouterDeployment(canonicalModelRouter(), &compiledConfig{Hash: "hash"})
 
 	mr := canonicalModelRouter()
 	mr.Spec.Proxy = &inferencev1alpha1.RouterProxySpec{ReadinessRequiredListeners: []int32{}}
-	got := r.newRouterDeployment(mr, "hash", false)
+	got := r.newRouterDeployment(mr, &compiledConfig{Hash: "hash"})
 
 	if !reflect.DeepEqual(base.Spec.Template, got.Spec.Template) {
 		t.Errorf("pod template differs between nil proxy and an empty readinessRequiredListeners")

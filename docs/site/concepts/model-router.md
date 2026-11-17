@@ -252,7 +252,7 @@ Point any OpenAI-compatible client at that URL and it just works. The proxy serv
 | `POST /v1/rerank` | Reranking |
 | `POST /v1/messages` | Anthropic Messages API: Claude Code and the Anthropic SDKs |
 | `POST /v1/messages/count_tokens` | Anthropic token counting |
-| `GET /v1/models` | Model discovery: one entry per backend, under its `displayName`, else its `name`, the id `BackendNameMatch` resolves. An external backend's upstream `model` is not listed. |
+| `GET /v1/models` | Model discovery: one entry per backend, under its `displayName`, else its `name`, the id `BackendNameMatch` resolves. An external backend's upstream `model` is not listed. A selected backend whose InferenceService is scaled to zero or suspended is not listed either (see [Selecting backends by label](#selecting-backends-by-label)). |
 
 The two Anthropic routes are placed, balanced and session-bound exactly like chat completions, and headers such as `anthropic-version` and `anthropic-beta` pass through. The backend must serve them itself: vLLM does natively; a backend that does not returns its own `404`, which reaches the client unchanged and does not count against the backend. Token budgets charge Anthropic responses from their own usage fields (cached input included), and errors the router itself returns on these routes use the Anthropic error shape.
 
@@ -277,6 +277,40 @@ That backend's entry then carries `"context_length"` and an OpenRouter-style `ar
 A value you set wins. If `inputModalities` leaves out `image` while `capabilities` lists `vision`, the controller records a `ModelInfoMismatch` warning event, and `/v1/models` publishes `inputModalities`. A backend without `modelInfo` publishes the bare entry, as before.
 
 The router doesn't enforce `modelInfo`, so keep it in step with what the backend serves: a vLLM backend started with `--limit-mm-per-prompt '{"image":0}'` rejects images whatever the list says. `modelInfo` applies to the Proxy data plane only. The Gateway and AgentGateway data planes ignore it, and AgentGateway answers `/v1/models` itself.
+
+## Selecting backends by label
+
+A router that fronts every model in a namespace does not have to list each InferenceService. `spec.backendSelector` adds every InferenceService in the router's namespace that matches it as a `tier: local` backend named after the service, so a service created, relabelled or deleted later needs no router edit:
+
+```yaml
+apiVersion: inference.llmkube.dev/v1alpha1
+kind: ModelRouter
+metadata:
+  name: models
+spec:
+  defaultRouteStrategy: BackendNameMatch
+  backendSelector:
+    matchLabels:
+      llmkube.dev/router: models
+```
+
+The name is the model id `GET /v1/models` publishes and the id `BackendNameMatch` resolves. An empty selector (`{}`) matches every InferenceService in the namespace, which is how to route to all of them.
+
+Explicit `backends` entries still work beside the selector. An entry whose name is a selected service and that sets neither `inferenceServiceRef` nor `external` overrides only the fields it carries, so per-model tuning does not restate the backend:
+
+```yaml
+  backends:
+    - name: glm-5-3-flash
+      timeout: 600s       # overrides for the selected backend of this name
+```
+
+An entry with `external`, or with an `inferenceServiceRef` naming another service, keeps its own meaning, and the selected service of that name is not added. A ref-less entry whose name is not a selected service makes the router report `Validated=False`: the webhook reads no other objects, so the controller is the only place that can check it.
+
+A selected service at `spec.replicas: 0` or `spec.suspend: true` stays in the compiled config and stays dispatchable, so a rule or `BackendNameMatch` request still reaches it, but it is left out of `GET /v1/models` so client model pickers do not offer a model that cannot answer. A ModelPool member is never hidden: the pool holds every non-resident member at `replicas: 0`, and hiding it would remove a model clients are meant to request.
+
+`backendSelector` is a Proxy data-plane field: `dataPlane: Gateway` and `dataPlane: AgentGateway` refuse it at `kubectl apply`. A `failClosed` rule may name only `spec.backends` entries that do not depend on the selector, because the fail-closed guarantee is checked without the cluster. A `maxUSD` budget cannot be combined with `backendSelector`, because a selected backend declares no `costPerMillionTokens` and the budget would charge 0 USD and never block. A rule or `spec.defaultRoute` naming a selected backend that stops being selected stops the compile, with a message naming the rule and the backend; the router keeps serving its last config.
+
+Anyone who can label an InferenceService in the namespace can add it to the router. That is ordinary namespace RBAC, and the operator's own access to InferenceServices stays read-only (`get`, `list`, `watch`). A selected backend is still subject to `spec.rules`, `spec.defaultRoute`, and the `failClosed` restriction above, so adding a service never routes sensitive traffic to it.
 
 Headers that change routing:
 

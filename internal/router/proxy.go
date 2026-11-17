@@ -284,6 +284,9 @@ func (p *Proxy) handleModels(w http.ResponseWriter, _ *http.Request) {
 	models := make([]model, 0, len(p.cfg.Backends))
 	for i := range p.cfg.Backends {
 		b := &p.cfg.Backends[i]
+		if b.Hidden {
+			continue
+		}
 		owned := "llmkube"
 		if b.Provider != "" {
 			owned = b.Provider

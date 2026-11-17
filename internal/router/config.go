@@ -174,6 +174,11 @@ type Backend struct {
 	// and charges 0 USD against dollar budgets. Compiled from
 	// ModelRouter.spec.backends[].costPerMillionTokens.
 	CostPerMillionTokens *TokenCost `json:"costPerMillionTokens,omitempty"`
+
+	// Hidden keeps a backend out of `/v1/models` without taking it out of
+	// dispatch; the controller sets it for a selected InferenceService that is
+	// scaled to zero or suspended.
+	Hidden bool `json:"hidden,omitempty"`
 }
 
 // EndpointSource identifies the Service behind an endpoint-resolution backend.

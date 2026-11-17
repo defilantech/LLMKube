@@ -81,6 +81,7 @@ const (
 // supports fail-closed semantics for sensitive-data routes so PII never
 // escapes the cluster boundary.
 // +kubebuilder:validation:XValidation:rule="!has(self.endpoint) || !has(self.endpoint.apiKeySecretRef)",message="endpoint.apiKeySecretRef is an InferenceService field; ModelRouter does not support it"
+// +kubebuilder:validation:XValidation:rule="has(self.backendSelector) || (has(self.backends) && self.backends.size() > 0)",message="spec must set backendSelector or at least one backends entry"
 type ModelRouterSpec struct {
 	// DataPlane selects how this ModelRouter serves traffic.
 	//
@@ -147,11 +148,27 @@ type ModelRouterSpec struct {
 	// +optional
 	AgentGatewayRef *AgentGatewayReference `json:"agentGatewayRef,omitempty"`
 
+	// BackendSelector adds every InferenceService in the router's namespace
+	// that matches this label selector as a tier: local backend named after
+	// the service. The name is the model id published on /v1/models and the
+	// id BackendNameMatch resolves. An empty selector ({}) selects every
+	// InferenceService in the namespace.
+	//
+	// Explicit backends entries still apply beside the selector. An entry
+	// with neither inferenceServiceRef nor external overrides the fields it
+	// sets on the selected backend of the same name, so per-model tuning does
+	// not restate the backend.
+	//
+	// Proxy data plane only: dataPlane Gateway and AgentGateway refuse it at
+	// admission.
+	// +optional
+	BackendSelector *metav1.LabelSelector `json:"backendSelector,omitempty"`
+
 	// Backends are the candidate destinations the router can dispatch to.
 	// Order is not significant; selection is rule-driven. At least one
-	// backend must be declared.
-	// +kubebuilder:validation:MinItems=1
-	Backends []RouterBackend `json:"backends"`
+	// backend must be declared unless BackendSelector is set.
+	// +optional
+	Backends []RouterBackend `json:"backends,omitempty"`
 
 	// Rules are evaluated in declaration order. The first matching rule wins.
 	// If no rule matches, the fallback is governed by DefaultRouteStrategy,
@@ -200,7 +217,9 @@ type ModelRouterSpec struct {
 }
 
 // RouterBackend is one candidate destination for routed requests.
-// Exactly one of InferenceServiceRef or External must be set.
+// Exactly one of InferenceServiceRef or External must be set, except on a
+// router with spec.backendSelector: there an entry with neither overrides the
+// fields it sets on the selected backend of the same Name.
 // +kubebuilder:validation:XValidation:rule="!has(self.balancing) || (has(self.inferenceServiceRef) && has(self.resolution) && self.resolution == 'endpoint')",message="balancing requires an inferenceServiceRef backend with resolution: endpoint"
 type RouterBackend struct {
 	// Name is the stable identifier used by rules and observability labels.

@@ -69,7 +69,7 @@ func TestKeyedBackends(t *testing.T) {
 	mr.Spec.Backends = append(mr.Spec.Backends,
 		inferencev1alpha1.RouterBackend{Name: "b", InferenceServiceRef: &corev1.LocalObjectReference{Name: "open"}},
 		inferencev1alpha1.RouterBackend{Name: "c", InferenceServiceRef: &corev1.LocalObjectReference{Name: "missing"}})
-	got, err := keyedBackends(context.Background(), c, mr)
+	got, err := keyedBackends(context.Background(), c, mr.Namespace, mr.Spec.Backends)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -117,7 +117,7 @@ func TestKeyedBackendsCommandLineKey(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			c := fake.NewClientBuilder().WithScheme(routerScheme(t)).WithObjects(tc.isvc).Build()
-			got, err := keyedBackends(context.Background(), c, routerWithLocal("b", "svc"))
+			got, err := keyedBackends(context.Background(), c, routerWithLocal("b", "svc").Namespace, routerWithLocal("b", "svc").Spec.Backends)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -138,7 +138,7 @@ func TestKeyedBackendsEnvKey(t *testing.T) {
 	isvc.Spec.Endpoint = nil
 	isvc.Spec.Env = []corev1.EnvVar{{Name: vllmAPIKeyEnv, Value: "sk"}}
 	c := fake.NewClientBuilder().WithScheme(routerScheme(t)).WithObjects(isvc).Build()
-	got, err := keyedBackends(context.Background(), c, routerWithLocal("b", "svc"))
+	got, err := keyedBackends(context.Background(), c, routerWithLocal("b", "svc").Namespace, routerWithLocal("b", "svc").Spec.Backends)
 	if err != nil {
 		t.Fatal(err)
 	}

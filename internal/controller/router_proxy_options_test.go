@@ -173,7 +173,7 @@ func TestRouterDeploymentBuilderRuntimeClassName(t *testing.T) {
 	mr := canonicalModelRouter()
 	mr.Spec.Proxy = &inferencev1alpha1.RouterProxySpec{RuntimeClassName: ptr.To("gvisor")}
 	r := &ModelRouterReconciler{RouterProxyImage: "img"}
-	got := r.newRouterDeployment(mr, "hash", false).Spec.Template.Spec.RuntimeClassName
+	got := r.newRouterDeployment(mr, &compiledConfig{Hash: "hash"}).Spec.Template.Spec.RuntimeClassName
 	if got == nil || *got != "gvisor" {
 		t.Errorf("pod RuntimeClassName = %v, want gvisor", got)
 	}
@@ -184,11 +184,11 @@ func TestRouterDeploymentBuilderRuntimeClassName(t *testing.T) {
 // pod template as no proxy block at all.
 func TestRouterDeploymentBuilderRuntimeClassNameUnset(t *testing.T) {
 	r := &ModelRouterReconciler{RouterProxyImage: "img"}
-	base := r.newRouterDeployment(canonicalModelRouter(), "hash", false)
+	base := r.newRouterDeployment(canonicalModelRouter(), &compiledConfig{Hash: "hash"})
 
 	withProxy := canonicalModelRouter()
 	withProxy.Spec.Proxy = &inferencev1alpha1.RouterProxySpec{Replicas: ptr.To[int32](1)}
-	got := r.newRouterDeployment(withProxy, "hash", false)
+	got := r.newRouterDeployment(withProxy, &compiledConfig{Hash: "hash"})
 
 	if base.Spec.Template.Spec.RuntimeClassName != nil || got.Spec.Template.Spec.RuntimeClassName != nil {
 		t.Fatalf("RuntimeClassName = %v / %v, want nil when unset",
@@ -209,12 +209,12 @@ func TestReconcileRouterDeploymentAppliesRuntimeClassName(t *testing.T) {
 	ctx := context.Background()
 	key := types.NamespacedName{Name: routerProxyResourceName(mr.Name), Namespace: mr.Namespace}
 
-	if err := rec.reconcileRouterDeployment(ctx, mr, "hash", false); err != nil {
+	if err := rec.reconcileRouterDeployment(ctx, mr, &compiledConfig{Hash: "hash"}); err != nil {
 		t.Fatal(err)
 	}
 	for _, want := range []string{"gvisor", "kata"} {
 		mr.Spec.Proxy = &inferencev1alpha1.RouterProxySpec{RuntimeClassName: ptr.To(want)}
-		if err := rec.reconcileRouterDeployment(ctx, mr, "hash", false); err != nil {
+		if err := rec.reconcileRouterDeployment(ctx, mr, &compiledConfig{Hash: "hash"}); err != nil {
 			t.Fatal(err)
 		}
 		dep := &appsv1.Deployment{}
@@ -228,7 +228,7 @@ func TestReconcileRouterDeploymentAppliesRuntimeClassName(t *testing.T) {
 	}
 
 	mr.Spec.Proxy.RuntimeClassName = nil
-	if err := rec.reconcileRouterDeployment(ctx, mr, "hash", false); err != nil {
+	if err := rec.reconcileRouterDeployment(ctx, mr, &compiledConfig{Hash: "hash"}); err != nil {
 		t.Fatal(err)
 	}
 	dep := &appsv1.Deployment{}
@@ -244,7 +244,7 @@ func TestReconcileRouterDeploymentAppliesRuntimeClassName(t *testing.T) {
 // the value of its --listen argument in the Deployment the controller builds.
 func proxyListenPort(t *testing.T, mr *inferencev1alpha1.ModelRouter) int {
 	t.Helper()
-	dep := (&ModelRouterReconciler{RouterProxyImage: "img"}).newRouterDeployment(mr, "hash", false)
+	dep := (&ModelRouterReconciler{RouterProxyImage: "img"}).newRouterDeployment(mr, &compiledConfig{Hash: "hash"})
 	args := dep.Spec.Template.Spec.Containers[0].Args
 	for i, a := range args {
 		if a == "--listen" && i+1 < len(args) {

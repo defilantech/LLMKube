@@ -53,7 +53,7 @@ func TestRouterProxyTracingEnv(t *testing.T) {
 			rec := newRouterReconcilerForTest(t, mr)
 			rec.RouterProxyImage = "img"
 			rec.RouterProxyTracingEnv = testTracingEnv
-			if err := rec.reconcileRouterDeployment(context.Background(), mr, "hash", hasPools); err != nil {
+			if err := rec.reconcileRouterDeployment(context.Background(), mr, &compiledConfig{Hash: "hash", HasPools: hasPools}); err != nil {
 				t.Fatalf("reconcileRouterDeployment: %v", err)
 			}
 			env := getRouterDeployment(t, rec, mr).Spec.Template.Spec.Containers[0].Env
@@ -70,7 +70,7 @@ func TestRouterProxyTracingEnv(t *testing.T) {
 		mr := canonicalModelRouter()
 		rec := newRouterReconcilerForTest(t, mr)
 		rec.RouterProxyImage = "img"
-		if err := rec.reconcileRouterDeployment(context.Background(), mr, "hash", false); err != nil {
+		if err := rec.reconcileRouterDeployment(context.Background(), mr, &compiledConfig{Hash: "hash"}); err != nil {
 			t.Fatalf("reconcileRouterDeployment: %v", err)
 		}
 		env := getRouterDeployment(t, rec, mr).Spec.Template.Spec.Containers[0].Env
@@ -86,7 +86,7 @@ func TestRouterProxyTracingEnv(t *testing.T) {
 func TestRouterProxyTracingEnvReachesAnExistingDeployment(t *testing.T) {
 	mr := canonicalModelRouter()
 	scheme := builderTestScheme(t)
-	initial := (&ModelRouterReconciler{RouterProxyImage: "img"}).newRouterDeployment(mr, "hash", false)
+	initial := (&ModelRouterReconciler{RouterProxyImage: "img"}).newRouterDeployment(mr, &compiledConfig{Hash: "hash"})
 	if err := setControllerReferenceUnblocked(mr, initial, scheme); err != nil {
 		t.Fatalf("set controller reference: %v", err)
 	}
@@ -99,7 +99,7 @@ func TestRouterProxyTracingEnvReachesAnExistingDeployment(t *testing.T) {
 		RouterProxyImage:      "img",
 		RouterProxyTracingEnv: testTracingEnv,
 	}
-	if err := rec.reconcileRouterDeployment(context.Background(), mr, "hash", false); err != nil {
+	if err := rec.reconcileRouterDeployment(context.Background(), mr, &compiledConfig{Hash: "hash"}); err != nil {
 		t.Fatalf("reconcileRouterDeployment: %v", err)
 	}
 	env := getRouterDeployment(t, rec, mr).Spec.Template.Spec.Containers[0].Env

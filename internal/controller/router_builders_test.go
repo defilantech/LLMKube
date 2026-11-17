@@ -677,7 +677,7 @@ func TestCompileRouterConfigLiteLLMMissingURLFails(t *testing.T) {
 func TestRouterDeploymentBuilder(t *testing.T) {
 	mr := canonicalModelRouter()
 	r := &ModelRouterReconciler{RouterProxyImage: "ghcr.io/test/router-proxy:v1"}
-	dep := r.newRouterDeployment(mr, "deadbeef", false)
+	dep := r.newRouterDeployment(mr, &compiledConfig{Hash: "deadbeef"})
 
 	if got := dep.Name; got != "coding-router-router-proxy" {
 		t.Errorf("Deployment name = %q", got)
@@ -724,7 +724,7 @@ func TestRouterDeploymentBuilderRespectsOverrides(t *testing.T) {
 		Image:    "registry.internal/router-proxy:custom",
 	}
 	r := &ModelRouterReconciler{RouterProxyImage: "should-be-overridden"}
-	dep := r.newRouterDeployment(mr, "hash", false)
+	dep := r.newRouterDeployment(mr, &compiledConfig{Hash: "hash"})
 	if *dep.Spec.Replicas != 3 {
 		t.Errorf("replicas override = %d, want 3", *dep.Spec.Replicas)
 	}
@@ -742,7 +742,7 @@ func TestRouterDeploymentBuilderNodeSelector(t *testing.T) {
 		NodeSelector: map[string]string{"kubernetes.io/hostname": "corsair"},
 	}
 	r := &ModelRouterReconciler{RouterProxyImage: "img"}
-	dep := r.newRouterDeployment(mr, "hash", false)
+	dep := r.newRouterDeployment(mr, &compiledConfig{Hash: "hash"})
 	got := dep.Spec.Template.Spec.NodeSelector
 	if got["kubernetes.io/hostname"] != "corsair" {
 		t.Errorf("pod NodeSelector = %v, want kubernetes.io/hostname=corsair", got)
@@ -754,7 +754,7 @@ func TestRouterDeploymentBuilderNodeSelector(t *testing.T) {
 // empty map, so the proxy schedules anywhere by default.
 func TestRouterDeploymentBuilderNodeSelectorDefault(t *testing.T) {
 	dep := (&ModelRouterReconciler{RouterProxyImage: "img"}).
-		newRouterDeployment(canonicalModelRouter(), "hash", false)
+		newRouterDeployment(canonicalModelRouter(), &compiledConfig{Hash: "hash"})
 	if dep.Spec.Template.Spec.NodeSelector != nil {
 		t.Errorf("pod NodeSelector = %v, want nil when spec.proxy.nodeSelector unset",
 			dep.Spec.Template.Spec.NodeSelector)
@@ -768,7 +768,7 @@ func TestRouterDeploymentBuilderNodeSelectorDefault(t *testing.T) {
 func TestRouterDeploymentBuilderRevisionHistoryLimit(t *testing.T) {
 	r := &ModelRouterReconciler{RouterProxyImage: "ghcr.io/test/router-proxy:v1"}
 
-	depDefault := r.newRouterDeployment(canonicalModelRouter(), "hash", false)
+	depDefault := r.newRouterDeployment(canonicalModelRouter(), &compiledConfig{Hash: "hash"})
 	if depDefault.Spec.RevisionHistoryLimit == nil {
 		t.Fatalf("revisionHistoryLimit = nil, want 3 when unset")
 	}
@@ -781,7 +781,7 @@ func TestRouterDeploymentBuilderRevisionHistoryLimit(t *testing.T) {
 		mr.Spec.Proxy = &inferencev1alpha1.RouterProxySpec{
 			RevisionHistoryLimit: ptrInt32B(want),
 		}
-		dep := r.newRouterDeployment(mr, "hash", false)
+		dep := r.newRouterDeployment(mr, &compiledConfig{Hash: "hash"})
 		if dep.Spec.RevisionHistoryLimit == nil {
 			t.Fatalf("revisionHistoryLimit = nil, want %d", want)
 		}
@@ -804,7 +804,7 @@ func TestRouterDeploymentBuilderQuarantineDuration(t *testing.T) {
 		QuarantineDuration: &metav1.Duration{Duration: 2 * time.Second},
 	}
 	r := &ModelRouterReconciler{RouterProxyImage: "ghcr.io/test/router-proxy:v1"}
-	dep := r.newRouterDeployment(mr, "hash", false)
+	dep := r.newRouterDeployment(mr, &compiledConfig{Hash: "hash"})
 
 	args := dep.Spec.Template.Spec.Containers[0].Args
 	var found bool
@@ -829,7 +829,7 @@ func TestRouterDeploymentBuilderQuarantineDuration(t *testing.T) {
 func TestRouterDeploymentBuilderQuarantineDefault(t *testing.T) {
 	mr := canonicalModelRouter()
 	r := &ModelRouterReconciler{RouterProxyImage: "ghcr.io/test/router-proxy:v1"}
-	dep := r.newRouterDeployment(mr, "hash", false)
+	dep := r.newRouterDeployment(mr, &compiledConfig{Hash: "hash"})
 
 	for _, a := range dep.Spec.Template.Spec.Containers[0].Args {
 		if a == "--quarantine-duration" {
@@ -847,7 +847,7 @@ func TestRouterDeploymentBuilderResponseHeaderTimeoutRendered(t *testing.T) {
 		ResponseHeaderTimeout: &metav1.Duration{Duration: 90 * time.Second},
 	}
 	r := &ModelRouterReconciler{RouterProxyImage: "ghcr.io/test/router-proxy:v1"}
-	dep := r.newRouterDeployment(mr, "hash", false)
+	dep := r.newRouterDeployment(mr, &compiledConfig{Hash: "hash"})
 
 	args := dep.Spec.Template.Spec.Containers[0].Args
 	var found bool
@@ -874,7 +874,7 @@ func TestRouterDeploymentBuilderStreamIdleTimeout(t *testing.T) {
 	mr.Spec.Proxy = &inferencev1alpha1.RouterProxySpec{
 		StreamIdleTimeout: &metav1.Duration{Duration: 45 * time.Second},
 	}
-	args := r.newRouterDeployment(mr, "hash", false).Spec.Template.Spec.Containers[0].Args
+	args := r.newRouterDeployment(mr, &compiledConfig{Hash: "hash"}).Spec.Template.Spec.Containers[0].Args
 	var found bool
 	for i, a := range args {
 		if a == "--stream-idle-timeout" && i+1 < len(args) {
@@ -889,7 +889,7 @@ func TestRouterDeploymentBuilderStreamIdleTimeout(t *testing.T) {
 	}
 
 	unset := canonicalModelRouter()
-	for _, a := range r.newRouterDeployment(unset, "hash", false).Spec.Template.Spec.Containers[0].Args {
+	for _, a := range r.newRouterDeployment(unset, &compiledConfig{Hash: "hash"}).Spec.Template.Spec.Containers[0].Args {
 		if a == "--stream-idle-timeout" {
 			t.Errorf("--stream-idle-timeout must be omitted when unset")
 		}
@@ -903,7 +903,7 @@ func TestRouterDeploymentBuilderStreamIdleTimeout(t *testing.T) {
 func TestRouterDeploymentBuilderResponseHeaderTimeoutDefault(t *testing.T) {
 	mr := canonicalModelRouter()
 	r := &ModelRouterReconciler{RouterProxyImage: "ghcr.io/test/router-proxy:v1"}
-	dep := r.newRouterDeployment(mr, "hash", false)
+	dep := r.newRouterDeployment(mr, &compiledConfig{Hash: "hash"})
 
 	for _, a := range dep.Spec.Template.Spec.Containers[0].Args {
 		if a == "--response-header-timeout" {
@@ -1452,7 +1452,7 @@ func TestReconcileRouterDeploymentPreservesExternalAnnotations(t *testing.T) {
 	// injection / kubectl rollout-restart / GitOps annotations.
 	const gitopsInstance = "coding-router-fleet"
 	r := &ModelRouterReconciler{RouterProxyImage: "ghcr.io/test/router-proxy:v1"}
-	initial := r.newRouterDeployment(mr, "oldhash", false)
+	initial := r.newRouterDeployment(mr, &compiledConfig{Hash: "oldhash"})
 	initial.Spec.Template.Annotations["sidecar.istio.io/inject"] = "true"
 	initial.Spec.Template.Annotations["kubectl.kubernetes.io/restartedAt"] = "2026-05-13T20:00:00Z"
 	initial.Spec.Template.Labels["external-team-label"] = "ml-platform"
@@ -1474,7 +1474,7 @@ func TestReconcileRouterDeploymentPreservesExternalAnnotations(t *testing.T) {
 
 	// Reconcile with a NEW config hash so the operator's owned
 	// annotation needs to change.
-	if err := rec.reconcileRouterDeployment(context.Background(), mr, "newhash", false); err != nil {
+	if err := rec.reconcileRouterDeployment(context.Background(), mr, &compiledConfig{Hash: "newhash"}); err != nil {
 		t.Fatalf("reconcileRouterDeployment: %v", err)
 	}
 
@@ -1528,7 +1528,7 @@ func TestReconcileRouterDeploymentPreservesExternalAnnotations(t *testing.T) {
 func TestRouterDeploymentMetricsPort(t *testing.T) {
 	mr := canonicalModelRouter()
 	r := &ModelRouterReconciler{RouterProxyImage: "ghcr.io/test/router-proxy:v1"}
-	dep := r.newRouterDeployment(mr, "hash", false)
+	dep := r.newRouterDeployment(mr, &compiledConfig{Hash: "hash"})
 
 	c := dep.Spec.Template.Spec.Containers[0]
 
@@ -1683,7 +1683,7 @@ func TestReconcileRouterActivationRBAC(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(mr).Build()
 	r := &ModelRouterReconciler{Client: c, Scheme: scheme}
 
-	if err := r.reconcileRouterActivationRBAC(context.Background(), mr, true); err != nil {
+	if err := r.reconcileRouterActivationRBAC(context.Background(), mr, &compiledConfig{HasPools: true}); err != nil {
 		t.Fatalf("reconcileRouterActivationRBAC: %v", err)
 	}
 
@@ -1736,7 +1736,7 @@ func TestReconcileRouterActivationRBACNoopWhenUnpooled(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(mr).Build()
 	r := &ModelRouterReconciler{Client: c, Scheme: scheme}
 
-	if err := r.reconcileRouterActivationRBAC(context.Background(), mr, false); err != nil {
+	if err := r.reconcileRouterActivationRBAC(context.Background(), mr, &compiledConfig{}); err != nil {
 		t.Fatalf("reconcileRouterActivationRBAC: %v", err)
 	}
 	nn := types.NamespacedName{Name: routerProxyResourceName(mr.Name), Namespace: mr.Namespace}
@@ -1777,7 +1777,7 @@ func TestNewRouterDeploymentActivationWiring(t *testing.T) {
 	mr := canonicalModelRouter()
 	r := &ModelRouterReconciler{RouterProxyImage: "ghcr.io/test/router-proxy:v1"}
 
-	withPools := r.newRouterDeployment(mr, "hash", true)
+	withPools := r.newRouterDeployment(mr, &compiledConfig{Hash: "hash", HasPools: true})
 	wc := withPools.Spec.Template.Spec.Containers[0]
 	if !strSliceHas(wc.Args, "--enable-activation") {
 		t.Errorf("pooled deployment args = %v, want --enable-activation", wc.Args)
@@ -1790,7 +1790,7 @@ func TestNewRouterDeploymentActivationWiring(t *testing.T) {
 		t.Errorf("pooled ROUTER_NAME env = %q, want %q", got, mr.Name)
 	}
 
-	noPools := r.newRouterDeployment(mr, "hash", false)
+	noPools := r.newRouterDeployment(mr, &compiledConfig{Hash: "hash"})
 	nc := noPools.Spec.Template.Spec.Containers[0]
 	if strSliceHas(nc.Args, "--enable-activation") {
 		t.Error("unpooled deployment must not set --enable-activation")
@@ -1814,12 +1814,12 @@ func TestNewRouterDeploymentPinsReplicasWhenPooled(t *testing.T) {
 	three := int32(3)
 	mr.Spec.Proxy = &inferencev1alpha1.RouterProxySpec{Replicas: &three}
 
-	pooled := r.newRouterDeployment(mr, "hash", true)
+	pooled := r.newRouterDeployment(mr, &compiledConfig{Hash: "hash", HasPools: true})
 	if pooled.Spec.Replicas == nil || *pooled.Spec.Replicas != 1 {
 		t.Errorf("pooled replicas = %v, want 1 (pinned)", pooled.Spec.Replicas)
 	}
 
-	unpooled := r.newRouterDeployment(mr, "hash", false)
+	unpooled := r.newRouterDeployment(mr, &compiledConfig{Hash: "hash"})
 	if unpooled.Spec.Replicas == nil || *unpooled.Spec.Replicas != 3 {
 		t.Errorf("unpooled replicas = %v, want 3 (spec.proxy.replicas honored)", unpooled.Spec.Replicas)
 	}
@@ -1926,7 +1926,7 @@ func TestCompileRouterConfigHashIgnoresPodChurn(t *testing.T) {
 func TestRouterDeploymentEndpointWatchIdentityAndTolerations(t *testing.T) {
 	r := &ModelRouterReconciler{}
 	plain := canonicalModelRouter()
-	plainDep := r.newRouterDeployment(plain, "h", false)
+	plainDep := r.newRouterDeployment(plain, &compiledConfig{Hash: "h"})
 	if sa := plainDep.Spec.Template.Spec.ServiceAccountName; sa != "" {
 		t.Errorf("plain router ServiceAccountName = %q, want empty (no API access)", sa)
 	}
@@ -1939,7 +1939,10 @@ func TestRouterDeploymentEndpointWatchIdentityAndTolerations(t *testing.T) {
 	mr.Spec.Proxy = &inferencev1alpha1.RouterProxySpec{Tolerations: []corev1.Toleration{{
 		Key: "nvidia.com/gpu", Operator: corev1.TolerationOpExists, Effect: corev1.TaintEffectNoSchedule,
 	}}}
-	dep := r.newRouterDeployment(mr, "h", false)
+	dep := r.newRouterDeployment(mr, &compiledConfig{
+		Hash:               "h",
+		NeedsEndpointWatch: routerNeedsEndpointWatch(mr.Spec.Backends),
+	})
 	spec := dep.Spec.Template.Spec
 	if spec.ServiceAccountName != routerProxyResourceName(mr.Name) {
 		t.Errorf("ServiceAccountName = %q, want %q", spec.ServiceAccountName, routerProxyResourceName(mr.Name))

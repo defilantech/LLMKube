@@ -176,15 +176,76 @@ spec:
                 - message: 'sectionName and hostnames apply only to routing: Model'
                   rule: (has(self.routing) && self.routing == 'Model') || (!has(self.sectionName)
                     && !has(self.hostnames))
+              backendSelector:
+                description: |-
+                  BackendSelector adds every InferenceService in the router's namespace
+                  that matches this label selector as a tier: local backend named after
+                  the service. The name is the model id published on /v1/models and the
+                  id BackendNameMatch resolves. An empty selector ({}) selects every
+                  InferenceService in the namespace.
+
+                  Explicit backends entries still apply beside the selector. An entry
+                  with neither inferenceServiceRef nor external overrides the fields it
+                  sets on the selected backend of the same name, so per-model tuning does
+                  not restate the backend.
+
+                  Proxy data plane only: dataPlane Gateway and AgentGateway refuse it at
+                  admission.
+                properties:
+                  matchExpressions:
+                    description: matchExpressions is a list of label selector requirements.
+                      The requirements are ANDed.
+                    items:
+                      description: |-
+                        A label selector requirement is a selector that contains values, a key, and an operator that
+                        relates the key and values.
+                      properties:
+                        key:
+                          description: key is the label key that the selector applies
+                            to.
+                          type: string
+                        operator:
+                          description: |-
+                            operator represents a key's relationship to a set of values.
+                            Valid operators are In, NotIn, Exists and DoesNotExist.
+                          type: string
+                        values:
+                          description: |-
+                            values is an array of string values. If the operator is In or NotIn,
+                            the values array must be non-empty. If the operator is Exists or DoesNotExist,
+                            the values array must be empty. This array is replaced during a strategic
+                            merge patch.
+                          items:
+                            type: string
+                          type: array
+                          x-kubernetes-list-type: atomic
+                      required:
+                      - key
+                      - operator
+                      type: object
+                    type: array
+                    x-kubernetes-list-type: atomic
+                  matchLabels:
+                    additionalProperties:
+                      type: string
+                    description: |-
+                      matchLabels is a map of {key,value} pairs. A single {key,value} in the matchLabels
+                      map is equivalent to an element of matchExpressions, whose key field is "key", the
+                      operator is "In", and the values array contains only "value". The requirements are ANDed.
+                    type: object
+                type: object
+                x-kubernetes-map-type: atomic
               backends:
                 description: |-
                   Backends are the candidate destinations the router can dispatch to.
                   Order is not significant; selection is rule-driven. At least one
-                  backend must be declared.
+                  backend must be declared unless BackendSelector is set.
                 items:
                   description: |-
                     RouterBackend is one candidate destination for routed requests.
-                    Exactly one of InferenceServiceRef or External must be set.
+                    Exactly one of InferenceServiceRef or External must be set, except on a
+                    router with spec.backendSelector: there an entry with neither overrides the
+                    fields it sets on the selected backend of the same Name.
                   properties:
                     balancing:
                       description: |-
@@ -552,7 +613,6 @@ spec:
                       resolution: endpoint'
                     rule: '!has(self.balancing) || (has(self.inferenceServiceRef)
                       && has(self.resolution) && self.resolution == ''endpoint'')'
-                minItems: 1
                 type: array
               dataPlane:
                 default: Proxy
@@ -2594,13 +2654,14 @@ spec:
                   - route
                   type: object
                 type: array
-            required:
-            - backends
             type: object
             x-kubernetes-validations:
             - message: endpoint.apiKeySecretRef is an InferenceService field; ModelRouter
                 does not support it
               rule: '!has(self.endpoint) || !has(self.endpoint.apiKeySecretRef)'
+            - message: spec must set backendSelector or at least one backends entry
+              rule: has(self.backendSelector) || (has(self.backends) && self.backends.size()
+                > 0)
           status:
             description: status defines the observed state of ModelRouter
             properties:

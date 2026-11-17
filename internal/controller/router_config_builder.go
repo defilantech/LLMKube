@@ -60,6 +60,11 @@ type compiledConfig struct {
 	// runs the proxy with --enable-activation.
 	HasPools bool
 
+	// NeedsEndpointWatch is true when at least one resolved backend tracks its
+	// pods by endpoint rather than dispatching to the Service DNS name. It
+	// drives the proxy's EndpointSlice RBAC and ServiceAccount.
+	NeedsEndpointWatch bool
+
 	// KeyedBackends holds the sorted names of backends whose InferenceService
 	// requires an API key the proxy does not forward (see keyedBackends).
 	KeyedBackends []string
@@ -89,23 +94,31 @@ func (r *ModelRouterReconciler) compileRouterConfig(
 	ctx context.Context,
 	mr *inferencev1alpha1.ModelRouter,
 ) (*compiledConfig, error) {
+	resolved, resErrs, err := r.resolveRouterBackends(ctx, mr)
+	if err != nil {
+		return nil, err
+	}
+	if len(resErrs) > 0 {
+		return nil, &routerResolutionError{errs: resErrs}
+	}
+
 	out := &router.Config{
 		DefaultRoute:         mr.Spec.DefaultRoute,
 		DefaultRouteStrategy: string(mr.Spec.DefaultRouteStrategy),
-		Backends:             make([]router.Backend, 0, len(mr.Spec.Backends)),
+		Backends:             make([]router.Backend, 0, len(resolved)),
 		Rules:                make([]router.Rule, 0, len(mr.Spec.Rules)),
 	}
-	statuses := make([]inferencev1alpha1.BackendStatus, 0, len(mr.Spec.Backends))
+	statuses := make([]inferencev1alpha1.BackendStatus, 0, len(resolved))
 	var warnings []string
 
-	keyed, err := keyedBackends(ctx, r.Client, mr)
+	keyed, err := keyedBackends(ctx, r.Client, mr.Namespace, resolved)
 	if err != nil {
 		return nil, err
 	}
 	var keyedPool []string
 
-	for i := range mr.Spec.Backends {
-		b := &mr.Spec.Backends[i]
+	for i := range resolved {
+		b := &resolved[i]
 		wire, status, err := r.resolveBackend(ctx, mr, b)
 		if err != nil {
 			return nil, err
@@ -145,6 +158,10 @@ func (r *ModelRouterReconciler) compileRouterConfig(
 	out.Policy = translatePolicy(mr.Spec.Policy)
 
 	if err := out.Validate(); err != nil {
+		if mr.Spec.BackendSelector != nil {
+			return nil, fmt.Errorf("compiled router config failed validation "+
+				"(a name spec.backendSelector no longer selects): %w", err)
+		}
 		return nil, fmt.Errorf("compiled router config failed validation: %w", err)
 	}
 	data, err := json.MarshalIndent(out, "", "  ")
@@ -154,13 +171,14 @@ func (r *ModelRouterReconciler) compileRouterConfig(
 	sum := sha256.Sum256(data)
 
 	return &compiledConfig{
-		JSON:              data,
-		Hash:              hex.EncodeToString(sum[:]),
-		Backends:          statuses,
-		Warnings:          warnings,
-		HasPools:          hasPools,
-		KeyedBackends:     keyed,
-		KeyedPoolBackends: keyedPool,
+		JSON:               data,
+		Hash:               hex.EncodeToString(sum[:]),
+		Backends:           statuses,
+		Warnings:           warnings,
+		HasPools:           hasPools,
+		NeedsEndpointWatch: routerNeedsEndpointWatch(resolved),
+		KeyedBackends:      keyed,
+		KeyedPoolBackends:  keyedPool,
 	}, nil
 }
 
@@ -257,6 +275,13 @@ func (r *ModelRouterReconciler) resolveBackend(
 			status.Message = appendMsg(status.Message, perr.Error())
 		} else if pool != nil {
 			wire.Pool = pool
+		}
+		// A non-resident ModelPool member sits at replicas 0 (`drainMember`), so
+		// a pooled backend is never hidden: `/v1/models` has to list a model
+		// the proxy can activate.
+		if wire.Pool == nil && isvc != nil && routerSelectsInferenceService(mr, isvc) &&
+			(isvc.Spec.Suspend || (isvc.Spec.Replicas != nil && *isvc.Spec.Replicas == 0)) {
+			wire.Hidden = true
 		}
 	case b.External != nil:
 		if wire.Tier == "" {
