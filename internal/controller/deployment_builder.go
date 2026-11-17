@@ -258,9 +258,11 @@ func devShmVolume(isvc *inferencev1alpha1.InferenceService, backend RuntimeBacke
 // path; the CUDA and Metal paths are untouched. A user-supplied
 // Spec.PodSecurityContext is returned as-is, so setting it takes full
 // ownership of supplementalGroups (the per-service workaround for a node
-// whose render GID differs from the operator default). The one addition the
-// operator makes to it is the prefetch Job's group, for a pod that reads a
-// prefetched cache (withPrefetchGroup).
+// whose render GID differs from the operator default). The two additions the
+// operator makes to it are the prefetch Job's group, for a pod that reads a
+// prefetched cache (withPrefetchGroup), and, for a pod the runtime cache is
+// applied to, fsGroupChangePolicy OnRootMismatch when the context sets an
+// fsGroup but no policy (withRuntimeCacheFSGroupPolicy).
 //
 // Operators using a custom init container image (--init-container-image) with
 // a different UID/GID should override Spec.PodSecurityContext or set
@@ -446,10 +448,10 @@ func (r *InferenceServiceReconciler) servingStorage(
 	// nobody created (#1451).
 	useCache := modelWantsCacheVolume(model, cache, r.ModelCachePath)
 	if g := r.prefetchGate(isvc, model, cache); g.applies && g.satisfied {
-		// The weights are already on the claim (#2136): mount it read-only
-		// and verify the names the Job recorded, rather than run the
-		// downloader on the serving node. A requested runtime cache needs the
-		// volume source writable for its second mount (#2117).
+		// The weights are already on the claim (#2136): mount its weights
+		// read-only and verify the names the Job recorded, rather than run
+		// the downloader on the serving node. A requested runtime cache needs
+		// the volume source writable for its second mount (#2117).
 		var staged []string
 		if g.entry != nil {
 			staged = g.entry.Files
@@ -617,12 +619,14 @@ func (r *InferenceServiceReconciler) constructDeploymentForCache(
 	// apply or the user mounted /runtime-cache themselves.
 	var runtimeCacheEnv []corev1.EnvVar
 	var runtimeCachePrep *corev1.Container
+	runtimeCacheApplied := false
 	if r.runtimeCacheRequested(isvc, model, cache, backend) {
 		if volume := modelCacheVolumeFor(storageConfig, cache, r.ModelCacheMode); volume != "" {
 			mount, env := runtimeCacheMount(isvc, backend, volume)
 			if mount != nil {
 				container.VolumeMounts = append(container.VolumeMounts, *mount)
 				runtimeCacheEnv = env
+				runtimeCacheApplied = true
 				prep := runtimeCachePrepInitContainer(r.InitContainerImage, runtimeCacheClaimDir(isvc), volume,
 					runtimeCacheDirsFor(backend), resolvedCacheFSGroup(isvc, r.DefaultFSGroup), downloaderUID(isvc, resolveInitContainerUser(r.InitContainerUser)))
 				runtimeCachePrep = &prep
@@ -707,7 +711,9 @@ func (r *InferenceServiceReconciler) constructDeploymentForCache(
 					Annotations: buildPodAnnotations(isvc, r.EmitScrapeAnnotations, port),
 				},
 				Spec: corev1.PodSpec{
-					SecurityContext:    withPrefetchGroup(inferPodSecurityContext(isvc, r.DefaultFSGroup, r.DRIRenderGID, vulkan), r.DefaultFSGroup, storageConfig.readsPrefetchedCache),
+					SecurityContext: withRuntimeCacheFSGroupPolicy(
+						withPrefetchGroup(inferPodSecurityContext(isvc, r.DefaultFSGroup, r.DRIRenderGID, vulkan), r.DefaultFSGroup, storageConfig.readsPrefetchedCache),
+						runtimeCacheApplied),
 					InitContainers:     storageConfig.initContainers,
 					Containers:         []corev1.Container{container},
 					Volumes:            storageConfig.volumes,
@@ -1026,8 +1032,10 @@ func revisionHistoryLimitOrDefault(limit *int32) *int32 {
 //
 // The Job has no InferenceService behind it: it writes as the init image's
 // user in the operator's default group, and its prep hands the cache root to
-// that group. A prefetched pod mounts the claim read-only, so the kubelet never
-// applies the pod's own fsGroup to it, and a service with its own
+// that group. A prefetched pod mounts the claim read-only unless the runtime
+// cache is enabled, so the kubelet does not apply the pod's own fsGroup to it
+// (with the runtime cache it sets OnRootMismatch, see
+// withRuntimeCacheFSGroupPolicy), and a service with its own
 // podSecurityContext could not enter the root whenever the Job was the last to
 // set its owner (its other, read-write pods hand the root back to the
 // service's group, so the failure came and went). The group is added on a
@@ -1044,5 +1052,21 @@ func withPrefetchGroup(psc *corev1.PodSecurityContext, defaultFSGroup int64, rea
 	}
 	out := psc.DeepCopy()
 	out.SupplementalGroups = append(out.SupplementalGroups, defaultFSGroup)
+	return out
+}
+
+// withRuntimeCacheFSGroupPolicy sets fsGroupChangePolicy on the pod's copy of
+// the effective security context when the runtime cache is applied and that
+// context sets an fsGroup but no policy. The runtime cache mounts the claim
+// writable, so kubelet's default (Always) would re-own every entry on every
+// pod start; the prep keeps the volume root at the fsGroup, so OnRootMismatch
+// is enough (#2058). A policy the user set is kept as written, and the
+// InferenceService's spec is never changed.
+func withRuntimeCacheFSGroupPolicy(psc *corev1.PodSecurityContext, runtimeCacheApplied bool) *corev1.PodSecurityContext {
+	if !runtimeCacheApplied || psc == nil || psc.FSGroup == nil || psc.FSGroupChangePolicy != nil {
+		return psc
+	}
+	out := psc.DeepCopy()
+	out.FSGroupChangePolicy = fsGroupChangeOnRootMismatch()
 	return out
 }

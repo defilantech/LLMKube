@@ -3833,9 +3833,10 @@ spec:
                       prefetch has succeeded for the Model's current spec; meanwhile it
                       reports ModelPrefetched=False with reason WaitingForPrefetch (or
                       PrefetchFailed, with the live workload left as it was). Once staged, the
-                      serving pods mount the claim read-only with no downloader init
-                      container, and fail with PrefetchedFilesMissing rather than download on
-                      the serving node if a staged file is absent. Progress is reported per
+                      serving pods mount the weights at /models read-only with no downloader
+                      init container, and fail with PrefetchedFilesMissing rather than download
+                      on the serving node if a staged file is absent. The claim itself is
+                      writable only when runtimeCache is enabled. Progress is reported per
                       claim in the Model's status.prefetch.
 
                       On a Model, it is equivalent to spec.prefetch: either field makes the

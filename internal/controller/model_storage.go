@@ -2703,12 +2703,13 @@ func (r *InferenceServiceReconciler) ensureModelCachePVC(ctx context.Context, is
 }
 
 // buildPrefetchedStorageConfig renders the storage of a pod whose weights a
-// prefetch Job already staged: the cache claim mounted read-only, at the same
-// paths the download path uses, with a single init container that checks the
-// staged files are present (and the primary file's spec.sha256 when one is
-// pinned) and fails naming the cause. No cache-prep (the Job prepared the
-// claim) and no downloader: a pod that would download on the serving node is
-// the failure this exists to prevent.
+// prefetch Job already staged: the cache claim mounted at the same paths the
+// download path uses, read-only at /models (the volume source is writable only
+// when the runtime cache needs it, below), with a single init container that
+// checks the staged files are present (and the primary file's spec.sha256 when
+// one is pinned) and fails naming the cause. No cache-prep (the Job prepared
+// the claim) and no downloader: a pod that would download on the serving node
+// is the failure this exists to prevent.
 //
 // staged is the file list the Job recorded on the Model's entry. It is
 // authoritative over anything derived from the Model now: a single-file
