@@ -23,6 +23,7 @@ import (
 	. "github.com/onsi/gomega"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
 	inferencev1alpha1 "github.com/defilantech/llmkube/api/v1alpha1"
 )
@@ -125,5 +126,52 @@ var _ = Describe("InferenceService modelCache CRD validation", func() {
 		err := k8sClient.Create(ctx, isvc)
 		Expect(err).To(HaveOccurred())
 		Expect(err.Error()).To(ContainSubstring("Unsupported value"))
+	})
+
+	It("admits runtimeCache enabled on its own", func() {
+		isvc := newISvc("mc-valid-runtime-cache", &inferencev1alpha1.ModelCacheSpec{
+			RuntimeCache: &inferencev1alpha1.RuntimeCacheSpec{Enabled: true},
+		})
+		Expect(k8sClient.Create(ctx, isvc)).To(Succeed())
+		Expect(k8sClient.Delete(ctx, isvc)).To(Succeed())
+	})
+
+	It("admits runtimeCache with enabled false", func() {
+		isvc := newISvc("mc-valid-runtime-cache-off", &inferencev1alpha1.ModelCacheSpec{
+			RuntimeCache: &inferencev1alpha1.RuntimeCacheSpec{Enabled: false},
+		})
+		Expect(k8sClient.Create(ctx, isvc)).To(Succeed())
+		Expect(k8sClient.Delete(ctx, isvc)).To(Succeed())
+	})
+
+	It("rejects runtimeCache enabled together with Ephemeral", func() {
+		// The two contradict each other statically: there is no claim to keep
+		// a compiled kernel on, so the feature would have nothing to point at.
+		isvc := newISvc("mc-invalid-runtime-cache-ephemeral", &inferencev1alpha1.ModelCacheSpec{
+			Persistence:  inferencev1alpha1.ModelCachePersistenceEphemeral,
+			RuntimeCache: &inferencev1alpha1.RuntimeCacheSpec{Enabled: true},
+		})
+		err := k8sClient.Create(ctx, isvc)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring(
+			"runtimeCache cannot be enabled when persistence is Ephemeral"))
+	})
+
+	It("rejects an empty runtimeCache block", func() {
+		// The field is required inside the struct, so a block that asks for
+		// nothing is refused at admission instead of silently doing nothing.
+		// Written as unstructured because the typed client always serializes
+		// enabled, even as false, and so cannot express an empty block.
+		u := &unstructured.Unstructured{}
+		u.SetGroupVersionKind(inferencev1alpha1.GroupVersion.WithKind("InferenceService"))
+		u.SetName("mc-invalid-runtime-cache-empty")
+		u.SetNamespace("default")
+		u.Object["spec"] = map[string]interface{}{
+			"modelRef":   "modelcache-cel-model",
+			"modelCache": map[string]interface{}{"runtimeCache": map[string]interface{}{}},
+		}
+		err := k8sClient.Create(ctx, u)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("runtimeCache.enabled"))
 	})
 })
