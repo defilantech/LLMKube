@@ -4096,12 +4096,14 @@ spec:
                 type: string
               parallelSlots:
                 description: |-
-                  ParallelSlots sets the number of concurrent request slots for the llama.cpp
-                  server (--parallel flag). Each slot processes one request independently;
-                  higher values use more KV cache memory. If not specified, the operator
-                  omits --parallel and llama.cpp picks an auto value (currently 4).
+                  ParallelSlots sets how many requests one replica serves concurrently:
+                  llama.cpp --parallel, vLLM and vllm-swift --max-num-seqs, mlx-server
+                  --max-slots. More slots use more KV cache memory. If not specified, the
+                  operator omits the flag and the runtime picks its own default (llama.cpp:
+                  auto, currently 4). Values above 64 are accepted for vllm and vllm-swift
+                  only, whose batch schedulers are sized in the hundreds.
                 format: int32
-                maximum: 64
+                maximum: 1024
                 minimum: 1
                 type: integer
               personaPlexConfig:
@@ -6662,6 +6664,10 @@ spec:
             - modelRef
             type: object
             x-kubernetes-validations:
+            - message: parallelSlots above 64 is supported for runtime vllm and vllm-swift
+                only
+              rule: '!has(self.parallelSlots) || self.parallelSlots <= 64 || (has(self.runtime)
+                && self.runtime in [''vllm'',''vllm-swift''])'
             - message: 'multiNode serves one group: replicas must be 1 or unset'
               rule: '!has(self.multiNode) || !has(self.replicas) || self.replicas
                 <= 1'
