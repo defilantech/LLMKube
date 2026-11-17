@@ -880,3 +880,38 @@ func TestModelRouterSelectorEndpointOverlayEnqueued(t *testing.T) {
 		t.Errorf("an EndpointSlice event did not enqueue the endpoint-overlay router: got %v", requests)
 	}
 }
+
+// TestModelRouterSelectorModelPoolEventEnqueuesRouter pins the ModelPool
+// fan-out: a pool edit re-renders every selector router in the namespace even
+// when the pool shares no member with it, because the selector can pick a pool
+// member and its compiled BackendPool changes with the pool.
+func TestModelRouterSelectorModelPoolEventEnqueuesRouter(t *testing.T) {
+	c, _, stop := startBudgetTestEnv(t)
+	defer stop()
+	ns := newTestNamespace(t, c)
+
+	createTypedSelectorRouter(t, c, ns, "models", routerSelector(), nil, nil)
+	createTypedSelectorRouter(t, c, ns, "explicit", nil,
+		[]inferencev1alpha1.RouterBackend{{
+			Name:                "explicit-a",
+			InferenceServiceRef: &corev1.LocalObjectReference{Name: "explicit-a"},
+		}}, nil)
+
+	pool := &inferencev1alpha1.ModelPool{
+		ObjectMeta: metav1.ObjectMeta{Name: "pool-1", Namespace: ns},
+		Spec: inferencev1alpha1.ModelPoolSpec{
+			SwapPolicy: inferencev1alpha1.ModelPoolSwapPolicySticky,
+			Members: []inferencev1alpha1.ModelPoolMember{{
+				InferenceServiceRef: corev1.LocalObjectReference{Name: "someone-else"},
+			}},
+		},
+	}
+	requests := selectorReconciler(c).findModelRoutersForModelPool(context.Background(), pool)
+	got := make([]string, 0, len(requests))
+	for _, req := range requests {
+		got = append(got, req.Name)
+	}
+	if !slices.Equal(got, []string{"models"}) {
+		t.Fatalf("ModelPool event enqueued %v, want only the selector router", got)
+	}
+}
