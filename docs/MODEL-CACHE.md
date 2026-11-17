@@ -942,6 +942,62 @@ Behavior:
   `spec.resources.ephemeralStorage`); both are rejected at admission, as is a
   value that is not a positive Kubernetes quantity.
 
+### Persistent Runtime Compile Caches
+
+After the weights load, a vLLM or SGLang start spends minutes compiling and
+autotuning kernels, and writes the result inside the container, so every new
+pod repeats the work. Set `spec.modelCache.runtimeCache.enabled` to keep those
+caches on the model cache claim:
+
+```yaml
+spec:
+  modelCache:
+    runtimeCache:
+      enabled: true
+```
+
+- The pod mounts `_runtime-cache/<namespace>/<name>` from the cache claim,
+  read-write, at `/runtime-cache`, beside the read-only `/models` mount. The
+  directory is per InferenceService and is never shared, because the caches
+  hold compiled objects the runtime loads. It counts against the claim's size
+  alongside the weights; the operator never deletes it, and `llmkube cache
+  clear` leaves it alone, reporting it as not a cache key directory.
+- The caches are relocated with the runtime's own environment variables.
+  vLLM: `VLLM_CACHE_ROOT` (`/runtime-cache/vllm`), `TRITON_CACHE_DIR`
+  (`/runtime-cache/triton`), `TILELANG_CACHE_DIR` (`/runtime-cache/tilelang`),
+  `TORCHINDUCTOR_CACHE_DIR` (`/runtime-cache/torchinductor`) and
+  `FLASHINFER_WORKSPACE_BASE` (`/runtime-cache/flashinfer`; FlashInfer appends
+  `/.cache/flashinfer`, so its files land in
+  `/runtime-cache/flashinfer/.cache/flashinfer`). SGLang: `SGLANG_CACHE_DIR`
+  (`/runtime-cache`), the parent of every third-party cache SGLang routes.
+- One root init container, `runtime-cache-prep`, creates the per-service
+  directory and each declared cache directory and chowns and chmods those
+  paths only, never recursively. It runs under the same security context as
+  `model-cache-prep` (root, ALL capabilities dropped, `CHOWN` and `FOWNER`
+  added, no privilege escalation, read-only root filesystem), which is why
+  `--model-cache-prep=never` declines the feature with a
+  `RuntimeCacheNeedsPrepare` warning event.
+- Your `spec.env` entry for one of those variables wins. A volume you mount in
+  `spec.extraVolumeMounts` at one of the runtimes' default cache paths
+  (`/root/.cache/vllm`, `/root/.triton`, `/root/.tilelang`,
+  `/tmp/torchinductor_root`, `/root/.cache/flashinfer`, `/root/.cache/sglang`)
+  takes that one cache over and leaves the others relocated; one at
+  `/runtime-cache` itself means the operator adds nothing at all.
+- The field applies to vLLM and SGLang only, and only where the pod mounts a
+  writable cache claim. Everywhere else it raises a `RuntimeCacheUnsupported`
+  warning event: a runtime with no persistent compile cache (llama.cpp and TGI
+  need none), a Metal Model, a pre-staged `pvc://` or `oci://` source,
+  `spec.skipModelInit`, caching disabled on the operator, `persistence:
+  Ephemeral` or a Model whose cache key has not been computed yet.
+- `persistence: Ephemeral` cannot be combined with it: the API server rejects
+  the pair, because an emptyDir leaves no claim to keep a cache on.
+- Two replicas of one service share that one directory. On a node-local
+  locking filesystem such as BlobFuse, locks do not exclude across nodes (the
+  downloader documents the same hazard), so two replicas on different nodes
+  can compile the same kernel at once; the caches write to temporary files and
+  rename them into place, which limits the damage. A `ReadWriteOnce` claim
+  limits the cache to a single node's pods in any case.
+
 ## CLI Commands
 
 ### List Cached Models
