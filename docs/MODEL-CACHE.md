@@ -985,8 +985,8 @@ spec:
   `model-cache-prep` (root, ALL capabilities dropped, `CHOWN` and `FOWNER`
   added, no privilege escalation, read-only root filesystem), plus a
   `runAsGroup: 0` of its own so the pod's own group cannot leave it unable to
-  create the directory. That context is why `--model-cache-prep=never` declines
-  the feature with a
+  create the directory, which is why `--model-cache-prep=never` declines the
+  feature with a
   `RuntimeCacheNeedsPrepare` warning event. The prep hands the directory to
   the operator's `fsGroup`, or with `--default-fsgroup=0` to the downloader's
   uid with group `0`; a pod whose own `podSecurityContext` sets no `fsGroup`
