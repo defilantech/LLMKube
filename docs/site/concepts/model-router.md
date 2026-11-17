@@ -252,7 +252,7 @@ Point any OpenAI-compatible client at that URL and it just works. The proxy serv
 | `POST /v1/rerank` | Reranking |
 | `POST /v1/messages` | Anthropic Messages API: Claude Code and the Anthropic SDKs |
 | `POST /v1/messages/count_tokens` | Anthropic token counting |
-| `GET /v1/models` | Model discovery: one entry per backend, under its `displayName`, else its `name`, the id `BackendNameMatch` resolves. An external backend's upstream `model` is not listed. An InferenceService that `backendSelector` selected is left out while it is scaled to zero or suspended, unless an explicit `backends` entry references it (see [Selecting backends by label](#selecting-backends-by-label)). |
+| `GET /v1/models` | Model discovery: one entry per backend, under its `displayName`, else its `name`, the id `BackendNameMatch` resolves. An external backend's upstream `model` is not listed. An InferenceService that `backendSelector` selected is left out while it is scaled to zero or suspended, unless an explicit `backends` entry with `inferenceServiceRef` references it (see [Selecting backends by label](#selecting-backends-by-label)). |
 
 The two Anthropic routes are placed, balanced and session-bound exactly like chat completions, and headers such as `anthropic-version` and `anthropic-beta` pass through. The backend must serve them itself: vLLM does natively; a backend that does not returns its own `404`, which reaches the client unchanged and does not count against the backend. Token budgets charge Anthropic responses from their own usage fields (cached input included), and errors the router itself returns on these routes use the Anthropic error shape.
 

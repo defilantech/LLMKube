@@ -648,9 +648,10 @@ func (r *ModelRouterReconciler) findModelRoutersForEndpointSlice(ctx context.Con
 }
 
 // routerHasEndpointBackend reports whether any of the router's local backends
-// resolves to pod endpoints rather than the Service DNS name. A ref-less
-// entry counts when a backendSelector is set: the selector gives it an
-// InferenceServiceRef, and its stated resolution carries into the merge.
+// resolves to pod endpoints rather than the Service DNS name. A ref-less entry
+// that sets resolution: endpoint counts when a backendSelector is set: the
+// selector gives it an InferenceServiceRef, and its resolution carries into the
+// merge.
 func routerHasEndpointBackend(mr *inferencev1alpha1.ModelRouter) bool {
 	for i := range mr.Spec.Backends {
 		b := &mr.Spec.Backends[i]

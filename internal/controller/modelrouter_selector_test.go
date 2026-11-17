@@ -447,6 +447,8 @@ func TestModelRouterExplicitRouterConfigUnchanged(t *testing.T) {
 	ns := newTestNamespace(t, c)
 
 	applySelectorManifest(t, c, ns, inferenceServiceManifest("local-a", nil))
+	stopped := applySelectorManifest(t, c, ns, inferenceServiceManifest("local-stopped", nil))
+	setSpecField(t, c, stopped, "replicas", int64(0))
 	applySelectorManifest(t, c, ns, `apiVersion: v1
 kind: Secret
 metadata:
@@ -464,6 +466,9 @@ spec:
       inferenceServiceRef:
         name: local-a
       resolution: endpoint
+    - name: local-stopped
+      inferenceServiceRef:
+        name: local-stopped
     - name: cloud-b
       tier: cloud
       external:
@@ -487,12 +492,15 @@ spec:
 	reconcileSelectorRouter(t, r, ns, "explicit")
 
 	cfg := routerConfigJSON(t, c, ns, "explicit")
-	assertBackendNames(t, cfg, "local-a", "cloud-b")
-	for _, name := range []string{"local-a", "cloud-b"} {
+	assertBackendNames(t, cfg, "local-a", "local-stopped", "cloud-b")
+	for _, name := range []string{"local-a", "local-stopped", "cloud-b"} {
 		b := configBackend(t, cfg, name)
 		if _, present := b["hidden"]; present {
 			t.Errorf("explicit backend %q carries a hidden key: %v", name, b)
 		}
+	}
+	if got := modelIDsFromProxy(t, cfg); !slices.Equal(got, []string{"local-a", "local-stopped", "cloud-b"}) {
+		t.Errorf("GET /v1/models = %v, want a stopped explicit backend listed: an explicit entry keeps today's behavior", got)
 	}
 	if cfg["defaultRoute"] != "local-a" {
 		t.Errorf("defaultRoute = %v, want local-a", cfg["defaultRoute"])
@@ -510,7 +518,7 @@ spec:
 	if got := configBackend(t, cfg, "cloud-b")["tier"]; got != "cloud" {
 		t.Errorf("cloud-b tier = %v, want cloud", got)
 	}
-	if got := routerStatusBackendNames(t, c, ns, "explicit"); !slices.Equal(got, []string{"local-a", "cloud-b"}) {
+	if got := routerStatusBackendNames(t, c, ns, "explicit"); !slices.Equal(got, []string{"local-a", "local-stopped", "cloud-b"}) {
 		t.Errorf("status.backends = %v, want spec order", got)
 	}
 
