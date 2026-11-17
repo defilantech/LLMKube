@@ -3888,8 +3888,10 @@ spec:
                           runtime implements a cache (vLLM and SGLang). Everywhere else the field
                           is reported as ignored with a RuntimeCacheUnsupported warning event, a
                           claim with no writable access mode with a RuntimeCacheClaimReadOnly one,
-                          and a prefetched service whose own podSecurityContext.fsGroup differs
-                          from the operator's with a RuntimeCacheFSGroupMismatch one; with
+                          and a prefetched service whose own podSecurityContext.fsGroup is set to a
+                          value other than the operator's group, or to any value when the operator
+                          sets no fsGroup (--default-fsgroup=0), with a
+                          RuntimeCacheFSGroupMismatch one; with
                           --model-cache-prep=never it is declined with a RuntimeCacheNeedsPrepare
                           event. It cannot carry enabled: true beside persistence Ephemeral, which
                           leaves no claim to keep a cache on. The operator never deletes the
