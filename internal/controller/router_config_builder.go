@@ -203,10 +203,11 @@ func (r *ModelRouterReconciler) resolveBackend(
 		switch {
 		case err == nil:
 			isvc = obj
-		case !errors.IsNotFound(err) && b.ModelInfo != nil:
-			// Only modelInfo fails the compile on a lookup error, as
-			// compileBalancing does; without it the backend compiles as before.
-			return wire, status, fmt.Errorf("get InferenceService %s for backend %q modelInfo: %w", b.InferenceServiceRef.Name, b.Name, err)
+		case !errors.IsNotFound(err) && (b.ModelInfo != nil || b.Resolution == inferencev1alpha1.RouterBackendResolutionEndpoint):
+			// modelInfo and an endpoint backend's concurrencyLimit fail the
+			// compile on a lookup error, as compileBalancing does; otherwise the
+			// backend compiles as before.
+			return wire, status, fmt.Errorf("get InferenceService %s for backend %q: %w", b.InferenceServiceRef.Name, b.Name, err)
 		}
 	}
 	info, err := r.compileModelInfo(ctx, mr, b, isvc)

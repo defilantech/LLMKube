@@ -2211,6 +2211,39 @@ func TestCompileRouterConfigConcurrencyLimit(t *testing.T) {
 	}
 }
 
+// TestCompileRouterConfigConcurrencyLimitLookupError: an endpoint backend
+// whose InferenceService lookup fails with anything but NotFound fails the
+// compile, so a transient error cannot drop concurrencyLimit and roll the
+// proxy twice.
+func TestCompileRouterConfigConcurrencyLimitLookupError(t *testing.T) {
+	mr := canonicalModelRouter()
+	mr.Spec.Backends[0].Resolution = inferencev1alpha1.RouterBackendResolutionEndpoint
+	limit := int32(128)
+	isvc := &inferencev1alpha1.InferenceService{
+		ObjectMeta: metav1.ObjectMeta{Name: "qwen3-coder", Namespace: testBuilderNs},
+		Spec:       inferencev1alpha1.InferenceServiceSpec{Runtime: RuntimeVLLM, ParallelSlots: &limit},
+	}
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "anthropic-key", Namespace: testBuilderNs},
+		Data:       map[string][]byte{"ANTHROPIC_API_KEY": []byte("test")},
+	}
+	r := newRouterReconcilerForTest(t, mr, isvc, secret)
+	// keyedBackends reads the InferenceService first; resolveBackend's
+	// lookup is the second Get, and it fails.
+	var gets atomic.Int32
+	r.Client = interceptor.NewClient(r.Client.(client.WithWatch), interceptor.Funcs{
+		Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+			if _, ok := obj.(*inferencev1alpha1.InferenceService); ok && gets.Add(1) == 2 {
+				return apierrors.NewServiceUnavailable("apiserver unavailable")
+			}
+			return c.Get(ctx, key, obj, opts...)
+		},
+	})
+	if _, err := r.compileRouterConfig(context.Background(), mr); err == nil || !strings.Contains(err.Error(), "apiserver unavailable") {
+		t.Fatalf("compile err = %v, want the InferenceService lookup error", err)
+	}
+}
+
 // TestServedConcurrencyLimit pins the per-runtime flag each limit is read
 // from, extraArgs first because the runtime keeps their value.
 func TestServedConcurrencyLimit(t *testing.T) {
