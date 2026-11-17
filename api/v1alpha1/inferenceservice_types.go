@@ -157,12 +157,46 @@ const (
 	ModelCachePersistenceEphemeral ModelCachePersistence = "Ephemeral"
 )
 
+// RuntimeCacheSpec keeps a runtime's compile and autotune caches on the model
+// cache claim (#2117). It is a struct rather than a bool so it can grow without
+// an API break.
+type RuntimeCacheSpec struct {
+	// Enabled keeps the runtime's compile and autotune caches on the model
+	// cache claim, so a restarted or rescheduled Pod skips the kernel builds
+	// and autotuning it would otherwise repeat.
+	//
+	// The serving Pod mounts the claim's
+	// _runtime-cache/<namespace>/<name> directory, read-write, at
+	// /runtime-cache, and points the runtime's caches into it with the
+	// runtime's own environment variables: vLLM's VLLM_CACHE_ROOT,
+	// TRITON_CACHE_DIR, TILELANG_CACHE_DIR, TORCHINDUCTOR_CACHE_DIR and
+	// FLASHINFER_WORKSPACE_BASE, or SGLang's SGLANG_CACHE_DIR. The directory
+	// is per InferenceService and is never shared: these caches hold compiled
+	// shared objects the runtime loads.
+	//
+	// A spec.env entry naming one of those variables wins, and a volume in
+	// extraVolumeMounts at one of the runtimes' default cache paths takes that
+	// cache over; a volume at /runtime-cache itself means the operator adds
+	// nothing.
+	//
+	// Emitted only where the serving Pod mounts a writable cache claim and the
+	// runtime implements a cache (vLLM and SGLang). Everywhere else the field
+	// is reported as ignored with a RuntimeCacheUnsupported warning event, and
+	// with --model-cache-prep=never it is declined with a
+	// RuntimeCacheNeedsPrepare one. It cannot be combined with persistence
+	// Ephemeral, which leaves no claim to keep a cache on. The operator never
+	// deletes the directory, and it counts against the claim's size alongside
+	// the weights.
+	Enabled bool `json:"enabled"`
+}
+
 // +kubebuilder:validation:XValidation:rule="!(has(self.persistence) && self.persistence == 'Ephemeral' && has(self.claimName))",message="claimName cannot be set when persistence is Ephemeral: one names a cache volume to use, the other declines to use any"
 // +kubebuilder:validation:XValidation:rule="!(has(self.storageClassName) && has(self.claimName))",message="storageClassName cannot be set together with claimName: the named claim is user-owned and its storage class was chosen when the claim itself was created"
 // +kubebuilder:validation:XValidation:rule="!(has(self.persistence) && self.persistence == 'Ephemeral' && has(self.storageClassName))",message="storageClassName cannot be set when persistence is Ephemeral: the weights land in an emptyDir and no PVC is created to class"
 // +kubebuilder:validation:XValidation:rule="!(has(self.size) && has(self.claimName))",message="size cannot be set together with claimName: the named claim is user-owned and its size was chosen when the claim itself was created"
 // +kubebuilder:validation:XValidation:rule="!(has(self.persistence) && self.persistence == 'Ephemeral' && has(self.size))",message="size cannot be set when persistence is Ephemeral: the weights land in an emptyDir and no PVC is created to size; bound the emptyDir with resources.ephemeralStorage instead"
 // +kubebuilder:validation:XValidation:rule="!(has(self.persistence) && self.persistence == 'Ephemeral' && has(self.prefetch) && self.prefetch)",message="prefetch cannot be set when persistence is Ephemeral: there is no cache volume to stage into"
+// +kubebuilder:validation:XValidation:rule="!(has(self.persistence) && self.persistence == 'Ephemeral' && has(self.runtimeCache) && self.runtimeCache.enabled)",message="runtimeCache cannot be enabled when persistence is Ephemeral: the weights land in an emptyDir and no claim survives to keep the runtime's compiled kernels on"
 type ModelCacheSpec struct {
 	// Persistence selects whether weights survive a Pod restart.
 	//
@@ -295,6 +329,13 @@ type ModelCacheSpec struct {
 	// of time (s3://).
 	// +optional
 	Prefetch bool `json:"prefetch,omitempty"`
+
+	// RuntimeCache keeps the runtime's compile and autotune caches on the
+	// cache claim this service mounts, under a per-service directory that no
+	// other service can reach. See RuntimeCacheSpec for the paths it covers,
+	// the variables that relocate them, and the cases where it is ignored.
+	// +optional
+	RuntimeCache *RuntimeCacheSpec `json:"runtimeCache,omitempty"`
 }
 
 // DefaultMultiNodeRendezvousPort is the torch.distributed rendezvous port rank 0
