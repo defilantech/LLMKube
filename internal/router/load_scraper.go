@@ -49,6 +49,7 @@ const (
 type scrapeTarget struct {
 	backend string
 	profile MetricsProfile
+	limit   int32
 }
 
 // LoadScraper reads each pod's engine metrics for every LoadAware backend
@@ -83,7 +84,7 @@ func NewLoadScraper(cfg *Config, disp *Dispatcher, routerName string, logger *sl
 		if b.Balancing == nil || b.Balancing.Mode != BalancingLoadAware || b.Metrics == nil {
 			continue
 		}
-		s.targets = append(s.targets, scrapeTarget{backend: b.Name, profile: *b.Metrics})
+		s.targets = append(s.targets, scrapeTarget{backend: b.Name, profile: *b.Metrics, limit: b.ConcurrencyLimit})
 	}
 	return s
 }
@@ -116,7 +117,11 @@ var errPollUnreachable = errors.New("endpoint unreachable")
 // toward the endpoint's poll quarantine; any HTTP response clears it, since a
 // runtime without the metrics path may still serve inference.
 func (s *LoadScraper) scrapeOnce(ctx context.Context) {
-	var wg sync.WaitGroup
+	var (
+		wg       sync.WaitGroup
+		mu       sync.Mutex
+		observed = map[gaugeKey]struct{}{}
+	)
 	for _, tgt := range s.targets {
 		for _, ep := range s.disp.EndpointsOf(tgt.backend) {
 			wg.Add(1)
@@ -140,6 +145,10 @@ func (s *LoadScraper) scrapeOnce(ctx context.Context) {
 				}
 				s.disp.recordPollAnswered(tgt.backend, ep)
 				s.disp.RecordSample(tgt.backend, ep, picker.Sample{Running: running, Waiting: waiting, KVUsage: kv, At: s.disp.nowFn()})
+				k := s.observeSample(tgt, ep, running, waiting, kv)
+				mu.Lock()
+				observed[k] = struct{}{}
+				mu.Unlock()
 			}(tgt, ep)
 		}
 	}
@@ -161,15 +170,51 @@ func (s *LoadScraper) scrapeOnce(ctx context.Context) {
 			current[gaugeKey{tgt.backend, ep, t.Pod, t.Node}] = struct{}{}
 		}
 	}
+	// A histogram observed for a key the gauges did not write (the pod left, or
+	// its pod or node changed, after its scrape) would otherwise never be
+	// deleted.
+	for k := range observed {
+		if _, ok := current[k]; !ok {
+			s.deleteSeries(k)
+		}
+	}
 	for k := range s.written {
 		if _, ok := current[k]; !ok {
-			prommetrics.RouterEndpointLoad.DeleteLabelValues(s.routerName, k.backend, k.endpoint, k.pod, k.node)
-			prommetrics.RouterEndpointMetricsFresh.DeleteLabelValues(s.routerName, k.backend, k.endpoint, k.pod, k.node)
-			prommetrics.RouterEndpointPrefillTokens.DeleteLabelValues(s.routerName, k.backend, k.endpoint, k.pod, k.node)
-			prommetrics.RouterPrefillTokensEstimatedTotal.DeleteLabelValues(s.routerName, k.backend, k.endpoint, k.pod, k.node)
+			s.deleteSeries(k)
 		}
 	}
 	s.written = current
+}
+
+// deleteSeries drops every per-endpoint series the scraper writes for k.
+func (s *LoadScraper) deleteSeries(k gaugeKey) {
+	lvs := []string{s.routerName, k.backend, k.endpoint, k.pod, k.node}
+	prommetrics.RouterEndpointLoad.DeleteLabelValues(lvs...)
+	prommetrics.RouterEndpointMetricsFresh.DeleteLabelValues(lvs...)
+	prommetrics.RouterEndpointPrefillTokens.DeleteLabelValues(lvs...)
+	prommetrics.RouterPrefillTokensEstimatedTotal.DeleteLabelValues(lvs...)
+	prommetrics.RouterEndpointKVUsage.DeleteLabelValues(lvs...)
+	prommetrics.RouterEndpointSlotUtilization.DeleteLabelValues(lvs...)
+	prommetrics.RouterEndpointRunningRequests.DeleteLabelValues(lvs...)
+	prommetrics.RouterEndpointWaitingRequests.DeleteLabelValues(lvs...)
+}
+
+// observeSample records one stored sample in the pressure histograms. KV is
+// skipped for a profile without a KV gauge, whose parsed value is a
+// placeholder 0, and slot utilization for a backend without a known limit.
+// It returns the series key it wrote.
+func (s *LoadScraper) observeSample(tgt scrapeTarget, ep string, running, waiting, kv float64) gaugeKey {
+	t := s.disp.targetOf(tgt.backend, ep)
+	lvs := []string{s.routerName, tgt.backend, ep, t.Pod, t.Node}
+	prommetrics.RouterEndpointRunningRequests.WithLabelValues(lvs...).Observe(running)
+	prommetrics.RouterEndpointWaitingRequests.WithLabelValues(lvs...).Observe(waiting)
+	if tgt.profile.KVUsage != "" {
+		prommetrics.RouterEndpointKVUsage.WithLabelValues(lvs...).Observe(kv)
+	}
+	if tgt.limit > 0 {
+		prommetrics.RouterEndpointSlotUtilization.WithLabelValues(lvs...).Observe(running / float64(tgt.limit))
+	}
+	return gaugeKey{tgt.backend, ep, t.Pod, t.Node}
 }
 
 // stillLive reports whether endpoint is in backend's current endpoint set.

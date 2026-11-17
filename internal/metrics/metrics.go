@@ -35,6 +35,10 @@ const (
 	labelBackend = "backend"
 )
 
+// utilizationBuckets resolve 0-to-1 fractions finely near 1, where the
+// router's KV-full threshold (0.9) and a pod's concurrency limit sit.
+var utilizationBuckets = []float64{0.1, 0.25, 0.5, 0.6, 0.7, 0.8, 0.85, 0.9, 0.95, 0.98, 0.99, 1}
+
 var (
 	// Model metrics
 
@@ -237,6 +241,46 @@ var (
 		prometheus.GaugeOpts{
 			Name: "llmkube_router_endpoint_metrics_fresh",
 			Help: "Whether the router proxy holds a fresh engine-metrics sample for a pod (1) or not (0).",
+		},
+		[]string{labelRouter, labelBackend, "endpoint", "target_pod", "target_node"},
+	)
+
+	// RouterEndpointKVUsage, RouterEndpointSlotUtilization,
+	// RouterEndpointRunningRequests and RouterEndpointWaitingRequests take one
+	// observation per engine-metrics sample (about one a second), so their
+	// quantiles are time-weighted and hold peaks a gauge scrape misses.
+	RouterEndpointKVUsage = prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Name:    "llmkube_router_endpoint_kv_usage",
+			Help:    "Engine KV-cache use (0 to 1) of one pod, one observation per router proxy load sample.",
+			Buckets: utilizationBuckets,
+		},
+		[]string{labelRouter, labelBackend, "endpoint", "target_pod", "target_node"},
+	)
+
+	RouterEndpointSlotUtilization = prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Name:    "llmkube_router_endpoint_slot_utilization",
+			Help:    "Running requests over the backend's concurrency limit for one pod, one observation per router proxy load sample; absent when the limit is unknown.",
+			Buckets: utilizationBuckets,
+		},
+		[]string{labelRouter, labelBackend, "endpoint", "target_pod", "target_node"},
+	)
+
+	RouterEndpointRunningRequests = prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Name:    "llmkube_router_endpoint_running_requests",
+			Help:    "Engine running requests of one pod, one observation per router proxy load sample.",
+			Buckets: []float64{0, 1, 2, 4, 8, 16, 32, 64, 96, 128, 192, 256, 512},
+		},
+		[]string{labelRouter, labelBackend, "endpoint", "target_pod", "target_node"},
+	)
+
+	RouterEndpointWaitingRequests = prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Name:    "llmkube_router_endpoint_waiting_requests",
+			Help:    "Engine waiting requests of one pod, one observation per router proxy load sample.",
+			Buckets: []float64{0, 1, 2, 4, 8, 16, 32, 64},
 		},
 		[]string{labelRouter, labelBackend, "endpoint", "target_pod", "target_node"},
 	)
@@ -740,6 +784,10 @@ var RouterCollectors = []prometheus.Collector{
 	RouterEndpointSourceReady,
 	RouterEndpointLoad,
 	RouterEndpointMetricsFresh,
+	RouterEndpointKVUsage,
+	RouterEndpointSlotUtilization,
+	RouterEndpointRunningRequests,
+	RouterEndpointWaitingRequests,
 	RouterDispatchRetriesTotal,
 	RouterEndpointPrefillTokens,
 	RouterPrefillTokensEstimatedTotal,

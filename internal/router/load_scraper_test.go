@@ -30,6 +30,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/testutil"
+	dto "github.com/prometheus/client_model/go"
 
 	prommetrics "github.com/defilantech/llmkube/internal/metrics"
 	"github.com/defilantech/llmkube/internal/router/picker"
@@ -242,6 +243,11 @@ func TestLoadScraperSkipsEndpointThatLeftMidScrape(t *testing.T) {
 	if prommetrics.RouterEndpointLoad.DeleteLabelValues("r-leave", "qwen", leaving.URL, "", "") {
 		t.Error("a departed endpoint has a load gauge series")
 	}
+	for name, vec := range pressureHistograms {
+		if vec.DeleteLabelValues("r-leave", "qwen", leaving.URL, "", "") {
+			t.Errorf("a departed endpoint has a %s histogram series", name)
+		}
+	}
 }
 
 func TestScraperWritesAndDeletesPrefillGauge(t *testing.T) {
@@ -283,6 +289,7 @@ func TestLoadScraperLabelsSeriesWithPodAndNode(t *testing.T) {
 	defer srv.Close()
 
 	cfg := scrapedConfig()
+	cfg.Backends[0].ConcurrencyLimit = 8
 	d := NewDispatcher(cfg)
 	d.SetReadyEndpoints("qwen", []ReadyEndpoint{{URL: srv.URL, EndpointTarget: EndpointTarget{Pod: "qwen-a", Node: "gpu-1"}}})
 	s := NewLoadScraper(cfg, d, "r-target", slog.New(slog.NewTextHandler(io.Discard, nil)))
@@ -295,6 +302,11 @@ func TestLoadScraperLabelsSeriesWithPodAndNode(t *testing.T) {
 			t.Errorf("%s series is not labelled with the endpoint's pod and node", name)
 		}
 	}
+	for name, vec := range pressureHistograms {
+		if !vec.DeleteLabelValues("r-target", "qwen", srv.URL, "qwen-a", "gpu-1") {
+			t.Errorf("%s histogram is not labelled with the endpoint's pod and node", name)
+		}
+	}
 }
 
 // A pod IP reused by another Pod (or the same Pod rescheduled elsewhere) must
@@ -305,6 +317,7 @@ func TestLoadScraperDropsSeriesOfAReplacedTarget(t *testing.T) {
 	defer srv.Close()
 
 	cfg := scrapedConfig()
+	cfg.Backends[0].ConcurrencyLimit = 8
 	d := NewDispatcher(cfg, WithRouterLabel("r-reuse"))
 	d.SetReadyEndpoints("qwen", []ReadyEndpoint{{URL: srv.URL, EndpointTarget: EndpointTarget{Pod: "qwen-old", Node: "gpu-1"}}})
 	s := NewLoadScraper(cfg, d, "r-reuse", slog.New(slog.NewTextHandler(io.Discard, nil)))
@@ -323,7 +336,197 @@ func TestLoadScraperDropsSeriesOfAReplacedTarget(t *testing.T) {
 			t.Errorf("%s series of the new pod is missing", name)
 		}
 	}
+	for name, vec := range pressureHistograms {
+		if vec.DeleteLabelValues("r-reuse", "qwen", srv.URL, "qwen-old", "gpu-1") {
+			t.Errorf("%s histogram of the replaced pod survived", name)
+		}
+		if !vec.DeleteLabelValues("r-reuse", "qwen", srv.URL, "qwen-new", "gpu-2") {
+			t.Errorf("%s histogram of the new pod is missing", name)
+		}
+	}
 	if prommetrics.RouterPrefillTokensEstimatedTotal.DeleteLabelValues("r-reuse", "qwen", srv.URL, "qwen-old", "gpu-1") {
 		t.Error("prefill counter of the replaced pod survived")
+	}
+}
+
+var pressureHistograms = map[string]*prometheus.HistogramVec{
+	"kv":          prommetrics.RouterEndpointKVUsage,
+	"utilization": prommetrics.RouterEndpointSlotUtilization,
+	"running":     prommetrics.RouterEndpointRunningRequests,
+	"waiting":     prommetrics.RouterEndpointWaitingRequests,
+}
+
+// resetPressureSeries drops one router label's pressure histograms, so a test
+// can assert absolute counts under -count above 1.
+func resetPressureSeries(router string) {
+	for _, vec := range pressureHistograms {
+		vec.DeletePartialMatch(prometheus.Labels{"router": router})
+	}
+}
+
+// histogramOf reads one series' histogram without asserting it existed.
+func histogramOf(t *testing.T, vec *prometheus.HistogramVec, lvs ...string) *dto.Histogram {
+	t.Helper()
+	m := &dto.Metric{}
+	if err := vec.WithLabelValues(lvs...).(prometheus.Metric).Write(m); err != nil {
+		t.Fatalf("read histogram: %v", err)
+	}
+	return m.GetHistogram()
+}
+
+// cumulative returns the count of observations at or below le.
+func cumulative(h *dto.Histogram, le float64) uint64 {
+	for _, b := range h.GetBucket() {
+		if b.GetUpperBound() == le {
+			return b.GetCumulativeCount()
+		}
+	}
+	return 0
+}
+
+// TestLoadScraperRecordsPressureHistograms: each stored sample is one
+// observation, in the bucket its value belongs to. The fixture reads running 7,
+// waiting 2, KV 0.42; with a limit of 8, utilization is 0.875.
+func TestLoadScraperRecordsPressureHistograms(t *testing.T) {
+	const router = "r-pressure"
+	resetPressureSeries(router)
+	body, _ := os.ReadFile("testdata/vllm-metrics.txt")
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write(body) }))
+	defer srv.Close()
+
+	cfg := scrapedConfig()
+	cfg.Backends[0].ConcurrencyLimit = 8
+	d := NewDispatcher(cfg)
+	d.SetEndpoints("qwen", []string{srv.URL})
+	s := NewLoadScraper(cfg, d, router, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	s.scrapeOnce(context.Background())
+	s.scrapeOnce(context.Background())
+
+	for _, tc := range []struct {
+		name       string
+		below, at  float64 // the value is above below and at or under at
+		wantSample uint64
+	}{
+		{"kv", 0.25, 0.5, 2},
+		{"utilization", 0.85, 0.9, 2},
+		{"running", 4, 8, 2},
+		{"waiting", 1, 2, 2},
+	} {
+		h := histogramOf(t, pressureHistograms[tc.name], router, "qwen", srv.URL, "", "")
+		if h.GetSampleCount() != tc.wantSample {
+			t.Errorf("%s: sample count = %d, want %d (one per scrape)", tc.name, h.GetSampleCount(), tc.wantSample)
+		}
+		if got := cumulative(h, tc.below); got != 0 {
+			t.Errorf("%s: %d observations at or under %v, want 0", tc.name, got, tc.below)
+		}
+		if got := cumulative(h, tc.at); got != tc.wantSample {
+			t.Errorf("%s: %d observations at or under %v, want %d", tc.name, got, tc.at, tc.wantSample)
+		}
+	}
+}
+
+// TestLoadScraperPressureHistogramsSkipUnknowns: no utilization series without
+// a concurrency limit, no KV series for a profile without a KV gauge, and
+// nothing at all for a pod whose scrape failed.
+func TestLoadScraperPressureHistogramsSkipUnknowns(t *testing.T) {
+	const router = "r-pressure-skip"
+	resetPressureSeries(router)
+	body, _ := os.ReadFile("testdata/vllm-metrics.txt")
+	good := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write(body) }))
+	defer good.Close()
+	down := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "engine down", http.StatusInternalServerError)
+	}))
+	defer down.Close()
+
+	cfg := scrapedConfig()
+	noKV := vllmProfile
+	noKV.KVUsage = ""
+	cfg.Backends[0].Metrics = &noKV
+	d := NewDispatcher(cfg)
+	d.SetEndpoints("qwen", []string{good.URL, down.URL})
+	s := NewLoadScraper(cfg, d, router, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	s.scrapeOnce(context.Background())
+
+	if !prommetrics.RouterEndpointRunningRequests.DeleteLabelValues(router, "qwen", good.URL, "", "") {
+		t.Fatal("running histogram missing for the scraped pod")
+	}
+	if prommetrics.RouterEndpointSlotUtilization.DeleteLabelValues(router, "qwen", good.URL, "", "") {
+		t.Error("utilization recorded for a backend without a concurrency limit")
+	}
+	if prommetrics.RouterEndpointKVUsage.DeleteLabelValues(router, "qwen", good.URL, "", "") {
+		t.Error("KV usage recorded for a profile without a KV gauge")
+	}
+	for name, vec := range pressureHistograms {
+		if vec.DeleteLabelValues(router, "qwen", down.URL, "", "") {
+			t.Errorf("%s recorded for a pod whose scrape failed", name)
+		}
+	}
+}
+
+func TestLoadScraperDropsDepartedEndpointHistograms(t *testing.T) {
+	const router = "r-pressure-depart"
+	resetPressureSeries(router)
+	body, _ := os.ReadFile("testdata/vllm-metrics.txt")
+	serve := func() *httptest.Server {
+		return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write(body) }))
+	}
+	keep, gone := serve(), serve()
+	defer keep.Close()
+	defer gone.Close()
+
+	cfg := scrapedConfig()
+	cfg.Backends[0].ConcurrencyLimit = 8
+	d := NewDispatcher(cfg)
+	d.SetEndpoints("qwen", []string{keep.URL, gone.URL})
+	s := NewLoadScraper(cfg, d, router, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	s.scrapeOnce(context.Background())
+	d.SetEndpoints("qwen", []string{keep.URL})
+	s.scrapeOnce(context.Background())
+
+	for name, vec := range pressureHistograms {
+		if vec.DeleteLabelValues(router, "qwen", gone.URL, "", "") {
+			t.Errorf("%s histogram of the departed endpoint survived", name)
+		}
+		if !vec.DeleteLabelValues(router, "qwen", keep.URL, "", "") {
+			t.Errorf("%s histogram of the kept endpoint is missing", name)
+		}
+	}
+}
+
+// TestLoadScraperRecordsRealVLLMNightlyBytes feeds the scraper a vLLM nightly
+// /metrics capture (trimmed to the parsed families and the
+// num_requests_waiting_by_reason sibling, lines verbatim) from a GLM pod under
+// load, served with --max-num-seqs 104.
+func TestLoadScraperRecordsRealVLLMNightlyBytes(t *testing.T) {
+	const router = "r-pressure-real"
+	resetPressureSeries(router)
+	body, err := os.ReadFile("testdata/vllm-nightly-glm-loaded.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write(body) }))
+	defer srv.Close()
+
+	cfg := scrapedConfig()
+	cfg.Backends[0].ConcurrencyLimit = 104
+	d := NewDispatcher(cfg)
+	d.SetEndpoints("qwen", []string{srv.URL})
+	s := NewLoadScraper(cfg, d, router, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	s.scrapeOnce(context.Background())
+
+	for _, tc := range []struct {
+		name string
+		want float64
+	}{
+		{"running", 3},
+		{"waiting", 0},
+		{"kv", 0.02488184598276344},
+		{"utilization", 3.0 / 104},
+	} {
+		h := histogramOf(t, pressureHistograms[tc.name], router, "qwen", srv.URL, "", "")
+		if h.GetSampleCount() != 1 || h.GetSampleSum() != tc.want {
+			t.Errorf("%s: %d observations summing to %v, want 1 of %v", tc.name, h.GetSampleCount(), h.GetSampleSum(), tc.want)
+		}
 	}
 }
