@@ -346,6 +346,11 @@ func reachesBackend(b *Backend, path string) bool {
 // does not name has no local-tier backend to go to.
 var ErrPathLocalOnly = errors.New("the router forwards this path only to local-tier backends")
 
+// ErrNotImplemented is the dispatch error when the last backend tried answered
+// 501: it does not implement the request's path or method. The handler passes
+// that on as a 501 rather than a 502, since nothing failed.
+var ErrNotImplemented = errors.New("not implemented by the backend")
+
 // injectsStreamUsage reports whether a budgeted stream on path gets
 // stream_options.include_usage added: only chat completions and completions
 // define it. An Anthropic stream always reports usage, and the Responses API
@@ -602,6 +607,16 @@ func (p *Proxy) writeDispatchError(
 		p.audit(*features, *decision, nil, http.StatusNotFound, "path_local_only", elapsed, budgetAudit{},
 			"error", err.Error())
 		p.observeRequest(features, decision, last, "path_local_only", elapsed)
+		return
+	}
+	// The last backend tried does not implement this path or method (a 501).
+	// Nothing failed, so it is a 501 to the client, not a 502 outage, and it
+	// comes before the fail-closed case for the same reason.
+	if errors.Is(err, ErrNotImplemented) {
+		writeErrorFor(anthropic, w, http.StatusNotImplemented, err.Error())
+		p.audit(*features, *decision, nil, http.StatusNotImplemented, "not_implemented", elapsed, budgetAudit{},
+			"error", err.Error())
+		p.observeRequest(features, decision, last, "not_implemented", elapsed)
 		return
 	}
 	// Runtime fail-closed: when every backend in a fail-closed
@@ -1023,7 +1038,11 @@ func (p *Proxy) dispatchWithFallback(
 			span.End()
 			cancel()
 			p.refreshBackendHealth(name)
-			lastErr = fmt.Errorf("%s returned %d", name, resp.StatusCode)
+			if resp.StatusCode == http.StatusNotImplemented {
+				lastErr = fmt.Errorf("%w: %s returned %d", ErrNotImplemented, name, resp.StatusCode)
+			} else {
+				lastErr = fmt.Errorf("%s returned %d", name, resp.StatusCode)
+			}
 			allIncumbentBusy = false
 			continue
 		}

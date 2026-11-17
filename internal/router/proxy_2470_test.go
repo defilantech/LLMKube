@@ -316,3 +316,41 @@ func TestProxy2470_FailClosedCloudOnlyRouteIs404(t *testing.T) {
 		t.Errorf("404 body %q names a backend; the client should not learn backend names", rec.Body.String())
 	}
 }
+
+// TestProxy2470_NotImplementedDoesNotQuarantine: forwarding unnamed /v1 paths
+// lets a client reach endpoints the engine does not implement, and vLLM
+// answers some of them 501. A 501 says the path is unsupported, not that the
+// backend is failing, so it must not quarantine the backend for everyone
+// else's requests: the client gets the 501, and a chat request right after it
+// is still served.
+func TestProxy2470_NotImplementedDoesNotQuarantine(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/decisions" {
+			w.WriteHeader(http.StatusNotImplemented)
+			_, _ = io.WriteString(w, `{"error":"not implemented"}`)
+			return
+		}
+		_, _ = io.WriteString(w, `{"choices":[]}`)
+	}))
+	t.Cleanup(srv.Close)
+	cfg := &Config{
+		Backends:     []Backend{{Name: "local", Tier: "local", Address: srv.URL}},
+		DefaultRoute: "local",
+		Policy:       Policy{Classification: ClassificationPolicy{Mode: "header-only"}},
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("config: %v", err)
+	}
+	mux := http.NewServeMux()
+	NewProxy(cfg, slog.Default()).Mount(mux)
+
+	for i := 0; i < 2; i++ {
+		if rec := postRaw(t, mux, "/v1/decisions", `{"model":"d3"}`, nil); rec.Code != http.StatusNotImplemented {
+			t.Fatalf("decisions #%d: status = %d, want the backend's 501 (body %q)", i+1, rec.Code, rec.Body.String())
+		}
+	}
+	rec := postRaw(t, mux, "/v1/chat/completions", `{"model":"d3","messages":[{"role":"user","content":"hi"}]}`, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("chat after two 501s: status = %d, want 200: a 501 quarantined the backend (body %q)", rec.Code, rec.Body.String())
+	}
+}
