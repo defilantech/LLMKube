@@ -183,10 +183,10 @@ type RuntimeCacheSpec struct {
 	// runtime implements a cache (vLLM and SGLang). Everywhere else the field
 	// is reported as ignored with a RuntimeCacheUnsupported warning event, and
 	// with --model-cache-prep=never it is declined with a
-	// RuntimeCacheNeedsPrepare one. It cannot be combined with persistence
-	// Ephemeral, which leaves no claim to keep a cache on. The operator never
-	// deletes the directory, and it counts against the claim's size alongside
-	// the weights.
+	// RuntimeCacheNeedsPrepare one. It cannot carry enabled: true beside
+	// persistence Ephemeral, which leaves no claim to keep a cache on. The
+	// operator never deletes the directory, and it counts against the claim's
+	// size alongside the weights.
 	Enabled bool `json:"enabled"`
 }
 

@@ -144,6 +144,15 @@ var _ = Describe("InferenceService modelCache CRD validation", func() {
 		Expect(k8sClient.Delete(ctx, isvc)).To(Succeed())
 	})
 
+	It("admits runtimeCache enabled false together with Ephemeral", func() {
+		isvc := newISvc("mc-valid-runtime-cache-ephemeral-off", &inferencev1alpha1.ModelCacheSpec{
+			Persistence:  inferencev1alpha1.ModelCachePersistenceEphemeral,
+			RuntimeCache: &inferencev1alpha1.RuntimeCacheSpec{Enabled: false},
+		})
+		Expect(k8sClient.Create(ctx, isvc)).To(Succeed())
+		Expect(k8sClient.Delete(ctx, isvc)).To(Succeed())
+	})
+
 	It("rejects runtimeCache enabled together with Ephemeral", func() {
 		// The two contradict each other statically: there is no claim to keep
 		// a compiled kernel on, so the feature would have nothing to point at.
