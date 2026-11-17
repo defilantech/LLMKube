@@ -251,7 +251,10 @@ var modelTransferSignatures = []modelTransferSignature{
 		// the downloader cannot write: "mkdir: can't create directory
 		// '/models/<key>': Permission denied". A write failure inside curl
 		// prints only "curl: (23) ... on write", which is also a full disk, so
-		// that spelling is deliberately not matched on its own.
+		// that spelling is deliberately not matched on its own. A refused
+		// chown prints EPERM instead ("chown: changing ownership of ...
+		// Operation not permitted"), which is how an NFS export with
+		// root_squash rejects the prep's ownership step.
 		//
 		// It comes last so a more specific cause wins when a message carries
 		// both. It only fires for a container that writes the cache
@@ -272,7 +275,7 @@ var modelTransferSignatures = []modelTransferSignature{
 			"operator default fsGroup is disabled (--default-fsgroup=0, the OpenShift preset), the prep chowns the " +
 			"root to --init-container-user (chart value controllerManager.initContainer.user, default 101) unless " +
 			"spec.podSecurityContext.runAsUser is set: set that flag to the uid --init-container-image runs as",
-		matches: []string{"permission denied"},
+		matches: []string{"permission denied", "operation not permitted"},
 	},
 }
 
@@ -319,7 +322,8 @@ func matchModelTransferFailure(msg string) (modelTransferFailure, bool) {
 // init container injected by a mesh or a policy controller is never diagnosed
 // as our transfer failing.
 func isGeneratedInitContainer(name string) bool {
-	return name == "model-downloader" || name == "model-cache-prep" || name == "model-verify"
+	return name == "model-downloader" || name == "model-cache-prep" || name == "model-verify" ||
+		name == runtimeCachePrepContainerName
 }
 
 // findModelTransferFailure scans pods for a generated init container that
@@ -377,11 +381,13 @@ func podMountsModelCache(pod *corev1.Pod) bool {
 // writesModelCache reports whether a generated init container writes the model
 // cache, so a cache-write failure can only come from it. model-verify is the
 // exception among the containers that mount the cache: it runs on the
-// read-only prefetched mount and never creates anything. The draft-prefixed
-// names are absent because isGeneratedInitContainer filters them out before
-// this is consulted.
+// read-only prefetched mount and never creates anything. runtime-cache-prep
+// writes the claim too: it creates and chowns the per-service runtime-cache
+// directory, which a share that refuses root owns differently (#2117). The
+// draft-prefixed names are absent because isGeneratedInitContainer filters
+// them out before this is consulted.
 func writesModelCache(name string) bool {
-	return name == "model-cache-prep" || name == "model-downloader"
+	return name == "model-cache-prep" || name == "model-downloader" || name == runtimeCachePrepContainerName
 }
 
 // initContainersCompleted reports whether any pod has got past every generated
