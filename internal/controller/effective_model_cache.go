@@ -96,6 +96,14 @@ func (e effectiveModelCache) prefetchRequested() bool {
 	return e.spec != nil && e.spec.Prefetch && !e.isEphemeral()
 }
 
+// runtimeCacheEnabled reports whether the service asks to keep its runtime's
+// compile and autotune caches on the cache claim (#2117). Unlike prefetch, an
+// inherited block keeps the Model's setting: the directory is per service, so
+// nothing is staged on the Model's behalf.
+func (e effectiveModelCache) runtimeCacheEnabled() bool {
+	return e.spec != nil && e.spec.RuntimeCache != nil && e.spec.RuntimeCache.Enabled
+}
+
 // pvcName returns the name of the model cache PVC for the given mode. An
 // explicit claimName override (#928) wins over the operator-global mode.
 // Otherwise, in shared mode (the default, and the resolution of an empty mode)

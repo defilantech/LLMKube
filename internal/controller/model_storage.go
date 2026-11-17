@@ -137,6 +137,17 @@ func downloaderUID(isvc *inferencev1alpha1.InferenceService, initContainerUser i
 	return initContainerUser
 }
 
+// resolvedCacheFSGroup is the fsGroup the CSI applies to the cache claim: the
+// service's own when it sets one, else the operator default. A value <= 0 means
+// fsGroup is disabled, so the prep hands the cache root to the downloader's uid
+// instead of a group.
+func resolvedCacheFSGroup(isvc *inferencev1alpha1.InferenceService, defaultFSGroup int64) int64 {
+	if isvc != nil && isvc.Spec.PodSecurityContext != nil && isvc.Spec.PodSecurityContext.FSGroup != nil {
+		return *isvc.Spec.PodSecurityContext.FSGroup
+	}
+	return defaultFSGroup
+}
+
 // cachePrepIncluded reports whether the prep container belongs in a cache-backed
 // pod. The empty value renders the prep because a reconciler built without the
 // field (a test literal, or any embedding that constructs one by hand) must
@@ -1451,22 +1462,28 @@ func cachePrepInitContainer(initImage string, resolvedFSGroup, ownerUID int64) c
 		VolumeMounts: []corev1.VolumeMount{
 			{Name: "model-cache", MountPath: "/models"},
 		},
-		SecurityContext: &corev1.SecurityContext{
-			// Root (uid 0), required for the exec'd chown to keep CAP_CHOWN.
-			// Non-root + capabilities.add does NOT work here: containerd does
-			// not set ambient caps, so caps are cleared when sh execs chown
-			// (EPERM). Not privileged: ALL caps dropped, only CHOWN+FOWNER
-			// added, no privilege escalation. See the doc comment above.
-			RunAsUser:                int64Ptr(0),
-			AllowPrivilegeEscalation: boolPtr(false),
-			ReadOnlyRootFilesystem:   boolPtr(true),
-			Capabilities: &corev1.Capabilities{
-				Drop: []corev1.Capability{"ALL"},
-				Add:  []corev1.Capability{"CHOWN", "FOWNER"},
-			},
-			SeccompProfile: &corev1.SeccompProfile{
-				Type: corev1.SeccompProfileTypeRuntimeDefault,
-			},
+		SecurityContext: cachePrepSecurityContext(),
+	}
+}
+
+// cachePrepSecurityContext is the security context both cache prep containers
+// run under (model-cache-prep and runtime-cache-prep).
+func cachePrepSecurityContext() *corev1.SecurityContext {
+	return &corev1.SecurityContext{
+		// Root (uid 0), required for the exec'd chown to keep CAP_CHOWN.
+		// Non-root + capabilities.add does NOT work here: containerd does
+		// not set ambient caps, so caps are cleared when sh execs chown
+		// (EPERM). Not privileged: ALL caps dropped, only CHOWN+FOWNER
+		// added, no privilege escalation. See the doc comment above.
+		RunAsUser:                int64Ptr(0),
+		AllowPrivilegeEscalation: boolPtr(false),
+		ReadOnlyRootFilesystem:   boolPtr(true),
+		Capabilities: &corev1.Capabilities{
+			Drop: []corev1.Capability{"ALL"},
+			Add:  []corev1.Capability{"CHOWN", "FOWNER"},
+		},
+		SeccompProfile: &corev1.SeccompProfile{
+			Type: corev1.SeccompProfileTypeRuntimeDefault,
 		},
 	}
 }
@@ -2075,10 +2092,7 @@ func buildCachedStorageConfig(model *inferencev1alpha1.Model, isvc *inferencev1a
 	// chown'ing to the wrong GID would leave the downloader unable to write.
 	// A value <= 0 means the operator disabled fsGroup (e.g. OpenShift), so
 	// the prep must chown to the downloader's own UID instead (prepOwner).
-	resolvedFSGroup := defaultFSGroup
-	if isvc != nil && isvc.Spec.PodSecurityContext != nil && isvc.Spec.PodSecurityContext.FSGroup != nil {
-		resolvedFSGroup = *isvc.Spec.PodSecurityContext.FSGroup
-	}
+	resolvedFSGroup := resolvedCacheFSGroup(isvc, defaultFSGroup)
 	prepOwner := downloaderUID(isvc, initContainerUser)
 
 	// Multi-file staging branch: when spec.files or spec.mmproj are set, use
@@ -2700,7 +2714,13 @@ func (r *InferenceServiceReconciler) ensureModelCachePVC(ctx context.Context, is
 // authoritative over anything derived from the Model now: a single-file
 // name is derived from GGUF metadata the Model may have parsed only after
 // the Job ran, and the Job wrote the name it had then.
-func buildPrefetchedStorageConfig(model *inferencev1alpha1.Model, isvc *inferencev1alpha1.InferenceService, cache effectiveModelCache, cacheMode string, initContainerImage string, staged []string) (cfg modelStorageConfig) {
+//
+// writableCache makes the volume source writable, which
+// spec.modelCache.runtimeCache needs: a second mount of a ReadOnly volume
+// source cannot be written, whatever the mount says. The /models mount stays
+// read-only either way, so the serving container still cannot change the
+// staged weights.
+func buildPrefetchedStorageConfig(model *inferencev1alpha1.Model, isvc *inferencev1alpha1.InferenceService, cache effectiveModelCache, cacheMode string, initContainerImage string, staged []string, writableCache bool) (cfg modelStorageConfig) {
 	defer func() {
 		cfg.readsPrefetchedCache = true
 		applyInitContainerDiagnostics(cfg.initContainers)
@@ -2711,7 +2731,7 @@ func buildPrefetchedStorageConfig(model *inferencev1alpha1.Model, isvc *inferenc
 		VolumeSource: corev1.VolumeSource{
 			PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
 				ClaimName: cache.pvcName(cacheMode),
-				ReadOnly:  true,
+				ReadOnly:  !writableCache,
 			},
 		},
 	}}

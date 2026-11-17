@@ -228,6 +228,45 @@ var _ = Describe("Model.spec.modelCache inheritance (#2142)", func() {
 		}
 	})
 
+	// A Model-level runtimeCache block is inherited like every other field in
+	// the block, and the directory it names is still the service's own. A
+	// service block that omits it replaces the inherited one (the block as a
+	// whole is what inherits, #2142).
+	It("carries a Model-level runtimeCache to the service's pod", func() {
+		model := readyModel("runtime-cache-model", "https://example.com/models/llama.gguf", func(m *inferencev1alpha1.Model) {
+			m.Spec.ModelCache = &inferencev1alpha1.ModelCacheSpec{
+				RuntimeCache: &inferencev1alpha1.RuntimeCacheSpec{Enabled: true},
+			}
+		})
+		mountsAt := func(name string) (han []corev1.VolumeMount) {
+			GinkgoHelper()
+			dep := &appsv1.Deployment{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: ns}, dep)).To(Succeed())
+			for _, m := range dep.Spec.Template.Spec.Containers[0].VolumeMounts {
+				if m.MountPath == "/runtime-cache" {
+					han = append(han, m)
+				}
+			}
+			return han
+		}
+
+		inherited := newService("runtime-cache-inherited", model.Name, nil)
+		inherited.Spec.Runtime = RuntimeVLLM
+		Expect(k8sClient.Update(ctx, inherited)).To(Succeed())
+		reconcileOnce(reconciler(), inherited.Name)
+		mounts := mountsAt(inherited.Name)
+		Expect(mounts).To(HaveLen(1), "the Model's runtimeCache block must reach the service's pod")
+		Expect(mounts[0].SubPath).To(Equal("_runtime-cache/"+ns+"/"+inherited.Name),
+			"the directory is the service's own, not the Model's")
+
+		own := newService("runtime-cache-own", model.Name, &inferencev1alpha1.ModelCacheSpec{})
+		own.Spec.Runtime = RuntimeVLLM
+		Expect(k8sClient.Update(ctx, own)).To(Succeed())
+		reconcileOnce(reconciler(), own.Name)
+		Expect(mountsAt(own.Name)).To(BeEmpty(),
+			"a service's own block replaces the inherited one, runtimeCache included")
+	})
+
 	// The upgrade property: a service that inherits the Model's block and one
 	// that carries the same block on its own spec render the same pod, so
 	// making the inherited block explicit rolls nothing. The pod is read back

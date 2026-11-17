@@ -275,7 +275,7 @@ func TestFindModelTransferFailure(t *testing.T) {
 	// the container name is the real one.
 	t.Run("cache permission failure on the read-only prefetched pod is not labelled with the cache remedy", func(t *testing.T) {
 		cfg := buildPrefetchedStorageConfig(cachePrepTripwireModel(), cachePrepTripwireIsvc(), resolveEffectiveModelCache(cachePrepTripwireIsvc(), cachePrepTripwireModel()), ModelCacheModeShared,
-			"docker.io/curlimages/curl:8.18.0", nil)
+			"docker.io/curlimages/curl:8.18.0", nil, false)
 		if len(cfg.initContainers) != 1 || cfg.initContainers[0].Name != "model-verify" {
 			t.Fatalf("prefetched initContainers = %v, want [model-verify]", containerNames(cfg.initContainers))
 		}

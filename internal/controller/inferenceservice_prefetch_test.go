@@ -707,7 +707,7 @@ var _ = Describe("buildPrefetchedStorageConfig", func() {
 
 	It("mounts the claim read-only and verifies the staged file set instead of downloading", func() {
 		model := multiFileModel(2)
-		cfg := buildPrefetchedStorageConfig(model, isvc, resolveEffectiveModelCache(isvc, model), ModelCacheModeShared, "curl:8.18.0", nil)
+		cfg := buildPrefetchedStorageConfig(model, isvc, resolveEffectiveModelCache(isvc, model), ModelCacheModeShared, "curl:8.18.0", nil, false)
 		key := effectiveModelCacheKey(model)
 		Expect(cfg.modelPath).To(Equal("/models/" + key + "/config.json"))
 		Expect(cfg.stagedDir).To(Equal("/models/" + key))
@@ -728,7 +728,7 @@ var _ = Describe("buildPrefetchedStorageConfig", func() {
 	})
 
 	It("fails closed when the glob expansion is not current for the Model's generation", func() {
-		cfg := buildPrefetchedStorageConfig(multiFileModel(3), isvc, resolveEffectiveModelCache(isvc, multiFileModel(3)), ModelCacheModeShared, "curl:8.18.0", nil)
+		cfg := buildPrefetchedStorageConfig(multiFileModel(3), isvc, resolveEffectiveModelCache(isvc, multiFileModel(3)), ModelCacheModeShared, "curl:8.18.0", nil, false)
 		Expect(cfg.initContainers).To(HaveLen(1))
 		Expect(strings.Join(cfg.initContainers[0].Command, " ")).To(ContainSubstring("StagedFilesNotCurrent"))
 		Expect(cfg.volumes[0].PersistentVolumeClaim.ReadOnly).To(BeTrue())
@@ -736,7 +736,7 @@ var _ = Describe("buildPrefetchedStorageConfig", func() {
 
 	It("verifies the names the entry recorded over names derived now", func() {
 		multi := multiFileModel(2)
-		cfg := buildPrefetchedStorageConfig(multi, isvc, resolveEffectiveModelCache(isvc, multi), ModelCacheModeShared, "curl:8.18.0", []string{"config.json", "a.safetensors"})
+		cfg := buildPrefetchedStorageConfig(multi, isvc, resolveEffectiveModelCache(isvc, multi), ModelCacheModeShared, "curl:8.18.0", []string{"config.json", "a.safetensors"}, false)
 		key := effectiveModelCacheKey(multi)
 		Expect(envValue(cfg.initContainers[0].Env, "MODEL_FILES")).To(Equal("config.json\na.safetensors"))
 		Expect(cfg.modelPath).To(Equal("/models/" + key + "/config.json"))
@@ -747,7 +747,7 @@ var _ = Describe("buildPrefetchedStorageConfig", func() {
 			Spec:       inferencev1alpha1.ModelSpec{Source: "https://example.com/models/llama.gguf"},
 			Status:     inferencev1alpha1.ModelStatus{CacheKey: "abc123", GGUF: &inferencev1alpha1.GGUFMetadata{ModelName: "Parsed After The Job"}},
 		}
-		cfg = buildPrefetchedStorageConfig(single, nil, resolveEffectiveModelCache(nil, single), ModelCacheModeShared, "curl:8.18.0", []string{"llama.gguf"})
+		cfg = buildPrefetchedStorageConfig(single, nil, resolveEffectiveModelCache(nil, single), ModelCacheModeShared, "curl:8.18.0", []string{"llama.gguf"}, false)
 		Expect(canonicalModelBasename(single)).NotTo(Equal("llama.gguf"))
 		Expect(envValue(cfg.initContainers[0].Env, "MODEL_FILES")).To(Equal("llama.gguf"))
 		Expect(cfg.modelPath).To(Equal("/models/abc123/llama.gguf"))
@@ -760,7 +760,7 @@ var _ = Describe("buildPrefetchedStorageConfig", func() {
 			Spec:       inferencev1alpha1.ModelSpec{Source: "https://example.com/models/llama.gguf", SHA256: strings.Repeat("AB", 32)},
 			Status:     inferencev1alpha1.ModelStatus{CacheKey: "abc123"},
 		}
-		cfg := buildPrefetchedStorageConfig(model, nil, resolveEffectiveModelCache(nil, model), ModelCacheModeShared, "curl:8.18.0", []string{"pinned.gguf"})
+		cfg := buildPrefetchedStorageConfig(model, nil, resolveEffectiveModelCache(nil, model), ModelCacheModeShared, "curl:8.18.0", []string{"pinned.gguf"}, false)
 		verify := cfg.initContainers[0]
 		Expect(envValue(verify.Env, "MODEL_SHA256")).To(Equal(strings.Repeat("ab", 32)))
 		Expect(envValue(verify.Env, "MODEL_PATH")).To(Equal("/models/abc123/pinned.gguf"))
@@ -769,7 +769,7 @@ var _ = Describe("buildPrefetchedStorageConfig", func() {
 		Expect(cmd).To(ContainSubstring("spec.sha256"))
 
 		model.Spec.SHA256 = ""
-		cfg = buildPrefetchedStorageConfig(model, nil, resolveEffectiveModelCache(nil, model), ModelCacheModeShared, "curl:8.18.0", []string{"pinned.gguf"})
+		cfg = buildPrefetchedStorageConfig(model, nil, resolveEffectiveModelCache(nil, model), ModelCacheModeShared, "curl:8.18.0", []string{"pinned.gguf"}, false)
 		Expect(envValue(cfg.initContainers[0].Env, "MODEL_SHA256")).To(BeEmpty())
 		Expect(strings.Join(cfg.initContainers[0].Command, " ")).NotTo(ContainSubstring("llmkube_sha256_hash"))
 	})
@@ -780,7 +780,7 @@ var _ = Describe("buildPrefetchedStorageConfig", func() {
 			Spec:       inferencev1alpha1.ModelSpec{Source: "https://example.com/models/llama.gguf"},
 			Status:     inferencev1alpha1.ModelStatus{CacheKey: "abc123"},
 		}
-		cfg := buildPrefetchedStorageConfig(model, nil, resolveEffectiveModelCache(nil, model), ModelCacheModeShared, "curl:8.18.0", nil)
+		cfg := buildPrefetchedStorageConfig(model, nil, resolveEffectiveModelCache(nil, model), ModelCacheModeShared, "curl:8.18.0", nil, false)
 		Expect(cfg.modelPath).To(Equal("/models/abc123/" + canonicalModelBasename(model)))
 		Expect(cfg.stagedDir).To(BeEmpty())
 		Expect(cfg.volumes[0].PersistentVolumeClaim.ClaimName).To(Equal(ModelCachePVCName))
