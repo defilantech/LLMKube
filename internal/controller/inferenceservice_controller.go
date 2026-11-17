@@ -304,7 +304,7 @@ func (r *InferenceServiceReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	r.warnIgnoredModelCacheClaim(inferenceService, model, cache)
 	r.warnPrefetchTargetMismatch(inferenceService, model, cache)
 	r.warnUnboundedEphemeralCache(inferenceService, cache)
-	r.warnRuntimeCacheNotApplied(inferenceService, model, cache, resolveBackend(inferenceService))
+	r.warnRuntimeCacheNotApplied(ctx, inferenceService, model, cache, resolveBackend(inferenceService))
 
 	isMetal := isMetalModel(model)
 
@@ -1089,8 +1089,9 @@ func (r *InferenceServiceReconciler) reconcileDeployment(ctx context.Context, is
 		r.Recorder.Eventf(isvc, nil, corev1.EventTypeWarning, ReasonHubOfflineRuntimeDownload, "Reconcile",
 			"%s", hubOfflineRuntimeDownloadMessage(isvc, model))
 	}
+	runtimeCache := r.runtimeCachePlanFor(ctx, isvc, model, cache, backend)
 	deployment := r.constructDeploymentForCache(isvc, model, cache, draftModel, desiredReplicas,
-		hfEndpoint, hfEndpointFromSecret(ctx, r.Client, draftModel))
+		hfEndpoint, hfEndpointFromSecret(ctx, r.Client, draftModel), runtimeCache)
 	if err := setControllerReferenceUnblocked(isvc, deployment, r.Scheme); err != nil {
 		log.Error(err, "Failed to set controller reference for Deployment")
 		return nil, replicaCounts{}, nil, nil, err

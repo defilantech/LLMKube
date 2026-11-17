@@ -70,15 +70,18 @@ func (b *VLLMBackend) NeedsSharedMemory(isvc *inferencev1alpha1.InferenceService
 // RuntimeCacheDirs returns the compile and autotune caches a vLLM start writes
 // (#2117). VLLM_CACHE_ROOT alone is not enough on every release: with
 // torch.compile disabled Triton and TorchInductor fall back to their own
-// defaults, and FlashInfer appends .cache/flashinfer to the base it reads.
+// defaults, and FlashInfer appends .cache/flashinfer to the base it reads. The
+// Default paths are the runtimes' own (Triton's is ~/.triton/cache, TileLang's
+// ~/.tilelang/cache, under the /root home the default images use), so a user
+// mount there is recognized as taking that cache over.
 //
 // Mirrors SGLangBackend.RuntimeCacheDirs; the lists are the contract, not
 // shared code.
 func (b *VLLMBackend) RuntimeCacheDirs() []RuntimeCacheDir {
 	return []RuntimeCacheDir{
 		{Env: "VLLM_CACHE_ROOT", Value: "vllm", Dir: "vllm", Default: "/root/.cache/vllm"},
-		{Env: "TRITON_CACHE_DIR", Value: "triton", Dir: "triton", Default: "/root/.triton"},
-		{Env: "TILELANG_CACHE_DIR", Value: "tilelang", Dir: "tilelang", Default: "/root/.tilelang"},
+		{Env: "TRITON_CACHE_DIR", Value: "triton", Dir: "triton", Default: "/root/.triton/cache"},
+		{Env: "TILELANG_CACHE_DIR", Value: "tilelang", Dir: "tilelang", Default: "/root/.tilelang/cache"},
 		{Env: "TORCHINDUCTOR_CACHE_DIR", Value: "torchinductor", Dir: "torchinductor", Default: "/tmp/torchinductor_root"},
 		{Env: "FLASHINFER_WORKSPACE_BASE", Value: "flashinfer", Dir: "flashinfer/.cache/flashinfer", Default: "/root/.cache/flashinfer"},
 	}

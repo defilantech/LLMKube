@@ -89,12 +89,12 @@ spec:
       enabled: true
 ```
 
-The pod mounts `_runtime-cache/<namespace>/<name>` from the cache claim,
-read-write, at `/runtime-cache`, beside the read-only `/models` mount. The
-directory is per InferenceService and is never shared: these caches hold
-compiled objects the runtime loads, so two services must never write to one.
-It counts against the claim's size alongside the weights, and the operator
-never deletes it.
+Where the runtime cache is applied, the pod mounts
+`_runtime-cache/<namespace>/<name>` from the cache claim, read-write, at
+`/runtime-cache`, beside the read-only `/models` mount. The directory is per
+InferenceService and is never shared: these caches hold compiled objects the
+runtime loads, so two services must never write to one. It counts against the
+claim's size alongside the weights, and the operator never deletes it.
 
 The caches are relocated with the runtime's own environment variables:
 
@@ -110,15 +110,24 @@ The caches are relocated with the runtime's own environment variables:
 The operator creates the directory with one root init container,
 `runtime-cache-prep`, which `mkdir -p`s the per-service directory and each
 declared cache directory and then chowns and chmods those paths only, never
-recursively, so a restart does not walk a cache that keeps growing.
+recursively, so a restart does not walk a cache that keeps growing. The prep
+hands the directory to the operator's `fsGroup` (or, with `--default-fsgroup=0`,
+to the downloader's uid with group `0`). A pod whose own
+`podSecurityContext` sets no `fsGroup` is added to that group through
+`supplementalGroups`, on the pod only, so the serving container can write the
+directory. With `--default-fsgroup=0` nothing is added, and the directory is
+then writable only for a serving process that runs with group `0`, the
+convention `model-cache-prep` uses.
 
 Three overrides, in the order they win:
 
 - a `spec.env` entry naming one of the variables above: your value is used;
-- a volume in `spec.extraVolumeMounts` at one of the runtimes' default cache
-  paths (`/root/.cache/vllm`, `/root/.triton`, `/root/.tilelang`,
-  `/tmp/torchinductor_root`, `/root/.cache/flashinfer`, `/root/.cache/sglang`):
-  that one cache is left alone and the others are still relocated;
+- a volume in `spec.extraVolumeMounts` mounted exactly at one of the runtimes'
+  default cache paths (`/root/.cache/vllm`, `/root/.triton/cache`,
+  `/root/.tilelang/cache`, `/tmp/torchinductor_root`,
+  `/root/.cache/flashinfer`, `/root/.cache/sglang`): that one cache is left
+  alone and the others are still relocated. A mount above one of them, such as
+  an emptyDir at `/tmp` or at `/root/.cache`, does not take the cache over;
 - a volume in `spec.extraVolumeMounts` at `/runtime-cache`: the operator adds
   nothing, no mount, no variables and no init container.
 
@@ -127,12 +136,19 @@ writable cache claim. Everywhere else it is reported as ignored with a
 `RuntimeCacheUnsupported` warning event: a runtime with no persistent compile
 cache (llama.cpp and TGI need none), a Metal Model (no serving container to
 keep a cache from), a pre-staged `pvc://` or `oci://` source,
-`spec.skipModelInit`, caching disabled on the operator, `persistence:
-Ephemeral`, or a Model whose cache key has not been computed yet. With
-`--model-cache-prep=never` the operator declines it with
-`RuntimeCacheNeedsPrepare`, because nothing would create the directory, and
-`persistence: Ephemeral` cannot carry `enabled: true`: the API server rejects
-that pair.
+`spec.skipModelInit`, caching disabled on the operator, or `persistence:
+Ephemeral`. With `--model-cache-prep=never` the operator declines it with
+`RuntimeCacheNeedsPrepare`, because nothing would create the directory. A
+cache claim that offers no writable access mode (only `ReadOnlyMany`) is
+declined with `RuntimeCacheClaimReadOnly`, and a prefetched service whose own
+`podSecurityContext.fsGroup` differs from the operator's group is declined
+with `RuntimeCacheFSGroupMismatch`: the prefetch writes the claim in the
+operator's group, and mounting it writable for the runtime cache would make
+kubelet re-own every staged file on each pod start. Remove that `fsGroup`, set
+it to the operator's group, or use `perService` cache mode. A Model whose
+cache key has not been computed yet is skipped silently, and the next
+reconcile applies the request. `persistence: Ephemeral` cannot carry
+`enabled: true`: the API server rejects that pair.
 
 Two replicas of one service share that one directory. On a node-local locking
 filesystem such as BlobFuse, locks do not exclude across nodes (the downloader
@@ -795,9 +811,10 @@ before each pod start. LLMKube sets `fsGroupChangePolicy: OnRootMismatch` next
 to the default `fsGroup` on inference pods and the prefetch Job, so after the
 first pass kubelet skips that walk. A `spec.podSecurityContext` you supply
 replaces the operator default, so add `fsGroupChangePolicy: OnRootMismatch`
-next to your own `fsGroup` there. A pod with `runtimeCache` enabled gets
+next to your own `fsGroup` there. A pod the runtime cache is applied to gets
 `OnRootMismatch` from the operator when your context sets an `fsGroup` and no
-policy, because the runtime cache mounts the claim writable.
+policy, because the runtime cache mounts the claim writable. A runtime cache
+that is declined leaves the prefetched claim read-only and sets no policy.
 
 ### Cache inspection with `llmkube cache list`
 

@@ -17,11 +17,13 @@ limitations under the License.
 package controller
 
 import (
+	"context"
 	"fmt"
 	"path"
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/types"
 
 	inferencev1alpha1 "github.com/defilantech/llmkube/api/v1alpha1"
 )
@@ -52,7 +54,160 @@ const (
 	// ReasonRuntimeCacheNeedsPrepare reports a runtimeCache request declined
 	// because --model-cache-prep=never leaves nothing to create the directory.
 	ReasonRuntimeCacheNeedsPrepare = "RuntimeCacheNeedsPrepare"
+
+	// ReasonRuntimeCacheClaimReadOnly reports a runtimeCache request declined
+	// because the cache claim offers no writable access mode, so the directory
+	// the runtime would write could not be created on it.
+	ReasonRuntimeCacheClaimReadOnly = "RuntimeCacheClaimReadOnly"
+
+	// ReasonRuntimeCacheFSGroupMismatch reports a runtimeCache request declined
+	// on a prefetched service whose own fsGroup differs from the group the
+	// prefetch job writes the claim in: mounting the claim writable would make
+	// kubelet re-own every staged file on each pod start.
+	ReasonRuntimeCacheFSGroupMismatch = "RuntimeCacheFSGroupMismatch"
 )
+
+// runtimeCachePlan is one render's decision for spec.modelCache.runtimeCache:
+// the runtime's cache directories to point at the per-service directory, and,
+// when the request is declined, the reason and message behind its warning
+// event. It is computed once and handed to everything that renders the feature,
+// so the storage builder, the mount, the env, the prep container and the
+// security context cannot disagree.
+type runtimeCachePlan struct {
+	dirs    []RuntimeCacheDir
+	reason  string
+	message string
+}
+
+// applied reports whether the serving Pod gets the mount, the env and the prep.
+func (p runtimeCachePlan) applied() bool { return len(p.dirs) > 0 }
+
+// runtimeCachePlanFor decides the feature for one render, reading the claim it
+// would write once. The read happens only for a request that would otherwise be
+// applied, so a service without the field costs no API call.
+func (r *InferenceServiceReconciler) runtimeCachePlanFor(
+	ctx context.Context,
+	isvc *inferencev1alpha1.InferenceService,
+	model *inferencev1alpha1.Model,
+	cache effectiveModelCache,
+	backend RuntimeBackend,
+) runtimeCachePlan {
+	plan := r.runtimeCachePlan(isvc, model, cache, backend)
+	if !plan.applied() {
+		return plan
+	}
+	if modes, readOnly := r.runtimeCacheClaimAccessModes(ctx, isvc, cache); readOnly {
+		return runtimeCachePlan{
+			reason: ReasonRuntimeCacheClaimReadOnly,
+			message: fmt.Sprintf(
+				"spec.modelCache.runtimeCache.enabled is ignored: cache claim %q offers no writable access mode (%s), so the runtime's cache directory could not be written on it",
+				cache.pvcName(r.ModelCacheMode), strings.Join(modes, ", ")),
+		}
+	}
+	return plan
+}
+
+// runtimeCacheClaimAccessModes reads the claim the runtime cache would write and
+// reports its access modes and whether none of them allows a write. An
+// unreadable claim (no client, or a read error) reports no: a missing claim
+// already fails the reconcile earlier, and a transient error must not decline a
+// valid spec.
+func (r *InferenceServiceReconciler) runtimeCacheClaimAccessModes(
+	ctx context.Context,
+	isvc *inferencev1alpha1.InferenceService,
+	cache effectiveModelCache,
+) (modes []string, readOnly bool) {
+	if r.Client == nil {
+		return nil, false
+	}
+	pvc := &corev1.PersistentVolumeClaim{}
+	if err := r.Get(ctx, types.NamespacedName{Name: cache.pvcName(r.ModelCacheMode), Namespace: isvc.Namespace}, pvc); err != nil {
+		return nil, false
+	}
+	writable := false
+	modes = make([]string, 0, len(pvc.Spec.AccessModes))
+	for _, m := range pvc.Spec.AccessModes {
+		modes = append(modes, string(m))
+		switch m {
+		case corev1.ReadWriteOnce, corev1.ReadWriteOncePod, corev1.ReadWriteMany:
+			writable = true
+		}
+	}
+	return modes, len(modes) > 0 && !writable
+}
+
+// runtimeCachePlan decides the feature without reading the claim. The request is
+// the effective modelCache's, so a Model-level block reaches every service that
+// references it.
+func (r *InferenceServiceReconciler) runtimeCachePlan(
+	isvc *inferencev1alpha1.InferenceService,
+	model *inferencev1alpha1.Model,
+	cache effectiveModelCache,
+	backend RuntimeBackend,
+) runtimeCachePlan {
+	if !cache.runtimeCacheEnabled() {
+		return runtimeCachePlan{}
+	}
+	if isMetalModel(model) {
+		return runtimeCachePlan{reason: ReasonRuntimeCacheUnsupported, message: fmt.Sprintf(
+			"spec.modelCache.runtimeCache.enabled is ignored: Model %q runs on the metal-agent, which starts no serving container to keep a cache from",
+			model.Name)}
+	}
+	dirs := runtimeCacheDirsFor(backend)
+	if len(dirs) == 0 {
+		return runtimeCachePlan{reason: ReasonRuntimeCacheUnsupported, message: fmt.Sprintf(
+			"spec.modelCache.runtimeCache.enabled is ignored: runtime %q keeps no compile or autotune cache; only vllm and sglang do, and llama.cpp needs none",
+			runtimeNameLabel(isvc))}
+	}
+	if !cachePrepIncluded(r.ModelCachePrep) {
+		return runtimeCachePlan{reason: ReasonRuntimeCacheNeedsPrepare, message: "spec.modelCache.runtimeCache.enabled is ignored: --model-cache-prep=never omits the init container that creates the per-service cache directory, and the serving container cannot write a directory kubelet created as root"}
+	}
+	// A user mount at the operator's own path owns the feature, as with
+	// /dev/shm (#2111). Nothing is injected and nothing is declined.
+	if userMountsAt(isvc.Spec.ExtraVolumeMounts, runtimeCacheMountPath) {
+		return runtimeCachePlan{}
+	}
+	switch {
+	case !operatorStagesModel(isvc, backend):
+		return runtimeCachePlan{reason: ReasonRuntimeCacheUnsupported, message: "spec.modelCache.runtimeCache.enabled is ignored: spec.skipModelInit stages no model, so the Pod mounts no cache claim to keep the runtime's caches on"}
+	case isPVCSource(model.Spec.Source), isOCISource(model.Spec.Source):
+		return runtimeCachePlan{reason: ReasonRuntimeCacheUnsupported, message: fmt.Sprintf(
+			"spec.modelCache.runtimeCache.enabled is ignored: model source %q is pre-staged read-only, so no cache claim is mounted",
+			model.Spec.Source)}
+	case r.ModelCachePath == "":
+		return runtimeCachePlan{reason: ReasonRuntimeCacheUnsupported, message: "spec.modelCache.runtimeCache.enabled is ignored: model caching is disabled on the operator (--model-cache-path unset / chart modelCache.enabled=false), so the Pod mounts an ephemeral emptyDir"}
+	case cache.isEphemeral():
+		return runtimeCachePlan{reason: ReasonRuntimeCacheUnsupported, message: "spec.modelCache.runtimeCache.enabled is ignored: persistence is Ephemeral, so the Pod mounts an emptyDir that dies with it"}
+	case effectiveModelCacheKey(model) == "":
+		// Transient: the key is derived when the Model reconciles, and the
+		// next pass applies the request.
+		return runtimeCachePlan{}
+	}
+	// A prefetched claim is written by the Job in the operator's group, so a
+	// service whose own fsGroup differs would make kubelet walk and re-own
+	// every staged file on each pod start, because the runtime cache mounts
+	// that claim writable.
+	if g := r.prefetchGate(isvc, model, cache); g.applies && g.satisfied {
+		if psc := isvc.Spec.PodSecurityContext; psc != nil && psc.FSGroup != nil && *psc.FSGroup != r.DefaultFSGroup {
+			return runtimeCachePlan{reason: ReasonRuntimeCacheFSGroupMismatch, message: fmt.Sprintf(
+				"spec.modelCache.runtimeCache.enabled is ignored: podSecurityContext.fsGroup %d differs from the group the prefetch writes the cache claim in (--default-fsgroup %d), and the runtime cache mounts that claim writable, so kubelet would re-own every staged file on each pod start; remove podSecurityContext.fsGroup, set it to %d, or use perService cache mode so the walk reaches only this service's own claim",
+				*psc.FSGroup, r.DefaultFSGroup, r.DefaultFSGroup)}
+		}
+	}
+	// A user volume takes a cache over only when it is mounted at that cache's
+	// own default directory. A mount above it (an emptyDir at /tmp for a
+	// read-only root filesystem, or one at /root/.cache) leaves the cache where
+	// the runtime writes it. When every cache is taken over the plan keeps no
+	// directory, so nothing is injected.
+	var kept []RuntimeCacheDir
+	for _, d := range dirs {
+		if d.Default != "" && userMountsAt(isvc.Spec.ExtraVolumeMounts, d.Default) {
+			continue
+		}
+		kept = append(kept, d)
+	}
+	return runtimeCachePlan{dirs: kept}
+}
 
 // runtimeCacheClaimDir returns the per-service directory on the cache claim.
 // The namespace is part of it because shared mode gives every namespace the
@@ -69,74 +224,6 @@ func runtimeCacheDirsFor(backend RuntimeBackend) []RuntimeCacheDir {
 		return nil
 	}
 	return p.RuntimeCacheDirs()
-}
-
-// runtimeCacheWhyNot reports whether the service gets a persistent runtime
-// cache, and when it asked for one but cannot have it, the reason and message
-// behind the warning event. The request is the effective modelCache's, so a
-// Model-level block reaches every service that references it.
-func (r *InferenceServiceReconciler) runtimeCacheWhyNot(
-	isvc *inferencev1alpha1.InferenceService,
-	model *inferencev1alpha1.Model,
-	cache effectiveModelCache,
-	backend RuntimeBackend,
-) (requested bool, reason, message string) {
-	if !cache.runtimeCacheEnabled() {
-		return false, "", ""
-	}
-	if isMetalModel(model) {
-		return false, ReasonRuntimeCacheUnsupported, fmt.Sprintf(
-			"spec.modelCache.runtimeCache.enabled is ignored: Model %q runs on the metal-agent, which starts no serving container to keep a cache from",
-			model.Name)
-	}
-	if len(runtimeCacheDirsFor(backend)) == 0 {
-		return false, ReasonRuntimeCacheUnsupported, fmt.Sprintf(
-			"spec.modelCache.runtimeCache.enabled is ignored: runtime %q keeps no compile or autotune cache; only vllm and sglang do, and llama.cpp needs none",
-			runtimeNameLabel(isvc))
-	}
-	if !cachePrepIncluded(r.ModelCachePrep) {
-		return false, ReasonRuntimeCacheNeedsPrepare,
-			"spec.modelCache.runtimeCache.enabled is ignored: --model-cache-prep=never omits the init container that creates the per-service cache directory, and the serving container cannot write a directory kubelet created as root"
-	}
-	// A user mount at the operator's own path owns the feature, as with
-	// /dev/shm (#2111). Nothing is injected and nothing is declined.
-	if userMountsAt(isvc.Spec.ExtraVolumeMounts, runtimeCacheMountPath) {
-		return false, "", ""
-	}
-	switch {
-	case !operatorStagesModel(isvc, backend):
-		return false, ReasonRuntimeCacheUnsupported,
-			"spec.modelCache.runtimeCache.enabled is ignored: spec.skipModelInit stages no model, so the Pod mounts no cache claim to keep the runtime's caches on"
-	case isPVCSource(model.Spec.Source), isOCISource(model.Spec.Source):
-		return false, ReasonRuntimeCacheUnsupported, fmt.Sprintf(
-			"spec.modelCache.runtimeCache.enabled is ignored: model source %q is pre-staged read-only, so no cache claim is mounted",
-			model.Spec.Source)
-	case r.ModelCachePath == "":
-		return false, ReasonRuntimeCacheUnsupported,
-			"spec.modelCache.runtimeCache.enabled is ignored: model caching is disabled on the operator (--model-cache-path unset / chart modelCache.enabled=false), so the Pod mounts an ephemeral emptyDir"
-	case cache.isEphemeral():
-		return false, ReasonRuntimeCacheUnsupported,
-			"spec.modelCache.runtimeCache.enabled is ignored: persistence is Ephemeral, so the Pod mounts an emptyDir that dies with it"
-	case effectiveModelCacheKey(model) == "":
-		return false, ReasonRuntimeCacheUnsupported, fmt.Sprintf(
-			"spec.modelCache.runtimeCache.enabled is ignored: model %q has no cache key (local source, or fingerprinting has not completed yet), so the Pod mounts an ephemeral emptyDir",
-			model.Name)
-	}
-	return true, "", ""
-}
-
-// runtimeCacheRequested reports whether the serving Pod gets the mount, env and
-// prep container. The prep container is why the request needs the operator's
-// own setup: without it nothing creates the directory with an owner the
-// serving container can write as.
-func (r *InferenceServiceReconciler) runtimeCacheRequested(
-	isvc *inferencev1alpha1.InferenceService,
-	model *inferencev1alpha1.Model,
-	cache effectiveModelCache,
-	backend RuntimeBackend,
-) bool {
-	requested, _, _ := r.runtimeCacheWhyNot(isvc, model, cache, backend)
-	return requested
 }
 
 // modelCacheVolumeFor returns the name of the volume the pod mounts at /models,
@@ -160,36 +247,28 @@ func modelCacheVolumeFor(sc modelStorageConfig, cache effectiveModelCache, mode 
 	return ""
 }
 
-// runtimeCacheMount returns the mount and env that keep the runtime's caches on
-// the claim volume, or nils when the pod should get neither. The mount reuses
-// the weights volume through a subPath, so the pod never sees a sibling
-// service's cache directory.
-func runtimeCacheMount(isvc *inferencev1alpha1.InferenceService, backend RuntimeBackend, volume string) (*corev1.VolumeMount, []corev1.EnvVar) {
-	dirs := runtimeCacheDirsFor(backend)
-	if len(dirs) == 0 || volume == "" {
-		return nil, nil
-	}
-	mounts := isvc.Spec.ExtraVolumeMounts
-	if userMountsAt(mounts, runtimeCacheMountPath) {
-		return nil, nil
-	}
-	mount := &corev1.VolumeMount{
+// runtimeCacheMount returns the mount that puts the per-service directory at
+// runtimeCacheMountPath. It reuses the weights volume through a subPath, so the
+// pod never sees a sibling service's cache directory.
+func runtimeCacheMount(isvc *inferencev1alpha1.InferenceService, volume string) *corev1.VolumeMount {
+	return &corev1.VolumeMount{
 		Name:      volume,
 		MountPath: runtimeCacheMountPath,
 		SubPath:   runtimeCacheClaimDir(isvc),
 	}
-	var env []corev1.EnvVar
+}
+
+// runtimeCacheEnvVars points each cache the plan keeps at the per-service directory.
+func runtimeCacheEnvVars(dirs []RuntimeCacheDir) []corev1.EnvVar {
+	env := make([]corev1.EnvVar, 0, len(dirs))
 	for _, d := range dirs {
-		if d.Default != "" && userMountCovers(mounts, d.Default) {
-			continue
-		}
 		value := runtimeCacheMountPath
 		if d.Value != "" {
 			value = path.Join(runtimeCacheMountPath, d.Value)
 		}
 		env = append(env, corev1.EnvVar{Name: d.Env, Value: value})
 	}
-	return mount, env
+	return env
 }
 
 // userMountsAt reports whether the user mounts a volume exactly at p.
@@ -197,19 +276,6 @@ func userMountsAt(mounts []corev1.VolumeMount, p string) bool {
 	p = path.Clean(p)
 	for _, m := range mounts {
 		if path.Clean(m.MountPath) == p {
-			return true
-		}
-	}
-	return false
-}
-
-// userMountCovers reports whether the user mounts a volume at p or above it, so
-// the runtime writes that cache into the user's volume instead.
-func userMountCovers(mounts []corev1.VolumeMount, p string) bool {
-	p = path.Clean(p)
-	for _, m := range mounts {
-		mp := path.Clean(m.MountPath)
-		if mp == p || strings.HasPrefix(p, mp+"/") {
 			return true
 		}
 	}
@@ -258,8 +324,12 @@ func runtimeCachePrepInitContainer(initImage, claimDir, volume string, dirs []Ru
 }
 
 // warnRuntimeCacheNotApplied emits the warning a service gets when it asks for
-// a persistent runtime cache it cannot have.
+// a persistent runtime cache it cannot have. Only a service that sets the field
+// itself is warned: a Model-level block reaches every service that references
+// the Model, and warning each of those about a block nobody wrote on the
+// service is noise.
 func (r *InferenceServiceReconciler) warnRuntimeCacheNotApplied(
+	ctx context.Context,
 	isvc *inferencev1alpha1.InferenceService,
 	model *inferencev1alpha1.Model,
 	cache effectiveModelCache,
@@ -268,9 +338,12 @@ func (r *InferenceServiceReconciler) warnRuntimeCacheNotApplied(
 	if r.Recorder == nil {
 		return
 	}
-	requested, reason, message := r.runtimeCacheWhyNot(isvc, model, cache, backend)
-	if requested || reason == "" {
+	if isvc.Spec.ModelCache == nil || isvc.Spec.ModelCache.RuntimeCache == nil {
 		return
 	}
-	r.Recorder.Eventf(isvc, nil, corev1.EventTypeWarning, reason, "Reconcile", "%s", message)
+	plan := r.runtimeCachePlanFor(ctx, isvc, model, cache, backend)
+	if plan.applied() || plan.reason == "" {
+		return
+	}
+	r.Recorder.Eventf(isvc, nil, corev1.EventTypeWarning, plan.reason, "Reconcile", "%s", plan.message)
 }
