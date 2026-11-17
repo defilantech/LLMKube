@@ -1016,11 +1016,11 @@ spec:
   or set it to the operator's group; with `--default-fsgroup=0` there is no
   operator group to set it to, so any `fsGroup` of the service's own is
   declined. A Model that is not Ready yet and has no cache key is skipped
-  silently, and a later reconcile applies the request. A Ready Model with no
-  cache key is declined with `RuntimeCacheUnsupported`: its source is one the
-  runtime resolves itself (a bare Hugging Face repo id) or a local one, so the
-  pod mounts no cache claim and the cache would live in an emptyDir that dies
-  with the pod. Only a service that sets the field itself is
+  silently. A Ready Model with no cache key is declined with
+  `RuntimeCacheUnsupported`: its source is one the runtime resolves itself (a
+  bare Hugging Face repo id) or a local one, so the pod mounts no cache claim
+  and the caches stay in the container's writable layer, which dies with the
+  pod. Only a service that sets the field itself is
   warned: a `Model.spec.modelCache.runtimeCache` block reaches every service
   that references the Model.
 - `persistence: Ephemeral` cannot carry `enabled: true`: the API server rejects

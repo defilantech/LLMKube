@@ -208,8 +208,9 @@ func TestRuntimeCacheWhyNot(t *testing.T) {
 			wantReason:  ReasonRuntimeCacheUnsupported,
 		},
 		{
-			// Transient: the key is derived when the Model reconciles, and the
-			// next pass applies the request, so there is nothing to warn about.
+			// The key can still arrive while the Model is not Ready, and only a
+			// Ready Model with no key is declined, so there is nothing to warn
+			// about.
 			name:    "no cache key yet is declined without a warning",
 			runtime: RuntimeVLLM,
 			cache:   enabled(),
@@ -1180,7 +1181,8 @@ func assertRuntimeCacheWarningScope(t *testing.T) {
 		t.Errorf("events = %v, want one %s event", got, ReasonRuntimeCacheUnsupported)
 	}
 
-	// No cache key yet is transient: the next reconcile applies the request.
+	// No cache key yet is transient: the key can still arrive while the Model
+	// is not Ready.
 	noKey := runtimeCacheTestModel(func(m *inferencev1alpha1.Model) { m.Status.CacheKey = "" })
 	vllm := runtimeCacheTestService(RuntimeVLLM, &inferencev1alpha1.ModelCacheSpec{
 		RuntimeCache: &inferencev1alpha1.RuntimeCacheSpec{Enabled: true},
@@ -1203,7 +1205,7 @@ func assertRuntimeCacheWarningScope(t *testing.T) {
 	if len(got) != 1 || !strings.Contains(got[0], ReasonRuntimeCacheUnsupported) {
 		t.Fatalf("events = %v for a Ready model with no cache key, want one %s event", got, ReasonRuntimeCacheUnsupported)
 	}
-	for _, want := range []string{"no cache key", "emptyDir"} {
+	for _, want := range []string{"no cache key", "writable layer"} {
 		if !strings.Contains(got[0], want) {
 			t.Errorf("event = %q, want it to name %q", got[0], want)
 		}

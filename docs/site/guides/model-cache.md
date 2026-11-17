@@ -148,9 +148,9 @@ kubelet re-own every staged file on each pod start. Remove that `fsGroup`, or
 set it to the operator's group; with `--default-fsgroup=0` there is no
 operator group to set it to, so any `fsGroup` of the service's own is
 declined. A Model that is not Ready yet and has no cache key is skipped
-silently, and a later reconcile applies the request; a Ready Model with no
-cache key is declined with `RuntimeCacheUnsupported`, because the pod mounts
-no cache claim and the cache would live in an emptyDir that dies with the pod.
+silently; a Ready Model with no cache key is declined with
+`RuntimeCacheUnsupported`, because the pod mounts no cache claim and the
+caches stay in the container's writable layer, which dies with the pod.
 `persistence: Ephemeral` cannot carry
 `enabled: true`: the API server rejects that pair.
 
