@@ -762,6 +762,75 @@ func servedContextLength(isvc *inferencev1alpha1.InferenceService) int64 {
 	return 0
 }
 
+// servedConcurrencyLimit is how many requests one replica serves at once, read
+// from the flags the controller renders, extraArgs first as with
+// servedContextLength. It is zero when the runtime picks its own. On the
+// metal-agent every engine gets the slot flag only above one slot.
+func servedConcurrencyLimit(isvc *inferencev1alpha1.InferenceService, metal bool) int64 {
+	args := isvc.Spec.ExtraArgs
+	var slots int64
+	if p := isvc.Spec.ParallelSlots; p != nil {
+		slots = int64(*p)
+	}
+	if metal {
+		if slots > 1 {
+			return slots
+		}
+		return 0
+	}
+	switch isvc.Spec.Runtime {
+	case RuntimeVLLM:
+		if n, ok := extraArgInt(args, "max-num-seqs"); ok {
+			return n
+		}
+		return slots
+	case RuntimeSGLANG:
+		if n, ok := extraArgInt(args, "max-running-requests"); ok {
+			return n
+		}
+		if cfg := isvc.Spec.SGLangConfig; cfg != nil && cfg.MaxRunningRequests != nil {
+			return int64(*cfg.MaxRunningRequests)
+		}
+	case "", "llamacpp":
+		if hasMatchingExtraArgAny(args, "-np") {
+			return 0
+		}
+		if n, ok := extraArgInt(args, "parallel"); ok {
+			return n
+		}
+		return slots
+	}
+	return 0
+}
+
+// servedByMetalAgent reports whether the metal-agent runs the service. A
+// missing Model leaves an unset runtime to the agent, as
+// runtimeSetByMetalAgent does.
+func servedByMetalAgent(isvc *inferencev1alpha1.InferenceService, model *inferencev1alpha1.Model) bool {
+	if model == nil {
+		return isvc.Spec.Runtime == ""
+	}
+	return isMetalModel(model)
+}
+
+// extraArgInt is the last value args give the named flag, and whether the
+// flag appears at all. A flag with no parseable value reports 0, true: set,
+// but unknown.
+func extraArgInt(args []string, name string) (int64, bool) {
+	values, ok := extraArgValues(args, name)
+	if !ok {
+		return 0, false
+	}
+	if len(values) == 0 {
+		return 0, true
+	}
+	n, err := strconv.ParseInt(values[len(values)-1], 10, 32)
+	if err != nil || n < 1 {
+		return 0, true
+	}
+	return n, true
+}
+
 func padTo256(n int64) int64 {
 	return (n + 255) / 256 * 256
 }

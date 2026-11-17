@@ -502,3 +502,45 @@ func TestSetUnreconciledGeneration(t *testing.T) {
 		t.Errorf("expected oldest 0 after catch-up, got %f", got)
 	}
 }
+
+func TestPublishInferenceServiceLimits(t *testing.T) {
+	labels := inferenceServiceLabels("limits-test", "default")
+	DeleteInferenceServiceSeries("limits-test", "default")
+
+	PublishInferenceServiceLimits("limits-test", "default", 104, 524288)
+	if got := testutil.ToFloat64(InferenceServiceConcurrencyLimit.WithLabelValues("limits-test", "default")); got != 104 {
+		t.Errorf("concurrency limit = %f, want 104", got)
+	}
+	if got := testutil.ToFloat64(InferenceServiceContextLength.WithLabelValues("limits-test", "default")); got != 524288 {
+		t.Errorf("context length = %f, want 524288", got)
+	}
+
+	// A limit that becomes unknown must disappear, not read as zero capacity.
+	PublishInferenceServiceLimits("limits-test", "default", 0, 524288)
+	if got := InferenceServiceConcurrencyLimit.DeletePartialMatch(labels); got != 0 {
+		t.Errorf("expected no concurrency limit series once unknown, got %d", got)
+	}
+	DeleteInferenceServiceSeries("limits-test", "default")
+	if got := InferenceServiceContextLength.DeletePartialMatch(labels); got != 0 {
+		t.Errorf("expected DeleteInferenceServiceSeries to drop the context length, got %d series", got)
+	}
+}
+
+func TestPublishInferenceServiceConfig(t *testing.T) {
+	labels := inferenceServiceLabels("config-test", "default")
+	DeleteInferenceServiceSeries("config-test", "default")
+
+	PublishInferenceServiceConfig("config-test", "default", 4, 3, "vllm", "vllm/vllm-openai:v0.32.0")
+	if got := testutil.ToFloat64(InferenceServiceGPUsPerReplica.WithLabelValues("config-test", "default")); got != 4 {
+		t.Errorf("gpus per replica = %f, want 4", got)
+	}
+	// A new generation replaces the series, so the vec holds one per service.
+	PublishInferenceServiceConfig("config-test", "default", 4, 4, "vllm", "vllm/vllm-openai:v0.32.0")
+	if got := testutil.ToFloat64(InferenceServiceConfigInfo.WithLabelValues("config-test", "default", "4", "vllm", "vllm/vllm-openai:v0.32.0")); got != 1 {
+		t.Errorf("config_info for generation 4 = %f, want 1", got)
+	}
+	if got := InferenceServiceConfigInfo.DeletePartialMatch(labels); got != 1 {
+		t.Errorf("expected exactly 1 config_info series after a generation change, got %d", got)
+	}
+	DeleteInferenceServiceSeries("config-test", "default")
+}

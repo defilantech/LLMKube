@@ -20,6 +20,8 @@ import (
 	"context"
 	"testing"
 
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -28,6 +30,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	inferencev1alpha1 "github.com/defilantech/llmkube/api/v1alpha1"
+	llmkubemetrics "github.com/defilantech/llmkube/internal/metrics"
 )
 
 // newStatusBuilderReconciler builds a minimal InferenceServiceReconciler backed
@@ -309,5 +312,48 @@ func TestUpdateStatusAvailableStaysTrueWithReadyReplicas(t *testing.T) {
 	}
 	if cond.Reason != "InferenceReady" {
 		t.Errorf("Available reason = %q, want InferenceReady", cond.Reason)
+	}
+}
+
+// TestPublishInferenceServiceConfig pins what the reconcile's defer exports
+// for capacity: the limits from the spec on every pass, the GPUs and image
+// only once a Model resolved.
+func TestPublishInferenceServiceConfig(t *testing.T) {
+	const name, ns = "publish-config", "default"
+	limit := int32(104)
+	isvc := &inferencev1alpha1.InferenceService{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns, Generation: 7},
+		Spec: inferencev1alpha1.InferenceServiceSpec{
+			Runtime:       RuntimeVLLM,
+			Image:         "vllm/vllm-openai:nightly",
+			ParallelSlots: &limit,
+			VLLMConfig:    &inferencev1alpha1.VLLMConfig{MaxModelLen: ptrInt32B(524288)},
+		},
+		Status: inferencev1alpha1.InferenceServiceStatus{Phase: PhaseReady},
+	}
+	llmkubemetrics.DeleteInferenceServiceSeries(name, ns)
+	t.Cleanup(func() { llmkubemetrics.DeleteInferenceServiceSeries(name, ns) })
+	labels := prometheus.Labels{"inferenceservice": name, "namespace": ns}
+
+	publishInferenceServiceConfig(isvc, nil, nil)
+	if got := testutil.ToFloat64(llmkubemetrics.InferenceServiceConcurrencyLimit.WithLabelValues(name, ns)); got != 104 {
+		t.Errorf("concurrency limit = %f, want 104", got)
+	}
+	if got := testutil.ToFloat64(llmkubemetrics.InferenceServiceContextLength.WithLabelValues(name, ns)); got != 524288 {
+		t.Errorf("context length = %f, want 524288", got)
+	}
+	if got := llmkubemetrics.InferenceServiceConfigInfo.DeletePartialMatch(labels); got != 0 {
+		t.Errorf("config_info without a Model = %d series, want 0", got)
+	}
+
+	model := &inferencev1alpha1.Model{Spec: inferencev1alpha1.ModelSpec{
+		Hardware: &inferencev1alpha1.HardwareSpec{Accelerator: "cuda", GPU: &inferencev1alpha1.GPUSpec{Enabled: true, Count: 4}},
+	}}
+	publishInferenceServiceConfig(isvc, model, nil)
+	if got := testutil.ToFloat64(llmkubemetrics.InferenceServiceGPUsPerReplica.WithLabelValues(name, ns)); got != 4 {
+		t.Errorf("gpus per replica = %f, want 4", got)
+	}
+	if got := testutil.ToFloat64(llmkubemetrics.InferenceServiceConfigInfo.WithLabelValues(name, ns, "7", "vllm", "vllm/vllm-openai:nightly")); got != 1 {
+		t.Errorf("config_info = %f, want 1", got)
 	}
 }
