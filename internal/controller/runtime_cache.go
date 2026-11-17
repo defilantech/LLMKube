@@ -252,7 +252,8 @@ func runtimeCachePrepInitContainer(initImage, claimDir, volume string, dirs []Ru
 		VolumeMounts: []corev1.VolumeMount{
 			{Name: volume, MountPath: runtimeCacheMountPath},
 		},
-		SecurityContext: cachePrepSecurityContext(),
+		TerminationMessagePolicy: corev1.TerminationMessageFallbackToLogsOnError,
+		SecurityContext:          cachePrepSecurityContext(),
 	}
 }
 
