@@ -473,6 +473,13 @@ func parseDuOutput(output string, isvcName string) []PVCCacheEntry {
 		if cacheKey == "" || cacheKey == "." || cacheKey == "/" {
 			continue
 		}
+		// Only cache-key directories are entries. Anything else on the claim
+		// (the operator's own _runtime-cache, a directory a user made) is not a
+		// cache of any Model, so listing it would report an orphan no purge may
+		// delete.
+		if !cacheKeyDirRe.MatchString(cacheKey) {
+			continue
+		}
 
 		entries = append(entries, PVCCacheEntry{
 			CacheKey:         cacheKey,

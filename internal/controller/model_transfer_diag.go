@@ -100,10 +100,26 @@ const (
 	// the cache filesystem cannot provide. Warm cached files remain usable.
 	ReasonModelCacheLockUnsupported = "ModelCacheLockUnsupported"
 
+	// ReasonRuntimeCacheNotWritable: a runtime-cache-prep could not create or
+	// own the per-service directory. Distinct from ReasonModelCacheNotWritable
+	// because the remedies differ: this container is the prep, it runs as root,
+	// and its chown is refused by the share rather than by the pod's uid
+	// (#2117).
+	ReasonRuntimeCacheNotWritable = "RuntimeCacheNotWritable"
+
 	// ReasonModelTransferSucceeded is set when ModelTransferHealthy flips back
 	// to True: a pod has since got past its init containers.
 	ReasonModelTransferSucceeded = "ModelTransferSucceeded"
 )
+
+// runtimeCachePrepRemedy is the remedy for a runtime-cache-prep failure. The
+// downloader's remedy (turn the prep on, or name the uid the prep chowns to)
+// does not apply to the prep itself: its mkdir, chown and chmod run as root, so
+// a refusal comes from the share, and a read-only mount accepts no write at
+// all.
+const runtimeCachePrepRemedy = "runtime-cache-prep runs as root, so the refusal comes from the cache share, not from a uid setting: " +
+	"an NFS export with root_squash maps root to an unprivileged user and drops its chown, and a read-only export or claim accepts no write. " +
+	"Use a claim whose export maps root to a user that owns the cache root (root_squash off, or a share that does not squash root), or a claim with a writable access mode"
 
 // modelTransferSignature pairs a diagnosis with the substrings that justify it.
 // Matching is case-insensitive, so entries must be lowercase.
@@ -279,6 +295,17 @@ var modelTransferSignatures = []modelTransferSignature{
 	},
 }
 
+// runtimeCachePrepSignatures are matched for runtime-cache-prep only, before the
+// shared list. Both spellings are the share's refusal, and neither is anything
+// the setup can change from the pod: "Read-only file system" is a mkdir or chown
+// on a claim that mounts read-only, and the other two are a chown root was
+// refused.
+var runtimeCachePrepSignatures = []modelTransferSignature{{
+	reason:  ReasonRuntimeCacheNotWritable,
+	remedy:  runtimeCachePrepRemedy,
+	matches: []string{"read-only file system", "operation not permitted", "permission denied"},
+}}
+
 // matchModelTransferFailure classifies an init container's termination message.
 // Returns the reason, the (sanitized, length-capped) line that justified it,
 // and whether anything matched at all.
@@ -287,11 +314,16 @@ var modelTransferSignatures = []modelTransferSignature{
 // arbitrary container output, so offsets must stay byte-stable and the result
 // must be bounded no matter what was printed.
 func matchModelTransferFailure(msg string) (modelTransferFailure, bool) {
+	return matchModelTransferFailureIn(msg, modelTransferSignatures)
+}
+
+// matchModelTransferFailureIn classifies msg against sigs, in order.
+func matchModelTransferFailureIn(msg string, sigs []modelTransferSignature) (modelTransferFailure, bool) {
 	if msg == "" {
 		return modelTransferFailure{}, false
 	}
 	lower := asciiLower(msg)
-	for _, sig := range modelTransferSignatures {
+	for _, sig := range sigs {
 		for _, m := range sig.matches {
 			idx := strings.Index(lower, m)
 			if idx < 0 {
@@ -355,12 +387,20 @@ func findModelTransferFailure(pods []corev1.Pod) (modelTransferFailure, bool) {
 				if term == nil || term.ExitCode == 0 {
 					continue
 				}
-				if f, ok := matchModelTransferFailure(term.Message); ok {
+				f, ok := modelTransferFailure{}, false
+				if cs.Name == runtimeCachePrepContainerName {
+					f, ok = matchModelTransferFailureIn(term.Message, runtimeCachePrepSignatures)
+				}
+				if !ok {
+					f, ok = matchModelTransferFailure(term.Message)
+				}
+				if ok {
 					// The cache remedy needs both: a container that writes
 					// the cache (model-verify only reads it) and a pod that
 					// mounts one (an emptyDir store has no cache-prep to
 					// turn on).
-					if f.reason == ReasonModelCacheNotWritable && !(writesModelCache(cs.Name) && cacheBacked) {
+					if (f.reason == ReasonModelCacheNotWritable || f.reason == ReasonRuntimeCacheNotWritable) &&
+						!(writesModelCache(cs.Name) && cacheBacked) {
 						continue
 					}
 					f.node = pod.Spec.NodeName

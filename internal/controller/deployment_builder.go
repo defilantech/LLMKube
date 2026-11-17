@@ -196,10 +196,8 @@ func devShmVolume(isvc *inferencev1alpha1.InferenceService, backend RuntimeBacke
 	if !ok || !r.NeedsSharedMemory(isvc, gpuCount) || isvc.Spec.MultiNode != nil {
 		return nil
 	}
-	for _, m := range isvc.Spec.ExtraVolumeMounts {
-		if path.Clean(m.MountPath) == devShmPath {
-			return nil
-		}
+	if userMountsAt(isvc.Spec.ExtraVolumeMounts, devShmPath) {
+		return nil
 	}
 	for _, v := range isvc.Spec.ExtraVolumes {
 		if v.Name == devShmVolumeName {
@@ -258,11 +256,13 @@ func devShmVolume(isvc *inferencev1alpha1.InferenceService, backend RuntimeBacke
 // path; the CUDA and Metal paths are untouched. A user-supplied
 // Spec.PodSecurityContext is returned as-is, so setting it takes full
 // ownership of supplementalGroups (the per-service workaround for a node
-// whose render GID differs from the operator default). The two additions the
+// whose render GID differs from the operator default). The three additions the
 // operator makes to it are the prefetch Job's group, for a pod that reads a
-// prefetched cache (withPrefetchGroup), and, for a pod the runtime cache is
-// applied to, fsGroupChangePolicy OnRootMismatch when the context sets an
-// fsGroup but no policy (withRuntimeCacheFSGroupPolicy).
+// prefetched cache (withPrefetchGroup); the group runtime-cache-prep hands the
+// per-service directory to, for a pod the runtime cache is applied to
+// (withRuntimeCacheGroup); and fsGroupChangePolicy OnRootMismatch for such a
+// pod when the context sets an fsGroup but no policy
+// (withRuntimeCacheFSGroupPolicy).
 //
 // Operators using a custom init container image (--init-container-image) with
 // a different UID/GID should override Spec.PodSecurityContext or set
@@ -432,12 +432,16 @@ func servedModelPath(isvc *inferencev1alpha1.InferenceService, model *inferencev
 // the runtime. It stages when the runtime stages by default, or when spec.stageModel opts
 // a runtime that does not into the same staging (#1961); skipModelInit always opts out.
 // optIn reports the second case, whose container learns the paths from LLMKUBE_MODEL_*.
+// runtimeCacheApplied makes a prefetched claim's volume source writable, which
+// the runtime cache's second mount needs: a second mount of a read-only volume
+// source could not be written. The /models mount stays read-only either way.
 func (r *InferenceServiceReconciler) servingStorage(
 	isvc *inferencev1alpha1.InferenceService,
 	cache effectiveModelCache,
 	model, draftModel *inferencev1alpha1.Model,
 	backend RuntimeBackend,
 	hfEndpoint, draftHFEndpoint string,
+	runtimeCacheApplied bool,
 ) (storageConfig modelStorageConfig, modelPath, draftPath string, optIn bool) {
 	if !operatorStagesModel(isvc, backend) {
 		return modelStorageConfig{}, "", "", false
@@ -456,7 +460,7 @@ func (r *InferenceServiceReconciler) servingStorage(
 		if g.entry != nil {
 			staged = g.entry.Files
 		}
-		storageConfig = buildPrefetchedStorageConfig(model, isvc, cache, r.ModelCacheMode, r.InitContainerImage, staged, r.runtimeCacheRequested(isvc, model, cache, backend))
+		storageConfig = buildPrefetchedStorageConfig(model, isvc, cache, r.ModelCacheMode, r.InitContainerImage, staged, runtimeCacheApplied)
 	} else {
 		storageConfig = buildModelStorageConfig(model, isvc, cache, isvc.Namespace, useCache, r.ModelCacheMode, r.CACertConfigMap, r.InitContainerImage, r.DefaultFSGroup, r.ModelCachePrep, resolveInitContainerUser(r.InitContainerUser), r.AllowedHostPathRoots, hfEndpoint)
 	}
@@ -533,7 +537,10 @@ func setCommandAndArgs(
 }
 
 // constructDeploymentForCache renders the Deployment for a service whose
-// effective modelCache has already been resolved.
+// effective modelCache has already been resolved. plan, when given, is the
+// runtime-cache decision the caller already made (runtimeCachePlanFor), so the
+// decision the reconcile warned about is the one it renders; without it the
+// decision is made here, with the cache claim's access modes unknown.
 func (r *InferenceServiceReconciler) constructDeploymentForCache(
 	isvc *inferencev1alpha1.InferenceService,
 	model *inferencev1alpha1.Model,
@@ -542,8 +549,15 @@ func (r *InferenceServiceReconciler) constructDeploymentForCache(
 	replicas int32,
 	hfEndpoint string,
 	draftHFEndpoint string,
+	plan ...runtimeCachePlan,
 ) *appsv1.Deployment {
 	backend := resolveBackend(isvc)
+	var decision runtimeCachePlan
+	if len(plan) > 0 {
+		decision = plan[0]
+	} else {
+		decision = r.runtimeCachePlan(isvc, model, cache, backend)
+	}
 
 	labels := map[string]string{
 		"app":                           isvc.Name,
@@ -561,7 +575,7 @@ func (r *InferenceServiceReconciler) constructDeploymentForCache(
 		port = isvc.Spec.Endpoint.Port
 	}
 
-	storageConfig, modelPath, draftPath, optInStaging := r.servingStorage(isvc, cache, model, draftModel, backend, hfEndpoint, draftHFEndpoint)
+	storageConfig, modelPath, draftPath, optInStaging := r.servingStorage(isvc, cache, model, draftModel, backend, hfEndpoint, draftHFEndpoint, decision.applied())
 	args := backend.BuildArgs(isvc, model, modelPath, draftPath, port)
 
 	startupProbe, livenessProbe, readinessProbe := backend.BuildProbes(port)
@@ -615,22 +629,19 @@ func (r *InferenceServiceReconciler) constructDeploymentForCache(
 
 	// spec.modelCache.runtimeCache (#2117): one extra mount of the cache
 	// volume at the operator's own path, plus the env that points the
-	// runtime's caches there. Nothing is added when the feature does not
-	// apply or the user mounted /runtime-cache themselves.
+	// runtime's caches there. Nothing is added when the decision declines the
+	// request or the pod mounts no cache claim.
 	var runtimeCacheEnv []corev1.EnvVar
 	var runtimeCachePrep *corev1.Container
 	runtimeCacheApplied := false
-	if r.runtimeCacheRequested(isvc, model, cache, backend) {
+	if decision.applied() {
 		if volume := modelCacheVolumeFor(storageConfig, cache, r.ModelCacheMode); volume != "" {
-			mount, env := runtimeCacheMount(isvc, backend, volume)
-			if mount != nil {
-				container.VolumeMounts = append(container.VolumeMounts, *mount)
-				runtimeCacheEnv = env
-				runtimeCacheApplied = true
-				prep := runtimeCachePrepInitContainer(r.InitContainerImage, runtimeCacheClaimDir(isvc), volume,
-					runtimeCacheDirsFor(backend), resolvedCacheFSGroup(isvc, r.DefaultFSGroup), downloaderUID(isvc, resolveInitContainerUser(r.InitContainerUser)))
-				runtimeCachePrep = &prep
-			}
+			container.VolumeMounts = append(container.VolumeMounts, *runtimeCacheMount(isvc, volume))
+			runtimeCacheEnv = runtimeCacheEnvVars(decision.dirs)
+			runtimeCacheApplied = true
+			prep := runtimeCachePrepInitContainer(r.InitContainerImage, runtimeCacheClaimDir(isvc), volume,
+				decision.dirs, resolvedCacheFSGroup(isvc, r.DefaultFSGroup), downloaderUID(isvc, resolveInitContainerUser(r.InitContainerUser)))
+			runtimeCachePrep = &prep
 		}
 	}
 	container.VolumeMounts = append(container.VolumeMounts, isvc.Spec.ExtraVolumeMounts...)
@@ -711,9 +722,11 @@ func (r *InferenceServiceReconciler) constructDeploymentForCache(
 					Annotations: buildPodAnnotations(isvc, r.EmitScrapeAnnotations, port),
 				},
 				Spec: corev1.PodSpec{
-					SecurityContext: withRuntimeCacheFSGroupPolicy(
-						withPrefetchGroup(inferPodSecurityContext(isvc, r.DefaultFSGroup, r.DRIRenderGID, vulkan), r.DefaultFSGroup, storageConfig.readsPrefetchedCache),
-						runtimeCacheApplied),
+					SecurityContext: withRuntimeCacheGroup(
+						withRuntimeCacheFSGroupPolicy(
+							withPrefetchGroup(inferPodSecurityContext(isvc, r.DefaultFSGroup, r.DRIRenderGID, vulkan), r.DefaultFSGroup, storageConfig.readsPrefetchedCache),
+							runtimeCacheApplied),
+						resolvedCacheFSGroup(isvc, r.DefaultFSGroup), runtimeCacheApplied),
 					InitContainers:     storageConfig.initContainers,
 					Containers:         []corev1.Container{container},
 					Volumes:            storageConfig.volumes,
@@ -1044,15 +1057,40 @@ func revisionHistoryLimitOrDefault(limit *int32) *int32 {
 // (disabled, the OpenShift preset) adds nothing: the prep then hands the root
 // to group 0, which such a platform's arbitrary uids already run under.
 func withPrefetchGroup(psc *corev1.PodSecurityContext, defaultFSGroup int64, readsPrefetchedCache bool) *corev1.PodSecurityContext {
-	if !readsPrefetchedCache || defaultFSGroup <= 0 || psc == nil {
+	if !readsPrefetchedCache || defaultFSGroup <= 0 {
 		return psc
 	}
-	inGroup := func(g *int64) bool { return g != nil && *g == defaultFSGroup }
-	if inGroup(psc.FSGroup) || inGroup(psc.RunAsGroup) || slices.Contains(psc.SupplementalGroups, defaultFSGroup) {
+	return withSupplementalGroup(psc, defaultFSGroup)
+}
+
+// withRuntimeCacheGroup adds the group runtime-cache-prep hands the per-service
+// directory to, so a serving container whose own podSecurityContext sets no
+// fsGroup can write the directory the operator created for it (#2117). The
+// group is the resolved fsGroup the prep chowns to, never a guessed uid: images
+// that set USER, and OpenShift's allocated uids, run under groups the operator
+// cannot name. The spec is never changed. A resolved group of 0 or less adds
+// nothing: the prep then chowns to the downloader's uid with group 0, which
+// such a platform's processes already run under.
+func withRuntimeCacheGroup(psc *corev1.PodSecurityContext, resolvedFSGroup int64, runtimeCacheApplied bool) *corev1.PodSecurityContext {
+	if !runtimeCacheApplied || resolvedFSGroup <= 0 {
+		return psc
+	}
+	return withSupplementalGroup(psc, resolvedFSGroup)
+}
+
+// withSupplementalGroup returns a copy of psc carrying group in its
+// supplemental groups, or psc unchanged when it is already in group through
+// fsGroup, runAsGroup or supplementalGroups.
+func withSupplementalGroup(psc *corev1.PodSecurityContext, group int64) *corev1.PodSecurityContext {
+	if psc == nil {
+		return psc
+	}
+	inGroup := func(g *int64) bool { return g != nil && *g == group }
+	if inGroup(psc.FSGroup) || inGroup(psc.RunAsGroup) || slices.Contains(psc.SupplementalGroups, group) {
 		return psc
 	}
 	out := psc.DeepCopy()
-	out.SupplementalGroups = append(out.SupplementalGroups, defaultFSGroup)
+	out.SupplementalGroups = append(out.SupplementalGroups, group)
 	return out
 }
 

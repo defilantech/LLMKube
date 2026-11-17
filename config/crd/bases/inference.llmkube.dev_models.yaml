@@ -508,7 +508,7 @@ spec:
                       serving pods mount the weights at /models read-only with no downloader
                       init container, and fail with PrefetchedFilesMissing rather than download
                       on the serving node if a staged file is absent. The claim itself is
-                      writable only when runtimeCache is enabled. Progress is reported per
+                      writable only where the runtime cache is applied. Progress is reported per
                       claim in the Model's status.prefetch.
 
                       On a Model, it is equivalent to spec.prefetch: either field makes the
@@ -548,18 +548,20 @@ spec:
                           shared objects the runtime loads.
 
                           A spec.env entry naming one of those variables wins, and a volume in
-                          extraVolumeMounts at one of the runtimes' default cache paths takes that
-                          cache over; a volume at /runtime-cache itself means the operator adds
-                          nothing.
+                          extraVolumeMounts mounted exactly at one of the runtimes' default cache
+                          paths takes that cache over; a volume at /runtime-cache itself means the
+                          operator adds nothing.
 
                           Emitted only where the serving Pod mounts a writable cache claim and the
                           runtime implements a cache (vLLM and SGLang). Everywhere else the field
-                          is reported as ignored with a RuntimeCacheUnsupported warning event, and
-                          with --model-cache-prep=never it is declined with a
-                          RuntimeCacheNeedsPrepare one. It cannot carry enabled: true beside
-                          persistence Ephemeral, which leaves no claim to keep a cache on. The
-                          operator never deletes the directory, and it counts against the claim's
-                          size alongside the weights.
+                          is reported as ignored with a RuntimeCacheUnsupported warning event, a
+                          claim with no writable access mode with a RuntimeCacheClaimReadOnly one,
+                          and a prefetched service whose own podSecurityContext.fsGroup differs
+                          from the operator's with a RuntimeCacheFSGroupMismatch one; with
+                          --model-cache-prep=never it is declined with a RuntimeCacheNeedsPrepare
+                          event. It cannot carry enabled: true beside persistence Ephemeral, which
+                          leaves no claim to keep a cache on. The operator never deletes the
+                          directory, and it counts against the claim's size alongside the weights.
                         type: boolean
                     required:
                     - enabled

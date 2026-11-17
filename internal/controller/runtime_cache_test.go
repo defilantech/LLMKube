@@ -20,11 +20,15 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	apiruntime "k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/tools/events"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	inferencev1alpha1 "github.com/defilantech/llmkube/api/v1alpha1"
 )
@@ -33,8 +37,8 @@ func TestRuntimeCacheDirs(t *testing.T) {
 	vllm := (&VLLMBackend{}).RuntimeCacheDirs()
 	wantVLLM := []RuntimeCacheDir{
 		{Env: "VLLM_CACHE_ROOT", Value: "vllm", Dir: "vllm", Default: "/root/.cache/vllm"},
-		{Env: "TRITON_CACHE_DIR", Value: "triton", Dir: "triton", Default: "/root/.triton"},
-		{Env: "TILELANG_CACHE_DIR", Value: "tilelang", Dir: "tilelang", Default: "/root/.tilelang"},
+		{Env: "TRITON_CACHE_DIR", Value: "triton", Dir: "triton", Default: "/root/.triton/cache"},
+		{Env: "TILELANG_CACHE_DIR", Value: "tilelang", Dir: "tilelang", Default: "/root/.tilelang/cache"},
 		{Env: "TORCHINDUCTOR_CACHE_DIR", Value: "torchinductor", Dir: "torchinductor", Default: "/tmp/torchinductor_root"},
 		{Env: "FLASHINFER_WORKSPACE_BASE", Value: "flashinfer", Dir: "flashinfer/.cache/flashinfer", Default: "/root/.cache/flashinfer"},
 	}
@@ -90,10 +94,16 @@ func TestRuntimeCacheWhyNot(t *testing.T) {
 		}
 		return m
 	}
+	prefetched := func() *inferencev1alpha1.Model {
+		return runtimeCachePrefetchedModel()
+	}
 	enabled := func() *inferencev1alpha1.ModelCacheSpec {
 		return &inferencev1alpha1.ModelCacheSpec{
 			RuntimeCache: &inferencev1alpha1.RuntimeCacheSpec{Enabled: true},
 		}
+	}
+	prefetching := func() *inferencev1alpha1.ModelCacheSpec {
+		return runtimeCacheTestEnabled(true)
 	}
 	tests := []struct {
 		name          string
@@ -102,40 +112,40 @@ func TestRuntimeCacheWhyNot(t *testing.T) {
 		model         *inferencev1alpha1.Model
 		mutateService func(*inferencev1alpha1.InferenceService)
 		reconciler    *InferenceServiceReconciler
-		wantRequested bool
+		wantApplied   bool
 		wantReason    string
 	}{
 		{
-			name:          "field not set",
-			runtime:       RuntimeVLLM,
-			wantRequested: false,
-			wantReason:    "",
+			name:        "field not set",
+			runtime:     RuntimeVLLM,
+			wantApplied: false,
+			wantReason:  "",
 		},
 		{
-			name:          "vllm",
-			runtime:       RuntimeVLLM,
-			cache:         enabled(),
-			wantRequested: true,
+			name:        "vllm",
+			runtime:     RuntimeVLLM,
+			cache:       enabled(),
+			wantApplied: true,
 		},
 		{
-			name:          "sglang",
-			runtime:       RuntimeSGLANG,
-			cache:         enabled(),
-			wantRequested: true,
+			name:        "sglang",
+			runtime:     RuntimeSGLANG,
+			cache:       enabled(),
+			wantApplied: true,
 		},
 		{
-			name:          "llamacpp has no persistent cache",
-			runtime:       "llamacpp",
-			cache:         enabled(),
-			wantRequested: false,
-			wantReason:    ReasonRuntimeCacheUnsupported,
+			name:        "llamacpp has no persistent cache",
+			runtime:     "llamacpp",
+			cache:       enabled(),
+			wantApplied: false,
+			wantReason:  ReasonRuntimeCacheUnsupported,
 		},
 		{
-			name:          "tgi has no persistent cache",
-			runtime:       "tgi",
-			cache:         enabled(),
-			wantRequested: false,
-			wantReason:    ReasonRuntimeCacheUnsupported,
+			name:        "tgi has no persistent cache",
+			runtime:     "tgi",
+			cache:       enabled(),
+			wantApplied: false,
+			wantReason:  ReasonRuntimeCacheUnsupported,
 		},
 		{
 			name:    "a metal model runs no serving container",
@@ -144,16 +154,16 @@ func TestRuntimeCacheWhyNot(t *testing.T) {
 			model: newModel(func(m *inferencev1alpha1.Model) {
 				m.Spec.Hardware = &inferencev1alpha1.HardwareSpec{Accelerator: "metal"}
 			}),
-			wantRequested: false,
-			wantReason:    ReasonRuntimeCacheUnsupported,
+			wantApplied: false,
+			wantReason:  ReasonRuntimeCacheUnsupported,
 		},
 		{
-			name:          "the cache prep is turned off",
-			runtime:       RuntimeVLLM,
-			cache:         enabled(),
-			reconciler:    &InferenceServiceReconciler{ModelCachePath: "/models", ModelCacheMode: ModelCacheModePerService, ModelCachePrep: ModelCachePrepNever},
-			wantRequested: false,
-			wantReason:    ReasonRuntimeCacheNeedsPrepare,
+			name:        "the cache prep is turned off",
+			runtime:     RuntimeVLLM,
+			cache:       enabled(),
+			reconciler:  &InferenceServiceReconciler{ModelCachePath: "/models", ModelCacheMode: ModelCacheModePerService, ModelCachePrep: ModelCachePrepNever},
+			wantApplied: false,
+			wantReason:  ReasonRuntimeCacheNeedsPrepare,
 		},
 		{
 			name:    "skipModelInit mounts no cache claim",
@@ -163,47 +173,49 @@ func TestRuntimeCacheWhyNot(t *testing.T) {
 				skip := true
 				s.Spec.SkipModelInit = &skip
 			},
-			wantRequested: false,
-			wantReason:    ReasonRuntimeCacheUnsupported,
+			wantApplied: false,
+			wantReason:  ReasonRuntimeCacheUnsupported,
 		},
 		{
-			name:          "a pvc:// source is pre-staged",
-			runtime:       RuntimeVLLM,
-			cache:         enabled(),
-			model:         newModel(func(m *inferencev1alpha1.Model) { m.Spec.Source = "pvc://weights/llama.gguf" }),
-			wantRequested: false,
-			wantReason:    ReasonRuntimeCacheUnsupported,
+			name:        "a pvc:// source is pre-staged",
+			runtime:     RuntimeVLLM,
+			cache:       enabled(),
+			model:       newModel(func(m *inferencev1alpha1.Model) { m.Spec.Source = "pvc://weights/llama.gguf" }),
+			wantApplied: false,
+			wantReason:  ReasonRuntimeCacheUnsupported,
 		},
 		{
-			name:          "an oci:// source is pre-staged",
-			runtime:       RuntimeVLLM,
-			cache:         enabled(),
-			model:         newModel(func(m *inferencev1alpha1.Model) { m.Spec.Source = "oci://registry.example.com/weights:1" }),
-			wantRequested: false,
-			wantReason:    ReasonRuntimeCacheUnsupported,
+			name:        "an oci:// source is pre-staged",
+			runtime:     RuntimeVLLM,
+			cache:       enabled(),
+			model:       newModel(func(m *inferencev1alpha1.Model) { m.Spec.Source = "oci://registry.example.com/weights:1" }),
+			wantApplied: false,
+			wantReason:  ReasonRuntimeCacheUnsupported,
 		},
 		{
-			name:          "model caching is disabled on the operator",
-			runtime:       RuntimeVLLM,
-			cache:         enabled(),
-			reconciler:    &InferenceServiceReconciler{},
-			wantRequested: false,
-			wantReason:    ReasonRuntimeCacheUnsupported,
+			name:        "model caching is disabled on the operator",
+			runtime:     RuntimeVLLM,
+			cache:       enabled(),
+			reconciler:  &InferenceServiceReconciler{},
+			wantApplied: false,
+			wantReason:  ReasonRuntimeCacheUnsupported,
 		},
 		{
-			name:          "persistence Ephemeral mounts an emptyDir",
-			runtime:       RuntimeVLLM,
-			cache:         &inferencev1alpha1.ModelCacheSpec{Persistence: inferencev1alpha1.ModelCachePersistenceEphemeral, RuntimeCache: &inferencev1alpha1.RuntimeCacheSpec{Enabled: true}},
-			wantRequested: false,
-			wantReason:    ReasonRuntimeCacheUnsupported,
+			name:        "persistence Ephemeral mounts an emptyDir",
+			runtime:     RuntimeVLLM,
+			cache:       &inferencev1alpha1.ModelCacheSpec{Persistence: inferencev1alpha1.ModelCachePersistenceEphemeral, RuntimeCache: &inferencev1alpha1.RuntimeCacheSpec{Enabled: true}},
+			wantApplied: false,
+			wantReason:  ReasonRuntimeCacheUnsupported,
 		},
 		{
-			name:          "no cache key yet",
-			runtime:       RuntimeVLLM,
-			cache:         enabled(),
-			model:         newModel(func(m *inferencev1alpha1.Model) { m.Status.CacheKey = "" }),
-			wantRequested: false,
-			wantReason:    ReasonRuntimeCacheUnsupported,
+			// Transient: the key is derived when the Model reconciles, and the
+			// next pass applies the request, so there is nothing to warn about.
+			name:        "no cache key yet is declined without a warning",
+			runtime:     RuntimeVLLM,
+			cache:       enabled(),
+			model:       newModel(func(m *inferencev1alpha1.Model) { m.Status.CacheKey = "" }),
+			wantApplied: false,
+			wantReason:  "",
 		},
 		{
 			name:    "the user already mounts the operator path",
@@ -212,15 +224,55 @@ func TestRuntimeCacheWhyNot(t *testing.T) {
 			mutateService: func(s *inferencev1alpha1.InferenceService) {
 				s.Spec.ExtraVolumeMounts = []corev1.VolumeMount{{Name: "user-cache", MountPath: "/runtime-cache"}}
 			},
-			wantRequested: false,
-			wantReason:    "",
+			wantApplied: false,
+			wantReason:  "",
+		},
+		{
+			// A prefetched claim is written by the Job in the operator's group:
+			// a service whose own fsGroup differs would make kubelet re-own
+			// every staged file each start, because the runtime cache mounts
+			// the claim writable.
+			name:    "a prefetched service with another fsGroup is declined",
+			runtime: RuntimeVLLM,
+			cache:   prefetching(),
+			model:   prefetched(),
+			mutateService: func(s *inferencev1alpha1.InferenceService) {
+				fsGroup := int64(3000)
+				s.Spec.PodSecurityContext = &corev1.PodSecurityContext{FSGroup: &fsGroup}
+			},
+			wantApplied: false,
+			wantReason:  ReasonRuntimeCacheFSGroupMismatch,
+		},
+		{
+			name:    "a prefetched service with the operator's group keeps the cache",
+			runtime: RuntimeVLLM,
+			cache:   prefetching(),
+			model:   prefetched(),
+			mutateService: func(s *inferencev1alpha1.InferenceService) {
+				fsGroup := int64(102)
+				s.Spec.PodSecurityContext = &corev1.PodSecurityContext{FSGroup: &fsGroup}
+			},
+			wantApplied: true,
+		},
+		{
+			// The fsGroup walk only re-owns a volume the pod mounts writable. A
+			// service that is not prefetched mounts its own claim, which was
+			// writable before the runtime cache existed.
+			name:    "a service that is not prefetched keeps another fsGroup",
+			runtime: RuntimeVLLM,
+			cache:   enabled(),
+			mutateService: func(s *inferencev1alpha1.InferenceService) {
+				fsGroup := int64(3000)
+				s.Spec.PodSecurityContext = &corev1.PodSecurityContext{FSGroup: &fsGroup}
+			},
+			wantApplied: true,
 		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			r := tc.reconciler
 			if r == nil {
-				r = &InferenceServiceReconciler{ModelCachePath: "/models", ModelCacheMode: ModelCacheModePerService}
+				r = &InferenceServiceReconciler{ModelCachePath: "/models", ModelCacheMode: ModelCacheModePerService, DefaultFSGroup: 102}
 			}
 			model := tc.model
 			if model == nil {
@@ -237,18 +289,19 @@ func TestRuntimeCacheWhyNot(t *testing.T) {
 				tc.mutateService(isvc)
 			}
 			cache := resolveEffectiveModelCache(isvc, model)
-			requested, reason, message := r.runtimeCacheWhyNot(isvc, model, cache, resolveBackend(isvc))
-			if requested != tc.wantRequested {
-				t.Fatalf("runtimeCacheWhyNot requested = %v (reason %q), want %v", requested, reason, tc.wantRequested)
+			plan := r.runtimeCachePlan(isvc, model, cache, resolveBackend(isvc))
+			if plan.applied() != tc.wantApplied {
+				t.Fatalf("runtimeCachePlan applied = %v (reason %q), want %v", plan.applied(), plan.reason, tc.wantApplied)
 			}
-			if reason != tc.wantReason {
-				t.Errorf("reason = %q, want %q", reason, tc.wantReason)
+			if plan.reason != tc.wantReason {
+				t.Errorf("reason = %q, want %q", plan.reason, tc.wantReason)
 			}
-			if reason != "" && message == "" {
-				t.Errorf("reason %q carries no message for the warning event", reason)
+			if plan.reason != "" && plan.message == "" {
+				t.Errorf("reason %q carries no message for the warning event", plan.reason)
 			}
-			if r.runtimeCacheRequested(isvc, model, cache, resolveBackend(isvc)) != tc.wantRequested {
-				t.Errorf("runtimeCacheRequested disagrees with runtimeCacheWhyNot")
+			render := r.constructDeploymentForCache(isvc, model, cache, nil, 1, "", "").Spec.Template.Spec
+			if plan.applied() != (prepInitContainer(render) != nil) {
+				t.Errorf("the plan applied = %v but the rendered pod has no prep container", plan.applied())
 			}
 		})
 	}
@@ -329,9 +382,10 @@ func TestRuntimeCacheMountNeverSharesAPath(t *testing.T) {
 	b := &inferencev1alpha1.InferenceService{ObjectMeta: metav1.ObjectMeta{Name: "b", Namespace: "ns1"}}
 	c := &inferencev1alpha1.InferenceService{ObjectMeta: metav1.ObjectMeta{Name: "a", Namespace: "ns2"}}
 
-	mountA, envA := runtimeCacheMount(a, &VLLMBackend{}, "model-cache")
-	mountB, _ := runtimeCacheMount(b, &VLLMBackend{}, "model-cache")
-	mountC, _ := runtimeCacheMount(c, &VLLMBackend{}, "model-cache")
+	mountA := runtimeCacheMount(a, "model-cache")
+	mountB := runtimeCacheMount(b, "model-cache")
+	mountC := runtimeCacheMount(c, "model-cache")
+	envA := runtimeCacheEnvVars((&VLLMBackend{}).RuntimeCacheDirs())
 	if mountA == nil || mountB == nil || mountC == nil {
 		t.Fatal("runtimeCacheMount returned no mount")
 	}
@@ -351,18 +405,6 @@ func TestRuntimeCacheMountNeverSharesAPath(t *testing.T) {
 		if !strings.HasPrefix(e.Value, mountA.MountPath) {
 			t.Errorf("env %s = %q, want a path under %s", e.Name, e.Value, mountA.MountPath)
 		}
-	}
-
-	// A user volume at the operator's own path owns the feature: the mount
-	// helper must inject nothing even when it is asked to.
-	userOwned := &inferencev1alpha1.InferenceService{
-		ObjectMeta: metav1.ObjectMeta{Name: "c", Namespace: "ns1"},
-		Spec: inferencev1alpha1.InferenceServiceSpec{
-			ExtraVolumeMounts: []corev1.VolumeMount{{Name: "user-cache", MountPath: runtimeCacheMountPath}},
-		},
-	}
-	if mount, env := runtimeCacheMount(userOwned, &VLLMBackend{}, "model-cache"); mount != nil || env != nil {
-		t.Errorf("runtimeCacheMount injected %+v / %v over the user's own mount at %s", mount, env, runtimeCacheMountPath)
 	}
 }
 
@@ -413,7 +455,11 @@ func runtimeCacheTestReconciler() *InferenceServiceReconciler {
 }
 
 func renderRuntimeCachePod(isvc *inferencev1alpha1.InferenceService, m *inferencev1alpha1.Model) corev1.PodSpec {
-	return runtimeCacheTestReconciler().constructDeploymentForCache(isvc, m, resolveEffectiveModelCache(isvc, m), nil, 1, "", "").Spec.Template.Spec
+	return renderRuntimeCachePodWith(runtimeCacheTestReconciler(), isvc, m)
+}
+
+func renderRuntimeCachePodWith(r *InferenceServiceReconciler, isvc *inferencev1alpha1.InferenceService, m *inferencev1alpha1.Model) corev1.PodSpec {
+	return r.constructDeploymentForCache(isvc, m, resolveEffectiveModelCache(isvc, m), nil, 1, "", "").Spec.Template.Spec
 }
 
 // runtimeCacheVLLMEnv is the env the correction turns every vLLM cache into.
@@ -433,9 +479,16 @@ func TestConstructDeployment_RuntimeCache(t *testing.T) {
 	t.Run("user mount at vllm's default path wins for that cache only", assertRuntimeCacheUserMountAtDefaultPath)
 	t.Run("user mount at the operator's path wins", assertRuntimeCacheUserMountAtOperatorPath)
 	t.Run("a prefetched cache is writable while /models stays read-only", assertRuntimeCachePrefetchedWritable)
-	t.Run("a user fsGroup gets OnRootMismatch on a runtime-cache pod", assertRuntimeCacheFSGroupPolicy)
+	t.Run("a prefetched service with another fsGroup is declined", assertRuntimeCacheDeclinesPrefetchedFSGroupMismatch)
+	t.Run("a read-only claim is declined", assertRuntimeCacheDeclinesReadOnlyClaim)
+	t.Run("a pod with no fsGroup of its own runs in the prep group", assertRuntimeCacheAddsPrepGroup)
+	t.Run("a mount above a default path takes no cache over", assertRuntimeCacheIgnoresMountAboveDefault)
+	t.Run("every cache taken over injects nothing", assertRuntimeCacheAllCachesTakenOver)
+	t.Run("a user fsGroup gets OnRootMismatch on a prefetched runtime-cache pod", assertRuntimeCacheFSGroupPolicy)
+	t.Run("a cached pod gets OnRootMismatch without prefetch", assertRuntimeCacheFSGroupPolicyCached)
 	t.Run("a user fsGroupChangePolicy is kept", assertRuntimeCacheKeepsUserFSGroupChangePolicy)
 	t.Run("without the runtime cache the user context is unchanged", assertRuntimeCacheNoFSGroupPolicyWithoutFeature)
+	t.Run("only the service's own request is warned", assertRuntimeCacheWarningScope)
 	t.Run("multinode members each carry the mount, env and prep", assertRuntimeCacheMultiNodeMembers)
 }
 
@@ -523,7 +576,10 @@ func assertNoRuntimeCacheInjections(t *testing.T, name string, pod corev1.PodSpe
 			t.Errorf("%s: got a %s mount without the field", name, runtimeCacheMountPath)
 		}
 	}
-	for _, envName := range []string{"VLLM_CACHE_ROOT", "TRITON_CACHE_DIR", "SGLANG_CACHE_DIR"} {
+	for _, envName := range []string{
+		"VLLM_CACHE_ROOT", "TRITON_CACHE_DIR", "TILELANG_CACHE_DIR",
+		"TORCHINDUCTOR_CACHE_DIR", "FLASHINFER_WORKSPACE_BASE", "SGLANG_CACHE_DIR",
+	} {
 		for _, e := range pod.Containers[0].Env {
 			if e.Name == envName {
 				t.Errorf("%s: got env %s=%q without the field", name, e.Name, e.Value)
@@ -563,7 +619,7 @@ func assertRuntimeCacheUserMountAtDefaultPath(t *testing.T) {
 	isvc := runtimeCacheTestService(RuntimeVLLM, runtimeCacheTestEnabled(false), func(s *inferencev1alpha1.InferenceServiceSpec) {
 		s.ExtraVolumes = []corev1.Volume{{Name: "user-tilelang", VolumeSource: corev1.VolumeSource{
 			EmptyDir: &corev1.EmptyDirVolumeSource{}}}}
-		s.ExtraVolumeMounts = []corev1.VolumeMount{{Name: "user-tilelang", MountPath: "/root/.tilelang"}}
+		s.ExtraVolumeMounts = []corev1.VolumeMount{{Name: "user-tilelang", MountPath: "/root/.tilelang/cache"}}
 	})
 	pod := renderRuntimeCachePod(isvc, runtimeCacheTestModel(nil))
 	if got := lastEnvValue(pod.Containers[0].Env, "TILELANG_CACHE_DIR"); got != "" {
@@ -645,11 +701,14 @@ func runtimeCachePrefetchedModel() *inferencev1alpha1.Model {
 // in their spec, so the policy goes onto the pod's copy.
 func assertRuntimeCacheFSGroupPolicy(t *testing.T) {
 	t.Helper()
-	fsGroup := int64(5000)
+	fsGroup := int64(102)
 	isvc := runtimeCacheTestService(RuntimeVLLM, runtimeCacheTestEnabled(true), func(s *inferencev1alpha1.InferenceServiceSpec) {
 		s.PodSecurityContext = &corev1.PodSecurityContext{FSGroup: &fsGroup}
 	})
 	pod := renderRuntimeCachePod(isvc, runtimeCachePrefetchedModel())
+	if prepInitContainer(pod) == nil {
+		t.Fatal("the runtime cache was not applied, so this test pins nothing")
+	}
 	if pod.SecurityContext == nil || pod.SecurityContext.FSGroup == nil || *pod.SecurityContext.FSGroup != fsGroup {
 		t.Fatalf("pod security context = %+v, want the user's fsGroup %d", pod.SecurityContext, fsGroup)
 	}
@@ -666,10 +725,13 @@ func assertRuntimeCacheKeepsUserFSGroupChangePolicy(t *testing.T) {
 	t.Helper()
 	fsGroup := int64(5000)
 	always := corev1.FSGroupChangeAlways
-	isvc := runtimeCacheTestService(RuntimeVLLM, runtimeCacheTestEnabled(true), func(s *inferencev1alpha1.InferenceServiceSpec) {
+	isvc := runtimeCacheTestService(RuntimeVLLM, runtimeCacheTestEnabled(false), func(s *inferencev1alpha1.InferenceServiceSpec) {
 		s.PodSecurityContext = &corev1.PodSecurityContext{FSGroup: &fsGroup, FSGroupChangePolicy: &always}
 	})
-	pod := renderRuntimeCachePod(isvc, runtimeCachePrefetchedModel())
+	pod := renderRuntimeCachePod(isvc, runtimeCacheTestModel(nil))
+	if prepInitContainer(pod) == nil {
+		t.Fatal("the runtime cache was not applied, so this test pins nothing")
+	}
 	if pod.SecurityContext == nil || pod.SecurityContext.FSGroupChangePolicy == nil ||
 		*pod.SecurityContext.FSGroupChangePolicy != corev1.FSGroupChangeAlways {
 		t.Errorf("fsGroupChangePolicy = %v, want the user's Always",
@@ -691,6 +753,236 @@ func assertRuntimeCacheNoFSGroupPolicyWithoutFeature(t *testing.T) {
 	vol := volumeNamed(pod, "model-cache")
 	if vol == nil || vol.PersistentVolumeClaim == nil || !vol.PersistentVolumeClaim.ReadOnly {
 		t.Error("want the prefetched claim read-only without the runtime cache")
+	}
+}
+
+// assertRuntimeCacheDeclinesPrefetchedFSGroupMismatch pins the decline for a
+// prefetched service whose own fsGroup differs from the group the prefetch
+// writes the claim in: the claim must stay read-only, or kubelet would re-own
+// every staged file on each pod start.
+func assertRuntimeCacheDeclinesPrefetchedFSGroupMismatch(t *testing.T) {
+	t.Helper()
+	fsGroup := int64(3000)
+	isvc := runtimeCacheTestService(RuntimeVLLM, runtimeCacheTestEnabled(true), func(s *inferencev1alpha1.InferenceServiceSpec) {
+		s.PodSecurityContext = &corev1.PodSecurityContext{FSGroup: &fsGroup}
+	})
+	pod := renderRuntimeCachePod(isvc, runtimeCachePrefetchedModel())
+	assertNoRuntimeCacheInjections(t, "prefetched fsGroup mismatch", pod)
+	vol := volumeNamed(pod, "model-cache")
+	if vol == nil || vol.PersistentVolumeClaim == nil || !vol.PersistentVolumeClaim.ReadOnly {
+		t.Errorf("prefetched claim = %+v, want the read-only volume source a declined request leaves", vol)
+	}
+}
+
+// assertRuntimeCacheDeclinesReadOnlyClaim pins the decline for a claim that
+// offers no writable access mode: nothing is injected, and the warning names the
+// claim's modes.
+func assertRuntimeCacheDeclinesReadOnlyClaim(t *testing.T) {
+	t.Helper()
+	scheme := apiruntime.NewScheme()
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	newClaim := func(name string, modes ...corev1.PersistentVolumeAccessMode) *corev1.PersistentVolumeClaim {
+		return &corev1.PersistentVolumeClaim{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"},
+			Spec:       corev1.PersistentVolumeClaimSpec{AccessModes: modes},
+		}
+	}
+	newReconciler := func(claim *corev1.PersistentVolumeClaim) *InferenceServiceReconciler {
+		r := runtimeCacheTestReconciler()
+		r.Client = fake.NewClientBuilder().WithScheme(scheme).WithObjects(claim).Build()
+		return r
+	}
+	newService := func(claim string) *inferencev1alpha1.InferenceService {
+		return runtimeCacheTestService(RuntimeVLLM, &inferencev1alpha1.ModelCacheSpec{
+			ClaimName:    claim,
+			RuntimeCache: &inferencev1alpha1.RuntimeCacheSpec{Enabled: true},
+		}, nil)
+	}
+	m := runtimeCacheTestModel(nil)
+
+	r := newReconciler(newClaim("weights-rox", corev1.ReadOnlyMany))
+	isvc := newService("weights-rox")
+	cache := resolveEffectiveModelCache(isvc, m)
+	plan := r.runtimeCachePlanFor(t.Context(), isvc, m, cache, resolveBackend(isvc))
+	if plan.applied() || plan.reason != ReasonRuntimeCacheClaimReadOnly {
+		t.Fatalf("plan applied = %v (reason %q), want the read-only claim declined", plan.applied(), plan.reason)
+	}
+	if !strings.Contains(plan.message, "ReadOnlyMany") {
+		t.Errorf("message %q does not name the claim's access mode", plan.message)
+	}
+	pod := r.constructDeploymentForCache(isvc, m, cache, nil, 1, "", "", plan).Spec.Template.Spec
+	assertNoRuntimeCacheInjections(t, "read-only claim", pod)
+
+	// A claim that offers a write keeps the feature.
+	r = newReconciler(newClaim("weights-rwx", corev1.ReadWriteMany))
+	isvc = newService("weights-rwx")
+	cache = resolveEffectiveModelCache(isvc, m)
+	plan = r.runtimeCachePlanFor(t.Context(), isvc, m, cache, resolveBackend(isvc))
+	if !plan.applied() {
+		t.Fatalf("plan applied = false (reason %q) on a writable claim", plan.reason)
+	}
+	pod = r.constructDeploymentForCache(isvc, m, cache, nil, 1, "", "", plan).Spec.Template.Spec
+	singleMountAt(t, pod.Containers[0].VolumeMounts, runtimeCacheMountPath)
+
+	// A claim that cannot be read is not a decline: a transient read error must
+	// not take the feature away.
+	r = runtimeCacheTestReconciler()
+	r.Client = fake.NewClientBuilder().WithScheme(scheme).Build()
+	isvc = newService("missing")
+	cache = resolveEffectiveModelCache(isvc, m)
+	if plan = r.runtimeCachePlanFor(t.Context(), isvc, m, cache, resolveBackend(isvc)); !plan.applied() {
+		t.Errorf("plan applied = false (reason %q) on a claim that could not be read", plan.reason)
+	}
+}
+
+// assertRuntimeCacheAddsPrepGroup pins that a serving container whose own
+// podSecurityContext sets no fsGroup still runs in the group the prep hands the
+// per-service directory to, so it can write it.
+func assertRuntimeCacheAddsPrepGroup(t *testing.T) {
+	t.Helper()
+	runAsUser, runAsNonRoot := int64(1000), true
+	isvc := runtimeCacheTestService(RuntimeVLLM, runtimeCacheTestEnabled(false), func(s *inferencev1alpha1.InferenceServiceSpec) {
+		s.PodSecurityContext = &corev1.PodSecurityContext{RunAsUser: &runAsUser, RunAsNonRoot: &runAsNonRoot}
+	})
+	pod := renderRuntimeCachePod(isvc, runtimeCacheTestModel(nil))
+	if prepInitContainer(pod) == nil {
+		t.Fatal("the runtime cache was not applied, so this test pins nothing")
+	}
+	if pod.SecurityContext == nil || !slices.Contains(pod.SecurityContext.SupplementalGroups, int64(102)) {
+		t.Fatalf("supplementalGroups = %+v, want the prep's group 102", pod.SecurityContext)
+	}
+	if len(isvc.Spec.PodSecurityContext.SupplementalGroups) != 0 {
+		t.Error("the operator wrote supplementalGroups into the InferenceService spec")
+	}
+
+	// A context already in the group through its own fsGroup adds nothing: the
+	// prep chowns to that group, and kubelet puts the pod in it.
+	fsGroup := int64(102)
+	same := runtimeCacheTestService(RuntimeVLLM, runtimeCacheTestEnabled(false), func(s *inferencev1alpha1.InferenceServiceSpec) {
+		s.PodSecurityContext = &corev1.PodSecurityContext{FSGroup: &fsGroup}
+	})
+	if pod := renderRuntimeCachePod(same, runtimeCacheTestModel(nil)); len(pod.SecurityContext.SupplementalGroups) != 0 {
+		t.Errorf("supplementalGroups = %v with the context's own fsGroup, want none", pod.SecurityContext.SupplementalGroups)
+	}
+
+	// With the operator's fsGroup disabled the prep hands the directory to the
+	// downloader's uid with group 0, the convention model-cache-prep uses, so
+	// the operator adds no group it cannot name.
+	disabled := runtimeCacheTestReconciler()
+	disabled.DefaultFSGroup = 0
+	pod = renderRuntimeCachePodWith(disabled, isvc, runtimeCacheTestModel(nil))
+	if prepInitContainer(pod) == nil {
+		t.Fatal("the runtime cache was not applied with the default fsGroup disabled")
+	}
+	if len(pod.SecurityContext.SupplementalGroups) != 0 {
+		t.Errorf("supplementalGroups = %v with the default fsGroup disabled, want none", pod.SecurityContext.SupplementalGroups)
+	}
+}
+
+// assertRuntimeCacheIgnoresMountAboveDefault pins the exact-path rule: a user
+// volume mounted above a cache's default directory leaves that cache to the
+// operator.
+func assertRuntimeCacheIgnoresMountAboveDefault(t *testing.T) {
+	t.Helper()
+	withMount := func(p string) func(*inferencev1alpha1.InferenceServiceSpec) {
+		return func(s *inferencev1alpha1.InferenceServiceSpec) {
+			s.ExtraVolumes = []corev1.Volume{{Name: "scratch", VolumeSource: corev1.VolumeSource{
+				EmptyDir: &corev1.EmptyDirVolumeSource{}}}}
+			s.ExtraVolumeMounts = []corev1.VolumeMount{{Name: "scratch", MountPath: p}}
+		}
+	}
+
+	// An emptyDir at /tmp is the usual read-only-root-filesystem setup.
+	pod := renderRuntimeCachePod(runtimeCacheTestService(RuntimeVLLM, runtimeCacheTestEnabled(false), withMount("/tmp")), runtimeCacheTestModel(nil))
+	if got := lastEnvValue(pod.Containers[0].Env, "TORCHINDUCTOR_CACHE_DIR"); got != runtimeCacheVLLMEnv["TORCHINDUCTOR_CACHE_DIR"] {
+		t.Errorf("TORCHINDUCTOR_CACHE_DIR = %q under a user mount at /tmp, want %q", got, runtimeCacheVLLMEnv["TORCHINDUCTOR_CACHE_DIR"])
+	}
+
+	// /root/.cache is where a user's HF_HOME usually points.
+	pod = renderRuntimeCachePod(runtimeCacheTestService(RuntimeSGLANG, runtimeCacheTestEnabled(false), withMount("/root/.cache")), runtimeCacheTestModel(nil))
+	if got := lastEnvValue(pod.Containers[0].Env, "SGLANG_CACHE_DIR"); got != runtimeCacheMountPath {
+		t.Errorf("SGLANG_CACHE_DIR = %q under a user mount at /root/.cache, want %q", got, runtimeCacheMountPath)
+	}
+}
+
+// assertRuntimeCacheAllCachesTakenOver pins that a mount at every declared
+// default directory means nothing is injected, the mount and prep included.
+func assertRuntimeCacheAllCachesTakenOver(t *testing.T) {
+	t.Helper()
+	isvc := runtimeCacheTestService(RuntimeVLLM, runtimeCacheTestEnabled(false), func(s *inferencev1alpha1.InferenceServiceSpec) {
+		s.ExtraVolumes = []corev1.Volume{{Name: "user-caches", VolumeSource: corev1.VolumeSource{
+			EmptyDir: &corev1.EmptyDirVolumeSource{}}}}
+		for _, p := range []string{
+			"/root/.cache/vllm", "/root/.triton/cache", "/root/.tilelang/cache",
+			"/tmp/torchinductor_root", "/root/.cache/flashinfer",
+		} {
+			s.ExtraVolumeMounts = append(s.ExtraVolumeMounts, corev1.VolumeMount{Name: "user-caches", MountPath: p})
+		}
+	})
+	pod := renderRuntimeCachePod(isvc, runtimeCacheTestModel(nil))
+	assertNoRuntimeCacheInjections(t, "every cache taken over", pod)
+}
+
+// assertRuntimeCacheFSGroupPolicyCached pins OnRootMismatch on a pod the runtime
+// cache is applied to that is not prefetched, where the claim is writable only
+// because of the runtime cache.
+func assertRuntimeCacheFSGroupPolicyCached(t *testing.T) {
+	t.Helper()
+	fsGroup := int64(5000)
+	isvc := runtimeCacheTestService(RuntimeVLLM, runtimeCacheTestEnabled(false), func(s *inferencev1alpha1.InferenceServiceSpec) {
+		s.PodSecurityContext = &corev1.PodSecurityContext{FSGroup: &fsGroup}
+	})
+	pod := renderRuntimeCachePod(isvc, runtimeCacheTestModel(nil))
+	if prepInitContainer(pod) == nil {
+		t.Fatal("the runtime cache was not applied, so this test pins nothing")
+	}
+	if pod.SecurityContext == nil || pod.SecurityContext.FSGroupChangePolicy == nil ||
+		*pod.SecurityContext.FSGroupChangePolicy != corev1.FSGroupChangeOnRootMismatch {
+		t.Errorf("fsGroupChangePolicy = %+v, want OnRootMismatch next to the user's fsGroup", pod.SecurityContext)
+	}
+}
+
+// assertRuntimeCacheWarningScope pins that only the service's own request is
+// warned about, and that the transient no-cache-key decline is silent.
+func assertRuntimeCacheWarningScope(t *testing.T) {
+	t.Helper()
+	recorder := events.NewFakeRecorder(8)
+	r := runtimeCacheTestReconciler()
+	r.Recorder = recorder
+
+	// A Model-level block reaches every referencing service, including ones
+	// whose runtime keeps no cache: nothing was written on the service.
+	inherited := runtimeCacheTestModel(func(m *inferencev1alpha1.Model) {
+		m.Spec.ModelCache = &inferencev1alpha1.ModelCacheSpec{
+			RuntimeCache: &inferencev1alpha1.RuntimeCacheSpec{Enabled: true},
+		}
+	})
+	isvc := runtimeCacheTestService("llamacpp", nil, nil)
+	r.warnRuntimeCacheNotApplied(t.Context(), isvc, inherited, resolveEffectiveModelCache(isvc, inherited), resolveBackend(isvc))
+	if got := drainEvents(recorder); len(got) != 0 {
+		t.Errorf("events = %v for an inherited block, want none", got)
+	}
+
+	// The service's own request is warned.
+	own := runtimeCacheTestService("llamacpp", &inferencev1alpha1.ModelCacheSpec{
+		RuntimeCache: &inferencev1alpha1.RuntimeCacheSpec{Enabled: true},
+	}, nil)
+	r.warnRuntimeCacheNotApplied(t.Context(), own, runtimeCacheTestModel(nil), resolveEffectiveModelCache(own, runtimeCacheTestModel(nil)), resolveBackend(own))
+	got := drainEvents(recorder)
+	if len(got) != 1 || !strings.Contains(got[0], ReasonRuntimeCacheUnsupported) {
+		t.Errorf("events = %v, want one %s event", got, ReasonRuntimeCacheUnsupported)
+	}
+
+	// No cache key yet is transient: the next reconcile applies the request.
+	noKey := runtimeCacheTestModel(func(m *inferencev1alpha1.Model) { m.Status.CacheKey = "" })
+	vllm := runtimeCacheTestService(RuntimeVLLM, &inferencev1alpha1.ModelCacheSpec{
+		RuntimeCache: &inferencev1alpha1.RuntimeCacheSpec{Enabled: true},
+	}, nil)
+	r.warnRuntimeCacheNotApplied(t.Context(), vllm, noKey, resolveEffectiveModelCache(vllm, noKey), resolveBackend(vllm))
+	if got := drainEvents(recorder); len(got) != 0 {
+		t.Errorf("events = %v before the cache key exists, want none", got)
 	}
 }
 
