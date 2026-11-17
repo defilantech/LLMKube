@@ -122,6 +122,19 @@ func (b *SGLangBackend) NeedsSharedMemory(isvc *inferencev1alpha1.InferenceServi
 	return cfg != nil && anyAboveOne(cfg.TensorParallelSize, cfg.ExpertParallelSize, cfg.DataParallelSize)
 }
 
+// RuntimeCacheDirs returns SGLang's compile and autotune caches (#2117).
+// SGLANG_CACHE_DIR is the parent SGLang routes every third-party cache into
+// (Triton, TorchInductor, TileLang, FlashInfer, CUDA) unless that cache's own
+// variable is set, so one variable covers them all.
+//
+// Mirrors VLLMBackend.RuntimeCacheDirs; the lists are the contract, not shared
+// code.
+func (b *SGLangBackend) RuntimeCacheDirs() []RuntimeCacheDir {
+	return []RuntimeCacheDir{
+		{Env: "SGLANG_CACHE_DIR", Value: "", Dir: "", Default: "/root/.cache/sglang"},
+	}
+}
+
 // BuildArgs generates the SGLang server CLI arguments. Order:
 //  1. --model-path, --host, --port (always)
 //  2. --served-model-name (auto-derived from ModelRef / model name)

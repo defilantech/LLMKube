@@ -60,13 +60,19 @@ func TestRuntimeCacheDirs(t *testing.T) {
 		}
 	}
 
-	// Every runtime without a persistent compile cache keeps its container
-	// exactly as before: it declares no cache for the operator to relocate.
+	sglang := (&SGLangBackend{}).RuntimeCacheDirs()
+	wantSGLang := []RuntimeCacheDir{{Env: "SGLANG_CACHE_DIR", Value: "", Dir: "", Default: "/root/.cache/sglang"}}
+	if len(sglang) != 1 || sglang[0] != wantSGLang[0] {
+		t.Errorf("SGLang cache dirs = %+v, want exactly %+v", sglang, wantSGLang)
+	}
+
+	// Every other runtime keeps its container exactly as before: it declares
+	// no cache for the operator to relocate.
 	for _, backend := range []RuntimeBackend{
-		&LlamaCppBackend{}, &LlamaCppRouterBackend{}, &TGIBackend{}, &GenericBackend{}, &PersonaPlexBackend{}, &SGLangBackend{},
+		&LlamaCppBackend{}, &LlamaCppRouterBackend{}, &TGIBackend{}, &GenericBackend{}, &PersonaPlexBackend{},
 	} {
 		if _, ok := backend.(RuntimeCacheProvider); ok {
-			t.Errorf("%T implements RuntimeCacheProvider; only vllm declares a cache", backend)
+			t.Errorf("%T implements RuntimeCacheProvider; only vllm and sglang declare a cache", backend)
 		}
 	}
 }
@@ -112,11 +118,10 @@ func TestRuntimeCacheWhyNot(t *testing.T) {
 			wantRequested: true,
 		},
 		{
-			name:          "sglang has no persistent cache yet",
+			name:          "sglang",
 			runtime:       RuntimeSGLANG,
 			cache:         enabled(),
-			wantRequested: false,
-			wantReason:    ReasonRuntimeCacheUnsupported,
+			wantRequested: true,
 		},
 		{
 			name:          "llamacpp has no persistent cache",
@@ -286,11 +291,10 @@ func TestRuntimeCachePrepCommand(t *testing.T) {
 		}
 	})
 
-	// A runtime whose cache is the per-service directory itself has nothing
+	// SGLang's cache is the per-service directory itself, so there is nothing
 	// below it to create.
 	t.Run("a runtime whose cache is its own root creates only the per-service dir", func(t *testing.T) {
-		dirs := []RuntimeCacheDir{{Env: "SGLANG_CACHE_DIR", Default: "/root/.cache/sglang"}}
-		cmd := runtimeCachePrepCommand(claimDir, dirs, 102, 101)
+		cmd := runtimeCachePrepCommand(claimDir, (&SGLangBackend{}).RuntimeCacheDirs(), 102, 101)
 		root := t.TempDir()
 		runMkdirPrefix(t, cmd, root)
 		entries, err := os.ReadDir(filepath.Join(root, claimDir))
@@ -527,7 +531,10 @@ func assertNoRuntimeCacheInjections(t *testing.T, name string, pod corev1.PodSpe
 func assertRuntimeCacheSGLang(t *testing.T) {
 	t.Helper()
 	pod := renderRuntimeCachePod(runtimeCacheTestService(RuntimeSGLANG, runtimeCacheTestEnabled(false), nil), runtimeCacheTestModel(nil))
-	assertNoRuntimeCacheInjections(t, "sglang", pod)
+	singleMountAt(t, pod.Containers[0].VolumeMounts, runtimeCacheMountPath)
+	if got := lastEnvValue(pod.Containers[0].Env, "SGLANG_CACHE_DIR"); got != runtimeCacheMountPath {
+		t.Errorf("SGLANG_CACHE_DIR = %q, want %q", got, runtimeCacheMountPath)
+	}
 }
 
 func assertRuntimeCacheUserEnvWins(t *testing.T) {
