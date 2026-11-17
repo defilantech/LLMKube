@@ -757,8 +757,13 @@ func servedContextLength(isvc *inferencev1alpha1.InferenceService) int64 {
 	args := isvc.Spec.ExtraArgs
 	switch isvc.Spec.Runtime {
 	case RuntimeVLLM:
+		// With spec.command, vLLM gets only spec.args then extraArgs.
+		command := len(isvc.Spec.Command) > 0
+		if command {
+			args = append(append([]string{}, isvc.Spec.Args...), args...)
+		}
 		// extraArgs follow the rendered flags, so vLLM keeps their value.
-		if values, ok := extraArgValues(args, "max-model-len"); ok {
+		if values, ok := extraArgValues(vllmFlagSpellings(args), "max-model-len"); ok {
 			if len(values) == 0 {
 				return 0
 			}
@@ -768,7 +773,7 @@ func servedContextLength(isvc *inferencev1alpha1.InferenceService) int64 {
 			}
 			return n
 		}
-		if cfg := isvc.Spec.VLLMConfig; cfg != nil && cfg.MaxModelLen != nil {
+		if cfg := isvc.Spec.VLLMConfig; cfg != nil && cfg.MaxModelLen != nil && !command {
 			return int64(*cfg.MaxModelLen)
 		}
 	case "", "llamacpp":

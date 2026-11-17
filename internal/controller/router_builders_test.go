@@ -2298,6 +2298,32 @@ func TestServedConcurrencyLimit(t *testing.T) {
 	}
 }
 
+// TestServedContextLengthReadsVLLMFlagsAsVLLMDoes: vLLM normalizes "_" in flag
+// names, and under spec.command renders neither vllmConfig nor anything but
+// spec.args and extraArgs.
+func TestServedContextLengthReadsVLLMFlagsAsVLLMDoes(t *testing.T) {
+	i32 := func(v int32) *int32 { return &v }
+	cfg := &inferencev1alpha1.VLLMConfig{MaxModelLen: i32(524288)}
+	tests := []struct {
+		name string
+		spec inferencev1alpha1.InferenceServiceSpec
+		want int64
+	}{
+		{"--max_model_len is --max-model-len", inferencev1alpha1.InferenceServiceSpec{Runtime: RuntimeVLLM, VLLMConfig: cfg, ExtraArgs: []string{"--max_model_len", "131072"}}, 131072},
+		{"--max_model_len= is --max-model-len", inferencev1alpha1.InferenceServiceSpec{Runtime: RuntimeVLLM, VLLMConfig: cfg, ExtraArgs: []string{"--max_model_len=131072"}}, 131072},
+		{"spec.command leaves vllmConfig unrendered", inferencev1alpha1.InferenceServiceSpec{Runtime: RuntimeVLLM, Command: []string{"vllm", "serve"}, VLLMConfig: cfg}, 0},
+		{"spec.command reads spec.args", inferencev1alpha1.InferenceServiceSpec{Runtime: RuntimeVLLM, Command: []string{"vllm", "serve"}, Args: []string{"m", "--max-model-len", "65536"}, VLLMConfig: cfg}, 65536},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			isvc := &inferencev1alpha1.InferenceService{Spec: tt.spec}
+			if got := servedContextLength(isvc); got != tt.want {
+				t.Errorf("servedContextLength = %d, want %d", got, tt.want)
+			}
+		})
+	}
+}
+
 // Production-shaped vLLM specs: the limit as separate extraArgs elements among
 // JSON-valued and boolean flags, the context in vllmConfig.maxModelLen.
 func TestServedLimitsForProductionShapedVLLMSpecs(t *testing.T) {
