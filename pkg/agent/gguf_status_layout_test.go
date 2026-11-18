@@ -51,7 +51,8 @@ func TestEstimateModelMemory_StatusLayoutSizesFirstDeploy(t *testing.T) {
 	model := newAdmissionTestModel("https://example.invalid/qwopus3.6-35b-a3b-mtp-q6_k.gguf", "30 GiB")
 	meta := statusForQwopus()
 	// 11 attention layers (10 interval layers and the MTP layer) of 2 KV
-	// heads, 256 each way; 30 recurrent layers of 548,864 bytes per sequence.
+	// heads, 256 each way; 30 recurrent layers of 548,864 f32 values each,
+	// 65,863,680 bytes per sequence.
 	meta.KVHeadLayers = 22
 	meta.RecurrentStatePerSeq = 65863680
 	model.Status.GGUF = meta
@@ -83,7 +84,8 @@ func TestEstimateModelMemory_StatusWithoutLayoutChargesEveryLayer(t *testing.T) 
 		t.Fatalf("estimateModelMemory: %v", err)
 	}
 	if want := uint64(88046829568); est.KVCacheBytes != want {
-		t.Errorf("KVCacheBytes = %d, want %d (41 layers * 2 KV heads)", est.KVCacheBytes, want)
+		t.Errorf("KVCacheBytes = %d, want %d (41 layers by the embedding-width formula, no layout recorded)",
+			est.KVCacheBytes, want)
 	}
 	if est.RecurrentStateBytes != 0 {
 		t.Errorf("RecurrentStateBytes = %d, want 0 (no layout recorded)", est.RecurrentStateBytes)

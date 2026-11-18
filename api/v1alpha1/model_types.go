@@ -529,7 +529,7 @@ type GGUFMetadata struct {
 	// +optional
 	KVHeadLayers uint64 `json:"kvHeadLayers,omitempty"`
 
-	// RecurrentStatePerSeq is the state one recurrent layer holds per
+	// RecurrentStatePerSeq is the state all recurrent layers hold per
 	// sequence, in bytes, for the same hybrids. 0 means the model has no
 	// recurrent layer, or its state is not described by the generic
 	// convolution + SSM formula, and it is charged like an attention layer.

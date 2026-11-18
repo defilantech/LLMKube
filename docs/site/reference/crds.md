@@ -917,10 +917,12 @@ status defines the observed state of Model
 | `status.gguf.headCount` | integer (int64) |  |  |  | HeadCount is the number of attention heads |
 | `status.gguf.headCountKV` | integer (int64) |  |  |  | HeadCountKV is the number of key/value attention heads (grouped-query attention). 0 means the GGUF did not provide a usable scalar value (absent, array-valued, or written by an older controller); consumers must treat 0 as unknown and fall back to the embedding-width estimate. |
 | `status.gguf.keyLength` | integer (int64) |  |  |  | KeyLength is the per-head key dimension from the GGUF attention metadata. 0 means the GGUF did not provide a usable scalar value; consumers treat it as unknown and derive it when needed. |
+| `status.gguf.kvHeadLayers` | integer (int64) |  |  |  | KVHeadLayers is the KV head count summed over the layers that hold a KV cache, for a model whose layout is not blockCount layers of headCountKV heads (a hybrid with recurrent layers). 0 means the layout is the plain one, the header was unreadable, or an older controller wrote the status: consumers then charge every layer by headCountKV, which over-charges a hybrid and never under-charges it. |
 | `status.gguf.layerCount` | integer (int64) |  |  |  | LayerCount is the number of transformer layers/blocks |
 | `status.gguf.license` | string |  |  |  | License is the license identifier extracted from the GGUF file metadata |
 | `status.gguf.modelName` | string |  |  |  | ModelName is the model name as stored in the GGUF file |
 | `status.gguf.quantization` | string |  |  |  | Quantization is the quantization type (e.g., "Q4_K_M", "Q5_K_M") |
+| `status.gguf.recurrentStatePerSeq` | integer (int64) |  |  |  | RecurrentStatePerSeq is the state all recurrent layers hold per sequence, in bytes, for the same hybrids. 0 means the model has no recurrent layer, or its state is not described by the generic convolution + SSM formula, and it is charged like an attention layer. |
 | `status.gguf.tensorCount` | integer (int64) |  |  |  | TensorCount is the number of tensors in the model |
 | `status.gguf.valueLength` | integer (int64) |  |  |  | ValueLength is the per-head value dimension from the GGUF attention metadata. 0 means the GGUF did not provide a usable scalar value; consumers treat it as unknown and derive it when needed. |
 | `status.lastRevalidated` | string (date-time) |  |  |  | LastRevalidated is the timestamp of the last upstream revalidation check. Revalidation is cadence-gated so the controller does not issue a HEAD on every reconcile. |
