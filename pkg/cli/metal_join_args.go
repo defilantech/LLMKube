@@ -58,6 +58,8 @@ var metalAgentFlags = map[string]agentFlagKind{
 	"download-free-space-headroom":       agentFlagString,
 	"engine-env-passthrough":             agentFlagString,
 	"eviction-enabled":                   agentFlagBool,
+	"hailo-library-url":                  agentFlagString,
+	"hailo-manifests-dir":                agentFlagString,
 	"health-failure-threshold":           agentFlagInt,
 	"host-ip":                            agentFlagString,
 	"inference-service-allowlist":        agentFlagString,

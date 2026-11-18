@@ -1715,7 +1715,7 @@ On a Metal InferenceService (`kubectl describe inferenceservice <name>`):
 - From the agent: `RelayNotAdopted`, `ExtraArgsRejected`,
   `EndpointNameConflict`, `ModelSourceNotAllowed`, `ServiceNameTooLong`,
   `ModelDigestMismatch`, `ModelDownloadTooLarge`, `ModelDownloadNoSpace`, `SourceSecretNotAllowed`,
-  `RuntimeNotAvailable`, `SourceSecretUnlabeled`, `StartFailed`, `EngineExited`
+  `RuntimeNotAvailable`, `RuntimeCannotServeSource`, `SourceSecretUnlabeled`, `StartFailed`, `EngineExited`
   (Warning).
 
 `StartFailed` means a start the agent did not refuse failed anyway (the engine

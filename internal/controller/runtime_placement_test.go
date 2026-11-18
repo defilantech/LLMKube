@@ -49,6 +49,12 @@ func placementModel(name, accelerator string) *inferencev1alpha1.Model {
 	return m
 }
 
+func hailoModel(name string) *inferencev1alpha1.Model {
+	m := placementModel(name, "metal")
+	m.Spec.Source = "hailo://qwen2.5-instruct:1.5b"
+	return m
+}
+
 func placementISvc(name, modelRef, runtime string) *inferencev1alpha1.InferenceService {
 	replicas := int32(1)
 	return &inferencev1alpha1.InferenceService{
@@ -83,6 +89,9 @@ func TestValidateRuntimePlacement(t *testing.T) {
 		{name: "empty on cuda", runtime: "", model: placementModel("m", "cuda")},
 		{name: "empty on metal", runtime: "", model: placementModel("m", "metal")},
 		{name: "unknown model is undecidable", runtime: "mlx-server", model: nil},
+		{name: "ollama on a hailo source", runtime: "ollama", model: hailoModel("m")},
+		{name: "empty runtime on a hailo source", runtime: "", model: hailoModel("m")},
+		{name: "llamacpp on a hailo source", runtime: "llamacpp", model: hailoModel("m"), wantErrPart: "hailo://"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
