@@ -2848,11 +2848,14 @@ func (a *MetalAgent) estimateModelMemory(
 // attentionShapeFor returns the attention shape the KV-cache estimate uses.
 // The header of headerPath, the file llama-server loads, wins once that file
 // is on this Mac; the Model status covers the first start before the
-// download lands and a header that could not be read. The status records no
-// per-layer layout and no KV head count for a file that stores them per
-// layer, so a hybrid model sized from it is over-charged. headerPath is
-// empty when the model is not on this Mac yet. notCounted says why there is
-// no shape, if there is none.
+// download lands and a header that could not be read. A status an older
+// controller wrote records no per-layer layout and no KV head count for a
+// file that stores them per layer, so a hybrid model sized from it is
+// over-charged; a controller that read the header records both
+// (GGUFMetadata.KVHeadLayers and .RecurrentStatePerSeq), so the first
+// deploy of a hybrid is sized from the real layout. headerPath is empty
+// when the model is not on this Mac yet. notCounted says why there is no
+// shape, if there is none.
 func (a *MetalAgent) attentionShapeFor(
 	model *inferencev1alpha1.Model, headerPath string, followSymlinks bool,
 ) (shape attentionShape, notCounted string) {

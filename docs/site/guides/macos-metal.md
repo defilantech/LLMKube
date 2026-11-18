@@ -825,11 +825,13 @@ absolute path or a `file://` URI), an `hf://` source, or a source whose
 remote header read failed, the shape is always the header of the local
 file (following symlinks, as the load does) or of its own model-store
 copy once downloaded. Once the file is on disk its header wins over
-`status.gguf` even when the controller recorded a shape, because the
-status has no per-layer layout and no KV head count for a file that
-stores it per layer, so a hybrid sized from it is over-charged (see
-below); for a dense model the two read the same keys and the charge is
-the same. A header that cannot be read (a partial download, a directory)
+`status.gguf`: it is the file llama-server loads, and a status the
+controller wrote from that same header agrees with it, because the
+status records the layer layout too (see below). A status an older
+controller wrote records no per-layer layout and no KV head count for a
+file that stores them per layer, so a hybrid sized from that is
+over-charged; for a dense model the two read the same keys and the
+charge is the same. A header that cannot be read (a partial download, a directory)
 still falls back to the status shape. The agent reads at most 32 MiB of
 header, never the tensor data, and reads a file again only when its
 size, modification time or inode changes. For a split GGUF that file is
@@ -845,8 +847,14 @@ then ends with `the KV cache for --ctx-size N is not counted
 context is therefore admitted against less memory than it will use;
 leave room for its KV cache in `--memory-fraction`.
 
-A header the agent reads also gives the model's layer layout, which
-`status.gguf` does not record. On a hybrid model only the attention
+A header also gives the model's layer layout, and the controller records
+it on `status.gguf` (`kvHeadLayers`, `recurrentStatePerSeq`) from the
+same `pkg/gguf` code the agent reads, so the first start of a remote
+hybrid is sized from its real layout instead of the embedding-width
+formula. A source whose header the controller cannot read (an `hf://`
+repository, a local path, or a failed remote read) records no layout,
+and neither does a status an older controller wrote. On a hybrid model
+only the attention
 layers keep a KV cache: the layers `<arch>.attention.recurrent_layers`
 or `<arch>.full_attention_interval` mark as attention, plus any MTP
 (`nextn_predict_layers`) layers, or, when the file has neither key but
@@ -863,8 +871,8 @@ falling back to the embedding-width formula. For Qwen3.8-27B at
 recurrent state, where counting all 64 layers charged 32 GiB. A file
 whose recurrent layers keep another kind of state (RWKV, LFM2, Kimi
 Linear) or lack SSM geometry is charged at every layer, as before, and
-so is a Model charged from its `status.gguf` before its file is on the
-Mac.
+so is a Model charged from a `status.gguf` that carries no layout
+before its file is on the Mac.
 
 The estimate charges the total `--ctx-size` pool: llama-server shares
 that pool across `--parallel` slots rather than multiplying it, so the

@@ -144,7 +144,7 @@ type EstimateOptions struct {
 
 	// KVHeadLayers, when non-zero, is the KV head count summed over the
 	// layers that hold a KV cache, read from a GGUF header's layer layout
-	// (kvLayoutFromParsed). It replaces layerCount * HeadCountKV for files
+	// (gguf.KVLayout). It replaces layerCount * HeadCountKV for files
 	// where the two differ: a hybrid model's recurrent layers and a layer
 	// whose per-layer head_count_kv is 0 hold no KV cache. HeadCount and
 	// HeadCountKV are then needed only to derive a missing head dim.
