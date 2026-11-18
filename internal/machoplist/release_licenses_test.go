@@ -88,8 +88,8 @@ func makefileVar(t *testing.T, makefile, name string) (string, bool) {
 	return strings.TrimSpace(m[1]), true
 }
 
-// TestArchivesShipThirdPartyLicenses pins the generator and the three archive
-// file lists: a release must carry every linked module's license and NOTICE
+// TestArchivesShipThirdPartyLicenses pins the generator and every archive's
+// file list: a release must carry every linked module's license and NOTICE
 // next to its own LICENSE.
 func TestArchivesShipThirdPartyLicenses(t *testing.T) {
 	cfg := loadLicensesConfig(t)
@@ -102,13 +102,16 @@ func TestArchivesShipThirdPartyLicenses(t *testing.T) {
 		t.Errorf("Makefile has no third-party-licenses target")
 	}
 
-	files := map[string][]string{}
+	ids := map[string]bool{}
 	for _, a := range cfg.Archives {
-		files[a.ID] = a.Files
+		ids[a.ID] = true
+		if !slices.Contains(a.Files, "third_party_licenses/**") {
+			t.Errorf("archive %s does not ship third_party_licenses/** (files: %v)", a.ID, a.Files)
+		}
 	}
-	for _, id := range []string{"llmkube-cli", "llmkube-metal-agent", "llmkube-foreman-agent"} {
-		if !slices.Contains(files[id], "third_party_licenses/**") {
-			t.Errorf("archive %s does not ship third_party_licenses/** (files: %v)", id, files[id])
+	for _, id := range []string{"llmkube-cli", "llmkube-metal-agent", "llmkube-metal-agent-linux", "llmkube-foreman-agent"} {
+		if !ids[id] {
+			t.Errorf("archive %s not in .goreleaser.yaml", id)
 		}
 	}
 }

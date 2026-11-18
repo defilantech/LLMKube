@@ -154,3 +154,8 @@ jobs:
 
       - name: Build Metal Agent (compile check)
         run: GOOS=darwin GOARCH=arm64 go build -o /dev/null ./cmd/metal-agent
+
+      - name: Build Linux Metal Agent (static compile check)
+        run: |
+          GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -o /dev/null ./cmd/metal-agent
+          GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o /dev/null ./cmd/metal-agent
