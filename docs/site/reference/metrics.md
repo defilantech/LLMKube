@@ -21,6 +21,10 @@ The operator's controller manager registers `ControllerCollectors` from [`intern
 | `llmkube_gpuquota_used_gpu_count` | gauge | `gpuquota`, `namespace` | GPUs currently used by InferenceServices in a GPUQuota's scope. |
 | `llmkube_gpuquota_used_vram_bytes` | gauge | `gpuquota`, `namespace` | Device memory (bytes) currently accounted to InferenceServices in a GPUQuota's scope. Workloads whose footprint cannot be derived contribute zero. |
 | `llmkube_gpuquota_vram_bytes_limit` | gauge | `gpuquota`, `namespace` | The device-memory cap (spec.vramBytes) declared by a GPUQuota. 0 means no cap. |
+| `llmkube_inferenceservice_concurrency_limit` | gauge | `inferenceservice`, `namespace` | Requests one replica serves concurrently, as configured (parallelSlots, `--max-num-seqs` times vLLM's `--data-parallel-size`, `--max-running-requests`). Absent when the runtime picks its own or the controller cannot know it. |
+| `llmkube_inferenceservice_config_info` | gauge | `generation`, `image`, `inferenceservice`, `namespace`, `runtime` | The spec generation and serving image an InferenceService runs; the image is empty when the metal-agent runs it. Value is always 1; a new generation replaces the series. |
+| `llmkube_inferenceservice_context_length` | gauge | `inferenceservice`, `namespace` | Context window one request gets, in tokens. Absent when the controller cannot know it. |
+| `llmkube_inferenceservice_gpus_per_replica` | gauge | `inferenceservice`, `namespace` | GPUs each replica requests. |
 | `llmkube_inferenceservice_info` | gauge | `accelerator`, `inferenceservice`, `namespace`, `runtime` | Information about inference services. Value is always 1; use accelerator and runtime labels for grouping. |
 | `llmkube_inferenceservice_phase` | gauge | `inferenceservice`, `namespace`, `phase` | Current phase of inference services. Value is always 1; use the phase label for filtering. |
 | `llmkube_inferenceservice_ready_duration_seconds` | histogram | `inferenceservice`, `namespace` | Time from InferenceService creation to Ready phase. |

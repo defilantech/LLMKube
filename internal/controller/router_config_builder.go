@@ -16,6 +16,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"math"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -202,10 +203,11 @@ func (r *ModelRouterReconciler) resolveBackend(
 		switch {
 		case err == nil:
 			isvc = obj
-		case !errors.IsNotFound(err) && b.ModelInfo != nil:
-			// Only modelInfo fails the compile on a lookup error, as
-			// compileBalancing does; without it the backend compiles as before.
-			return wire, status, fmt.Errorf("get InferenceService %s for backend %q modelInfo: %w", b.InferenceServiceRef.Name, b.Name, err)
+		case !errors.IsNotFound(err) && (b.ModelInfo != nil || b.Resolution == inferencev1alpha1.RouterBackendResolutionEndpoint):
+			// modelInfo and an endpoint backend's concurrencyLimit fail the
+			// compile on a lookup error, as compileBalancing does; otherwise the
+			// backend compiles as before.
+			return wire, status, fmt.Errorf("get InferenceService %s for backend %q: %w", b.InferenceServiceRef.Name, b.Name, err)
 		}
 	}
 	info, err := r.compileModelInfo(ctx, mr, b, isvc)
@@ -233,6 +235,14 @@ func (r *ModelRouterReconciler) resolveBackend(
 			wire.Balancing, wire.Metrics, err = r.compileBalancing(ctx, mr.Namespace, b.InferenceServiceRef.Name, b.Balancing)
 			if err != nil {
 				return wire, status, err
+			}
+			// Only endpoint backends get it: the proxy reads it per pod, beside the
+			// engine samples it scrapes, so other routers keep their hash.
+			if isvc != nil {
+				wire.ConcurrencyLimit, err = r.compileConcurrencyLimit(ctx, isvc)
+				if err != nil {
+					return wire, status, fmt.Errorf("backend %q concurrency limit: %w", b.Name, err)
+				}
 			}
 			r.warnSessionAffinityIgnored(mr, b)
 			r.warnPrefixAffinityIgnored(mr, b)
@@ -688,6 +698,28 @@ func (r *ModelRouterReconciler) compileModelInfo(
 	return out, nil
 }
 
+// compileConcurrencyLimit is servedConcurrencyLimit for a backend's
+// InferenceService. A lookup error other than NotFound is returned, as in
+// compileModelInfo.
+func (r *ModelRouterReconciler) compileConcurrencyLimit(
+	ctx context.Context,
+	isvc *inferencev1alpha1.InferenceService,
+) (int32, error) {
+	var model *inferencev1alpha1.Model
+	if isvc.Spec.ModelRef != "" {
+		m := &inferencev1alpha1.Model{}
+		err := r.Get(ctx, types.NamespacedName{Name: isvc.Spec.ModelRef, Namespace: isvc.Namespace}, m)
+		switch {
+		case err == nil:
+			model = m
+		case !errors.IsNotFound(err):
+			return 0, fmt.Errorf("get Model %s: %w", isvc.Spec.ModelRef, err)
+		}
+	}
+	n := servedConcurrencyLimit(isvc, servedByMetalAgent(isvc, model))
+	return int32(n), nil //nolint:gosec // G115: every source is an int32 field, a flag parsed at 32 bits, or a product capped at MaxInt32
+}
+
 // runtimeSetByMetalAgent reports whether an unset runtime is left to the
 // metal-agent's --runtime flag, which may not be llama.cpp. A missing Model
 // also reports true, so its context length is not guessed.
@@ -725,8 +757,13 @@ func servedContextLength(isvc *inferencev1alpha1.InferenceService) int64 {
 	args := isvc.Spec.ExtraArgs
 	switch isvc.Spec.Runtime {
 	case RuntimeVLLM:
+		// With spec.command, vLLM gets only spec.args then extraArgs.
+		command := len(isvc.Spec.Command) > 0
+		if command {
+			args = append(append([]string{}, isvc.Spec.Args...), args...)
+		}
 		// extraArgs follow the rendered flags, so vLLM keeps their value.
-		if values, ok := extraArgValues(args, "max-model-len"); ok {
+		if values, ok := extraArgValues(vllmFlagSpellings(args), "max-model-len"); ok {
 			if len(values) == 0 {
 				return 0
 			}
@@ -736,7 +773,7 @@ func servedContextLength(isvc *inferencev1alpha1.InferenceService) int64 {
 			}
 			return n
 		}
-		if cfg := isvc.Spec.VLLMConfig; cfg != nil && cfg.MaxModelLen != nil {
+		if cfg := isvc.Spec.VLLMConfig; cfg != nil && cfg.MaxModelLen != nil && !command {
 			return int64(*cfg.MaxModelLen)
 		}
 	case "", "llamacpp":
@@ -760,6 +797,151 @@ func servedContextLength(isvc *inferencev1alpha1.InferenceService) int64 {
 	// llamacpp-router loads models on demand, each with its own context, so
 	// there is no single length to publish.
 	return 0
+}
+
+// servedConcurrencyLimit is how many requests one replica serves at once, read
+// from the flags the controller renders, extraArgs first as with
+// servedContextLength. It is zero when the runtime picks its own.
+func servedConcurrencyLimit(isvc *inferencev1alpha1.InferenceService, metal bool) int64 {
+	args := isvc.Spec.ExtraArgs
+	var slots int64
+	if p := isvc.Spec.ParallelSlots; p != nil {
+		slots = int64(*p)
+	}
+	if metal {
+		// The agent renders the slot flag only above one slot, and only for
+		// these engines; an unset runtime is its --runtime, which may be any.
+		if slots < 2 {
+			slots = 0
+		}
+		switch isvc.Spec.Runtime {
+		case "llamacpp":
+			return llamaCppSlots(args, slots)
+		case inferencev1alpha1.RuntimeMLXServer:
+			if n, ok := extraArgInt(args, "max-slots"); ok {
+				return n
+			}
+			return slots
+		case inferencev1alpha1.RuntimeVLLMSwift:
+			return vllmMaxNumSeqs(args, slots)
+		}
+		return 0
+	}
+	// With spec.command, vLLM and SGLang get only spec.args then extraArgs
+	// (setCommandAndArgs), as in servedModelNames.
+	command := len(isvc.Spec.Command) > 0 && (isvc.Spec.Runtime == RuntimeVLLM || isvc.Spec.Runtime == RuntimeSGLANG)
+	if command {
+		args = append(append([]string{}, isvc.Spec.Args...), args...)
+	}
+	switch isvc.Spec.Runtime {
+	case RuntimeVLLM:
+		if command {
+			slots = 0
+		}
+		return vllmMaxNumSeqs(args, slots)
+	case RuntimeSGLANG:
+		if n, ok := extraArgInt(args, "max-running-requests"); ok {
+			return n
+		}
+		if cfg := isvc.Spec.SGLangConfig; cfg != nil && cfg.MaxRunningRequests != nil && !command {
+			return int64(*cfg.MaxRunningRequests)
+		}
+	case "", "llamacpp":
+		return llamaCppSlots(args, slots)
+	}
+	return 0
+}
+
+// vllmMaxNumSeqs is --max-num-seqs, else slots, times --data-parallel-size:
+// vLLM applies it per rank, and one endpoint balances over every rank. It is
+// zero when the flags place ranks elsewhere, so this pod's share is unknown.
+func vllmMaxNumSeqs(args []string, slots int64) int64 {
+	args = vllmFlagSpellings(args)
+	n, ok := extraArgInt(args, "max-num-seqs")
+	if !ok {
+		n = slots
+	}
+	dp, ok := extraArgInt(args, "data-parallel-size")
+	if !ok {
+		return n
+	}
+	if hasMatchingExtraArgAny(args, "data-parallel-size-local", "data-parallel-rank", "data-parallel-start-rank",
+		"data-parallel-external-lb", "data-parallel-hybrid-lb", "headless") {
+		return 0
+	}
+	if n*dp > math.MaxInt32 {
+		return 0
+	}
+	return n * dp
+}
+
+// vllmShortFlags are the vLLM short spellings vllmMaxNumSeqs reads.
+var vllmShortFlags = map[string]string{
+	"-dp":  "--data-parallel-size",
+	"-dpl": "--data-parallel-size-local",
+	"-dpn": "--data-parallel-rank",
+	"-dpr": "--data-parallel-start-rank",
+	"-dpe": "--data-parallel-external-lb",
+	"-dph": "--data-parallel-hybrid-lb",
+}
+
+// vllmFlagSpellings rewrites "_" to "-" in long flag names, as vLLM's
+// FlexibleArgumentParser does before matching them, and the short flags above
+// to their long names.
+func vllmFlagSpellings(args []string) []string {
+	out := make([]string, len(args))
+	for i, a := range args {
+		name, value, hasValue := strings.Cut(a, "=")
+		if long, ok := vllmShortFlags[name]; ok {
+			name = long
+		} else if strings.HasPrefix(name, "--") {
+			name = strings.ReplaceAll(name, "_", "-")
+		}
+		if hasValue {
+			name += "=" + value
+		}
+		out[i] = name
+	}
+	return out
+}
+
+// llamaCppSlots is llama-server's --parallel, else slots; -np is left unknown.
+func llamaCppSlots(args []string, slots int64) int64 {
+	if hasMatchingExtraArgAny(args, "-np") {
+		return 0
+	}
+	if n, ok := extraArgInt(args, "parallel"); ok {
+		return n
+	}
+	return slots
+}
+
+// servedByMetalAgent reports whether the metal-agent runs the service. A
+// missing Model leaves an unset runtime to the agent, as
+// runtimeSetByMetalAgent does.
+func servedByMetalAgent(isvc *inferencev1alpha1.InferenceService, model *inferencev1alpha1.Model) bool {
+	if model == nil {
+		return isvc.Spec.Runtime == ""
+	}
+	return isMetalModel(model)
+}
+
+// extraArgInt is the last value args give the named flag, and whether the
+// flag appears at all. A flag with no parseable value reports 0, true: set,
+// but unknown.
+func extraArgInt(args []string, name string) (int64, bool) {
+	values, ok := extraArgValues(args, name)
+	if !ok {
+		return 0, false
+	}
+	if len(values) == 0 {
+		return 0, true
+	}
+	n, err := strconv.ParseInt(values[len(values)-1], 10, 32)
+	if err != nil || n < 1 {
+		return 0, true
+	}
+	return n, true
 }
 
 func padTo256(n int64) int64 {

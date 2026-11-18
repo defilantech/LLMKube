@@ -175,6 +175,35 @@ func publishInferenceServiceState(isvc *inferencev1alpha1.InferenceService, mode
 	llmkubemetrics.PublishInferenceServiceInfo(isvc.Name, isvc.Namespace, accelerator, runtime)
 }
 
+// publishInferenceServiceConfig exports the limits, GPUs per replica and the
+// config_info series. GPUs and the image depend on the Model, so a pass that
+// never resolved one leaves those as last published; the limits are re-read
+// from the spec every time.
+func publishInferenceServiceConfig(isvc *inferencev1alpha1.InferenceService, model *inferencev1alpha1.Model, overrides map[string]string) {
+	if isvc.Status.Phase == "" {
+		return
+	}
+	metal := servedByMetalAgent(isvc, model)
+	// As compileModelInfo: only an unset runtime leaves the engine, and so the
+	// context split, to the agent.
+	var contextLength int64
+	if !metal || isvc.Spec.Runtime != "" {
+		contextLength = servedContextLength(isvc)
+	}
+	llmkubemetrics.PublishInferenceServiceLimits(isvc.Name, isvc.Namespace,
+		servedConcurrencyLimit(isvc, metal), contextLength)
+	if model == nil {
+		return
+	}
+	// The metal-agent runs the engine natively, so no image applies.
+	var image string
+	if !metal {
+		image = servingImage(isvc, resolveBackend(isvc), model, overrides)
+	}
+	llmkubemetrics.PublishInferenceServiceConfig(isvc.Name, isvc.Namespace,
+		resolveGPUCount(isvc, model), isvc.Generation, runtimeNameLabel(isvc), image)
+}
+
 // nolint:unparam // ctrl.Result is always zero but callers take &result to signal status-update path
 func (r *InferenceServiceReconciler) updateStatusWithSchedulingInfo(
 	ctx context.Context,

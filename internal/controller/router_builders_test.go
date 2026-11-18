@@ -2130,3 +2130,244 @@ func TestCompileBalancingRoundRobinDropsAffinity(t *testing.T) {
 		}
 	}
 }
+
+// TestCompileRouterConfigConcurrencyLimit pins which backends carry the
+// InferenceService's concurrency limit to the proxy: endpoint backends, from
+// the flag the runtime gets; service backends never, so their hash is kept.
+func TestCompileRouterConfigConcurrencyLimit(t *testing.T) {
+	i32 := func(v int32) *int32 { return &v }
+	tests := []struct {
+		name        string
+		resolution  string
+		isvc        inferencev1alpha1.InferenceServiceSpec
+		accelerator string // seeds the referenced Model when set
+		want        int32
+	}{
+		{
+			name:       "vLLM --max-num-seqs in extraArgs",
+			resolution: inferencev1alpha1.RouterBackendResolutionEndpoint,
+			isvc:       inferencev1alpha1.InferenceServiceSpec{Runtime: RuntimeVLLM, ExtraArgs: []string{"--max-num-seqs", "104"}},
+			want:       104,
+		},
+		{
+			name:       "vLLM parallelSlots",
+			resolution: inferencev1alpha1.RouterBackendResolutionEndpoint,
+			isvc:       inferencev1alpha1.InferenceServiceSpec{Runtime: RuntimeVLLM, ParallelSlots: i32(128)},
+			want:       128,
+		},
+		{
+			name:        "metal-agent at one slot leaves the engine its default",
+			resolution:  inferencev1alpha1.RouterBackendResolutionEndpoint,
+			isvc:        inferencev1alpha1.InferenceServiceSpec{ParallelSlots: i32(1)},
+			accelerator: "metal",
+		},
+		{
+			name: "a service backend carries no limit",
+			isvc: inferencev1alpha1.InferenceServiceSpec{Runtime: RuntimeVLLM, ParallelSlots: i32(128)},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mr := canonicalModelRouter()
+			mr.Spec.Backends[0].Resolution = tt.resolution
+			isvc := &inferencev1alpha1.InferenceService{
+				ObjectMeta: metav1.ObjectMeta{Name: "qwen3-coder", Namespace: testBuilderNs},
+				Spec:       tt.isvc,
+			}
+			secret := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{Name: "anthropic-key", Namespace: testBuilderNs},
+				Data:       map[string][]byte{"ANTHROPIC_API_KEY": []byte("test")},
+			}
+			objs := []client.Object{isvc, secret}
+			if tt.accelerator != "" {
+				isvc.Spec.ModelRef = "qwen3-coder-model"
+				objs = append(objs, &inferencev1alpha1.Model{
+					ObjectMeta: metav1.ObjectMeta{Name: "qwen3-coder-model", Namespace: testBuilderNs},
+					Spec:       inferencev1alpha1.ModelSpec{Hardware: &inferencev1alpha1.HardwareSpec{Accelerator: tt.accelerator}},
+				})
+			}
+			r := newRouterReconcilerForTest(t, mr, objs...)
+			compiled, err := r.compileRouterConfig(context.Background(), mr)
+			if err != nil {
+				t.Fatalf("compileRouterConfig: %v", err)
+			}
+			var raw struct {
+				Backends []map[string]any `json:"backends"`
+			}
+			if err := json.Unmarshal(compiled.JSON, &raw); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			got, present := raw.Backends[0]["concurrencyLimit"]
+			if tt.want == 0 {
+				if present {
+					t.Errorf("concurrencyLimit = %v, want the key absent", got)
+				}
+				return
+			}
+			if got != float64(tt.want) {
+				t.Errorf("concurrencyLimit = %v, want %d", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestCompileRouterConfigConcurrencyLimitLookupError: an endpoint backend
+// whose InferenceService lookup fails with anything but NotFound fails the
+// compile, so a transient error cannot drop concurrencyLimit and roll the
+// proxy twice.
+func TestCompileRouterConfigConcurrencyLimitLookupError(t *testing.T) {
+	mr := canonicalModelRouter()
+	mr.Spec.Backends[0].Resolution = inferencev1alpha1.RouterBackendResolutionEndpoint
+	limit := int32(128)
+	isvc := &inferencev1alpha1.InferenceService{
+		ObjectMeta: metav1.ObjectMeta{Name: "qwen3-coder", Namespace: testBuilderNs},
+		Spec:       inferencev1alpha1.InferenceServiceSpec{Runtime: RuntimeVLLM, ParallelSlots: &limit},
+	}
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "anthropic-key", Namespace: testBuilderNs},
+		Data:       map[string][]byte{"ANTHROPIC_API_KEY": []byte("test")},
+	}
+	r := newRouterReconcilerForTest(t, mr, isvc, secret)
+	// keyedBackends reads the InferenceService first; resolveBackend's
+	// lookup is the second Get, and it fails.
+	var gets atomic.Int32
+	r.Client = interceptor.NewClient(r.Client.(client.WithWatch), interceptor.Funcs{
+		Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+			if _, ok := obj.(*inferencev1alpha1.InferenceService); ok && gets.Add(1) == 2 {
+				return apierrors.NewServiceUnavailable("apiserver unavailable")
+			}
+			return c.Get(ctx, key, obj, opts...)
+		},
+	})
+	if _, err := r.compileRouterConfig(context.Background(), mr); err == nil || !strings.Contains(err.Error(), "apiserver unavailable") {
+		t.Fatalf("compile err = %v, want the InferenceService lookup error", err)
+	}
+}
+
+// TestServedConcurrencyLimit pins the per-runtime flag each limit is read
+// from, extraArgs first because the runtime keeps their value.
+func TestServedConcurrencyLimit(t *testing.T) {
+	i32 := func(v int32) *int32 { return &v }
+	tests := []struct {
+		name  string
+		spec  inferencev1alpha1.InferenceServiceSpec
+		metal bool
+		want  int64
+	}{
+		{"vLLM extraArgs win over parallelSlots", inferencev1alpha1.InferenceServiceSpec{Runtime: RuntimeVLLM, ParallelSlots: i32(8), ExtraArgs: []string{"--max-num-seqs=104"}}, false, 104},
+		{"vLLM parallelSlots", inferencev1alpha1.InferenceServiceSpec{Runtime: RuntimeVLLM, ParallelSlots: i32(128)}, false, 128},
+		{"vLLM with neither is the engine's own", inferencev1alpha1.InferenceServiceSpec{Runtime: RuntimeVLLM}, false, 0},
+		{"vLLM unparseable extraArgs value is unknown", inferencev1alpha1.InferenceServiceSpec{Runtime: RuntimeVLLM, ParallelSlots: i32(8), ExtraArgs: []string{"--max-num-seqs", "$(SEQS)"}}, false, 0},
+		{"SGLang maxRunningRequests", inferencev1alpha1.InferenceServiceSpec{Runtime: RuntimeSGLANG, SGLangConfig: &inferencev1alpha1.SGLangConfig{MaxRunningRequests: i32(64)}}, false, 64},
+		{"SGLang extraArgs win", inferencev1alpha1.InferenceServiceSpec{Runtime: RuntimeSGLANG, SGLangConfig: &inferencev1alpha1.SGLangConfig{MaxRunningRequests: i32(64)}, ExtraArgs: []string{"--max-running-requests", "32"}}, false, 32},
+		{"llama.cpp parallelSlots", inferencev1alpha1.InferenceServiceSpec{ParallelSlots: i32(4)}, false, 4},
+		{"llama.cpp --parallel in extraArgs", inferencev1alpha1.InferenceServiceSpec{Runtime: "llamacpp", ExtraArgs: []string{"--parallel", "6"}}, false, 6},
+		{"llama.cpp -np is unknown", inferencev1alpha1.InferenceServiceSpec{ParallelSlots: i32(4), ExtraArgs: []string{"-np", "6"}}, false, 0},
+		{"metal-agent above one slot", inferencev1alpha1.InferenceServiceSpec{Runtime: "llamacpp", ParallelSlots: i32(4)}, true, 4},
+		{"metal-agent at one slot", inferencev1alpha1.InferenceServiceSpec{Runtime: "llamacpp", ParallelSlots: i32(1)}, true, 0},
+		{"metal-agent with runtime unset is the agent's --runtime", inferencev1alpha1.InferenceServiceSpec{ParallelSlots: i32(4)}, true, 0},
+		{"metal-agent omlx renders no slot flag", inferencev1alpha1.InferenceServiceSpec{Runtime: inferencev1alpha1.RuntimeOMLX, ParallelSlots: i32(8)}, true, 0},
+		{"metal-agent ollama renders no slot flag", inferencev1alpha1.InferenceServiceSpec{Runtime: inferencev1alpha1.RuntimeOllama, ParallelSlots: i32(8)}, true, 0},
+		{"metal-agent tensorfold renders no slot flag", inferencev1alpha1.InferenceServiceSpec{Runtime: inferencev1alpha1.RuntimeTensorFold, ParallelSlots: i32(8)}, true, 0},
+		{"metal-agent llama.cpp extraArgs win", inferencev1alpha1.InferenceServiceSpec{Runtime: "llamacpp", ParallelSlots: i32(4), ExtraArgs: []string{"--parallel", "8"}}, true, 8},
+		{"metal-agent mlx-server extraArgs win", inferencev1alpha1.InferenceServiceSpec{Runtime: inferencev1alpha1.RuntimeMLXServer, ParallelSlots: i32(4), ExtraArgs: []string{"--max-slots", "8"}}, true, 8},
+		{"metal-agent vllm-swift extraArgs win", inferencev1alpha1.InferenceServiceSpec{Runtime: inferencev1alpha1.RuntimeVLLMSwift, ParallelSlots: i32(4), ExtraArgs: []string{"--max-num-seqs", "8"}}, true, 8},
+		{"a runtime without a known flag", inferencev1alpha1.InferenceServiceSpec{Runtime: "tgi", ParallelSlots: i32(4)}, false, 0},
+		{"vLLM --max_num_seqs is --max-num-seqs", inferencev1alpha1.InferenceServiceSpec{Runtime: RuntimeVLLM, ParallelSlots: i32(64), ExtraArgs: []string{"--max_num_seqs", "256"}}, false, 256},
+		{"vLLM --max_num_seqs= is --max-num-seqs", inferencev1alpha1.InferenceServiceSpec{Runtime: RuntimeVLLM, ParallelSlots: i32(64), ExtraArgs: []string{"--max_num_seqs=256"}}, false, 256},
+		{"metal-agent vllm-swift --max_num_seqs is --max-num-seqs", inferencev1alpha1.InferenceServiceSpec{Runtime: inferencev1alpha1.RuntimeVLLMSwift, ParallelSlots: i32(4), ExtraArgs: []string{"--max_num_seqs", "8"}}, true, 8},
+		{"vLLM --data-parallel-size multiplies the per-rank limit", inferencev1alpha1.InferenceServiceSpec{Runtime: RuntimeVLLM, ParallelSlots: i32(64), ExtraArgs: []string{"--data-parallel-size", "4"}}, false, 256},
+		{"vLLM -dp multiplies the per-rank limit", inferencev1alpha1.InferenceServiceSpec{Runtime: RuntimeVLLM, ExtraArgs: []string{"--max-num-seqs", "32", "-dp", "2"}}, false, 64},
+		{"vLLM --data_parallel_size= multiplies the per-rank limit", inferencev1alpha1.InferenceServiceSpec{Runtime: RuntimeVLLM, ParallelSlots: i32(64), ExtraArgs: []string{"--data_parallel_size=4"}}, false, 256},
+		{"vLLM data-parallel size of one", inferencev1alpha1.InferenceServiceSpec{Runtime: RuntimeVLLM, ParallelSlots: i32(64), ExtraArgs: []string{"--data-parallel-size", "1"}}, false, 64},
+		{"vLLM data-parallel ranks placed elsewhere are unknown", inferencev1alpha1.InferenceServiceSpec{Runtime: RuntimeVLLM, ParallelSlots: i32(64), ExtraArgs: []string{"--data-parallel-size", "4", "--data-parallel-size-local", "2"}}, false, 0},
+		{"vLLM external data-parallel load balancing is unknown", inferencev1alpha1.InferenceServiceSpec{Runtime: RuntimeVLLM, ParallelSlots: i32(64), ExtraArgs: []string{"-dp", "4", "-dpe", "-dpn", "0"}}, false, 0},
+		{"vLLM data-parallel product past int32 is unknown", inferencev1alpha1.InferenceServiceSpec{Runtime: RuntimeVLLM, ExtraArgs: []string{"--max-num-seqs", "65536", "-dp", "65536"}}, false, 0},
+		{"vLLM spec.command leaves parallelSlots unrendered", inferencev1alpha1.InferenceServiceSpec{Runtime: RuntimeVLLM, Command: []string{"vllm", "serve"}, ParallelSlots: i32(128)}, false, 0},
+		{"vLLM spec.command reads spec.args", inferencev1alpha1.InferenceServiceSpec{Runtime: RuntimeVLLM, Command: []string{"vllm", "serve"}, Args: []string{"m", "--max-num-seqs", "96"}, ParallelSlots: i32(128)}, false, 96},
+		{"SGLang spec.command reads spec.args", inferencev1alpha1.InferenceServiceSpec{Runtime: RuntimeSGLANG, Command: []string{"python3", "-m", "sglang.launch_server"}, Args: []string{"--max-running-requests", "48"}}, false, 48},
+		{"SGLang spec.command leaves sglangConfig unrendered", inferencev1alpha1.InferenceServiceSpec{Runtime: RuntimeSGLANG, Command: []string{"python3", "-m", "sglang.launch_server"}, SGLangConfig: &inferencev1alpha1.SGLangConfig{MaxRunningRequests: i32(64)}}, false, 0},
+		{"llama.cpp spec.command keeps the rendered args, not spec.args", inferencev1alpha1.InferenceServiceSpec{Command: []string{"/app/llama-server"}, Args: []string{"--parallel", "8"}, ParallelSlots: i32(4)}, false, 4},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			isvc := &inferencev1alpha1.InferenceService{Spec: tt.spec}
+			if got := servedConcurrencyLimit(isvc, tt.metal); got != tt.want {
+				t.Errorf("servedConcurrencyLimit = %d, want %d", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestServedContextLengthReadsVLLMFlagsAsVLLMDoes: vLLM normalizes "_" in flag
+// names, and under spec.command renders neither vllmConfig nor anything but
+// spec.args and extraArgs.
+func TestServedContextLengthReadsVLLMFlagsAsVLLMDoes(t *testing.T) {
+	i32 := func(v int32) *int32 { return &v }
+	cfg := &inferencev1alpha1.VLLMConfig{MaxModelLen: i32(524288)}
+	tests := []struct {
+		name string
+		spec inferencev1alpha1.InferenceServiceSpec
+		want int64
+	}{
+		{"--max_model_len is --max-model-len", inferencev1alpha1.InferenceServiceSpec{Runtime: RuntimeVLLM, VLLMConfig: cfg, ExtraArgs: []string{"--max_model_len", "131072"}}, 131072},
+		{"--max_model_len= is --max-model-len", inferencev1alpha1.InferenceServiceSpec{Runtime: RuntimeVLLM, VLLMConfig: cfg, ExtraArgs: []string{"--max_model_len=131072"}}, 131072},
+		{"spec.command leaves vllmConfig unrendered", inferencev1alpha1.InferenceServiceSpec{Runtime: RuntimeVLLM, Command: []string{"vllm", "serve"}, VLLMConfig: cfg}, 0},
+		{"spec.command reads spec.args", inferencev1alpha1.InferenceServiceSpec{Runtime: RuntimeVLLM, Command: []string{"vllm", "serve"}, Args: []string{"m", "--max-model-len", "65536"}, VLLMConfig: cfg}, 65536},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			isvc := &inferencev1alpha1.InferenceService{Spec: tt.spec}
+			if got := servedContextLength(isvc); got != tt.want {
+				t.Errorf("servedContextLength = %d, want %d", got, tt.want)
+			}
+		})
+	}
+}
+
+// Production-shaped vLLM specs: the limit as separate extraArgs elements among
+// JSON-valued and boolean flags, the context in vllmConfig.maxModelLen.
+func TestServedLimitsForProductionShapedVLLMSpecs(t *testing.T) {
+	i32 := func(v int32) *int32 { return &v }
+	agentArgs := func(seqs string) []string {
+		return []string{
+			"--served-model-name", "m",
+			"--enable-auto-tool-choice",
+			"--speculative-config", `{"method":"mtp","num_speculative_tokens":1}`,
+			"--max-num-seqs", seqs,
+			"--max-num-batched-tokens", "32768",
+			"--long-prefill-token-threshold", "8192",
+			"--long-prefill-token-threshold-adaptive",
+		}
+	}
+	tests := []struct {
+		name      string
+		spec      inferencev1alpha1.InferenceServiceSpec
+		wantLimit int64
+		wantCtx   int64
+	}{
+		{"moe-tp4", inferencev1alpha1.InferenceServiceSpec{Runtime: RuntimeVLLM,
+			VLLMConfig: &inferencev1alpha1.VLLMConfig{TensorParallelSize: i32(4), MaxModelLen: i32(524288)},
+			ExtraArgs:  agentArgs("104")}, 104, 524288},
+		{"moe-tp4-1m-context", inferencev1alpha1.InferenceServiceSpec{Runtime: RuntimeVLLM,
+			VLLMConfig: &inferencev1alpha1.VLLMConfig{TensorParallelSize: i32(4), MaxModelLen: i32(1048576)},
+			ExtraArgs:  agentArgs("128")}, 128, 1048576},
+		{"dense-tp1", inferencev1alpha1.InferenceServiceSpec{Runtime: RuntimeVLLM,
+			VLLMConfig: &inferencev1alpha1.VLLMConfig{TensorParallelSize: i32(1), MaxModelLen: i32(262144)},
+			ExtraArgs:  agentArgs("32")}, 32, 262144},
+		{"pooling-embedding", inferencev1alpha1.InferenceServiceSpec{Runtime: RuntimeVLLM,
+			VLLMConfig: &inferencev1alpha1.VLLMConfig{MaxModelLen: i32(8192)},
+			ExtraArgs:  []string{"--runner", "pooling", "--limit-mm-per-prompt", `{"image":0}`, "--kv-cache-memory-bytes", "1073741824"}}, 0, 8192},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			isvc := &inferencev1alpha1.InferenceService{Spec: tt.spec}
+			if got := servedConcurrencyLimit(isvc, false); got != tt.wantLimit {
+				t.Errorf("servedConcurrencyLimit = %d, want %d", got, tt.wantLimit)
+			}
+			if got := servedContextLength(isvc); got != tt.wantCtx {
+				t.Errorf("servedContextLength = %d, want %d", got, tt.wantCtx)
+			}
+		})
+	}
+}

@@ -84,6 +84,11 @@ type Backend struct {
 	// publishes the bare entry.
 	ModelInfo *ModelInfo `json:"modelInfo,omitempty"`
 
+	// ConcurrencyLimit is the requests one pod of the backend serves at once,
+	// compiled from its InferenceService. Zero when unknown or the runtime
+	// picks its own; the proxy then records no slot utilization.
+	ConcurrencyLimit int32 `json:"concurrencyLimit,omitempty"`
+
 	// Tier is "local" or "cloud". Used by the fail-closed gate: sensitive-
 	// data rules cannot route to cloud-tier backends.
 	Tier string `json:"tier"`

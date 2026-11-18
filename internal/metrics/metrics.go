@@ -17,6 +17,7 @@ limitations under the License.
 package metrics
 
 import (
+	"strconv"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -87,6 +88,38 @@ var (
 			Help: "InferenceService replica counts. Use the state label: ready, desired.",
 		},
 		[]string{"inferenceservice", "namespace", "state"},
+	)
+
+	InferenceServiceConcurrencyLimit = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "llmkube_inferenceservice_concurrency_limit",
+			Help: "Requests one replica serves concurrently, as configured (parallelSlots, --max-num-seqs times vLLM's --data-parallel-size, --max-running-requests). Absent when the runtime picks its own or the controller cannot know it.",
+		},
+		[]string{"inferenceservice", labelNamespace},
+	)
+
+	InferenceServiceContextLength = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "llmkube_inferenceservice_context_length",
+			Help: "Context window one request gets, in tokens. Absent when the controller cannot know it.",
+		},
+		[]string{"inferenceservice", labelNamespace},
+	)
+
+	InferenceServiceGPUsPerReplica = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "llmkube_inferenceservice_gpus_per_replica",
+			Help: "GPUs each replica requests.",
+		},
+		[]string{"inferenceservice", labelNamespace},
+	)
+
+	InferenceServiceConfigInfo = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "llmkube_inferenceservice_config_info",
+			Help: "The spec generation and serving image an InferenceService runs; the image is empty when the metal-agent runs it. Value is always 1; a new generation replaces the series.",
+		},
+		[]string{"inferenceservice", labelNamespace, "generation", "runtime", "image"},
 	)
 
 	GPUQueueDepth = prometheus.NewGaugeVec(
@@ -653,6 +686,10 @@ var ControllerCollectors = []prometheus.Collector{
 	InferenceServicePhase,
 	InferenceServiceInfo,
 	InferenceServiceReplicas,
+	InferenceServiceConcurrencyLimit,
+	InferenceServiceContextLength,
+	InferenceServiceGPUsPerReplica,
+	InferenceServiceConfigInfo,
 	GPUQueueDepth,
 	ReconcileTotal,
 	ReconcileDuration,
@@ -764,6 +801,29 @@ func PublishInferenceServiceReplicas(name, namespace string, ready, desired int3
 	InferenceServiceReplicas.WithLabelValues(name, namespace, "desired").Set(float64(desired))
 }
 
+// PublishInferenceServiceLimits sets the concurrency limit and context length
+// gauges, dropping either one that is zero (unknown) rather than reporting 0.
+func PublishInferenceServiceLimits(name, namespace string, concurrencyLimit, contextLength int64) {
+	setOrDelete(InferenceServiceConcurrencyLimit, name, namespace, concurrencyLimit)
+	setOrDelete(InferenceServiceContextLength, name, namespace, contextLength)
+}
+
+func setOrDelete(vec *prometheus.GaugeVec, name, namespace string, v int64) {
+	if v <= 0 {
+		vec.DeleteLabelValues(name, namespace)
+		return
+	}
+	vec.WithLabelValues(name, namespace).Set(float64(v))
+}
+
+// PublishInferenceServiceConfig sets the GPUs-per-replica gauge and makes
+// generation/runtime/image the only config_info series for one service.
+func PublishInferenceServiceConfig(name, namespace string, gpusPerReplica int32, generation int64, runtime, image string) {
+	InferenceServiceGPUsPerReplica.WithLabelValues(name, namespace).Set(float64(gpusPerReplica))
+	InferenceServiceConfigInfo.DeletePartialMatch(inferenceServiceLabels(name, namespace))
+	InferenceServiceConfigInfo.WithLabelValues(name, namespace, strconv.FormatInt(generation, 10), runtime, image).Set(1)
+}
+
 // PublishGPUQueueDepth makes depths the whole of llmkube_gpu_queue_depth: a
 // namespace absent from the map stops being reported.
 func PublishGPUQueueDepth(depths map[string]int32) {
@@ -781,6 +841,10 @@ func DeleteInferenceServiceSeries(name, namespace string) {
 	InferenceServicePhase.DeletePartialMatch(labels)
 	InferenceServiceInfo.DeletePartialMatch(labels)
 	InferenceServiceReplicas.DeletePartialMatch(labels)
+	InferenceServiceConcurrencyLimit.DeletePartialMatch(labels)
+	InferenceServiceContextLength.DeletePartialMatch(labels)
+	InferenceServiceGPUsPerReplica.DeletePartialMatch(labels)
+	InferenceServiceConfigInfo.DeletePartialMatch(labels)
 }
 
 const nsLabel = "namespace"
