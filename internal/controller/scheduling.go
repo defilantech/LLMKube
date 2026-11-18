@@ -64,14 +64,18 @@ var priorityValues = map[string]int32{
 // (pkg/agent/start_failure.go). The agent clears them itself once an engine
 // runs (#777).
 //
-// A stale or unparseable slice heartbeat replaces them only when the Mac's
-// MetalNode reports a stale heartbeat too (#2457). A refusal re-stamps only
-// the slice the agent registers itself, so any other slice listed for the
-// service (another name, no port, no managed-by label, or the legacy slice of
-// an agent since switched to relay mode) stays stale while the agent is alive,
-// and replacing the refusal had the two rewriting status in a loop. The
-// MetalNode is found by the ingress pin the relay uses. Legacy mode has no
-// pin and nothing else ties a service to a Mac, so there the refusal stays.
+// A stale or unparseable slice heartbeat does not replace them while the
+// Mac's MetalNode does not say HeartbeatStale (#2457). A refusal
+// re-stamps only the slice the agent registers itself, so any other slice
+// listed for the service (another name, no port, no managed-by label, or the
+// legacy slice of an agent since switched to relay mode) stays stale while the
+// agent is alive, and replacing the refusal had the two rewriting status in a
+// loop. The MetalNode is found by the ingress pin the relay uses. In relay
+// mode with no MetalNode reporting the pin, the slice heartbeat still replaces
+// the refusal: nothing else shows the Mac is alive, and the agent re-stamps
+// its own "<isvc>-agent" slice, so a loop there needs a slice it does not own.
+// Legacy mode has no pin and nothing else ties a service to a Mac, so there
+// the refusal stays.
 // That changes only the message: phase, ready replicas and the slice
 // withdrawal are the same either way, and a dead agent's refusal reads less
 // precisely than AgentHeartbeatStale.
@@ -145,8 +149,8 @@ func (r *InferenceServiceReconciler) determinePhase(ctx context.Context, isvc *i
 		// here. Overwriting the agent's refusal hid it from status and bumped
 		// the resourceVersion, which the agent's poll saw as a change and
 		// refused again every few seconds. A stale heartbeat overwrites it only
-		// once the MetalNode is stale too; see agentRefusalReasons.
-		if agentRefusalReasons[isvc.Status.SchedulingStatus] && (snap == nil || !snap.metalNodeStale) {
+		// when no MetalNode shows the Mac is alive; see agentRefusalReasons.
+		if agentRefusalReasons[isvc.Status.SchedulingStatus] && (snap == nil || !snap.refusalReplaced) {
 			return PhaseCreating, nil
 		}
 		if snap != nil {

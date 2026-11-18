@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -29,6 +30,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	inferencev1alpha1 "github.com/defilantech/llmkube/api/v1alpha1"
@@ -184,9 +186,9 @@ var _ = Describe("metal agent refusal with a stale EndpointSlice", func() {
 		}
 
 		setAgentConnected := func(mn *inferencev1alpha1.MetalNode, reason string) {
-			status := metav1.ConditionTrue
-			if reason == inferencev1alpha1.MetalNodeReasonHeartbeatStale {
-				status = metav1.ConditionFalse
+			status := metav1.ConditionFalse
+			if reason == inferencev1alpha1.MetalNodeReasonHeartbeatFresh {
+				status = metav1.ConditionTrue
 			}
 			meta.SetStatusCondition(&mn.Status.Conditions, metav1.Condition{
 				Type:    inferencev1alpha1.MetalNodeConditionAgentConnected,
@@ -226,12 +228,47 @@ var _ = Describe("metal agent refusal with a stale EndpointSlice", func() {
 			Expect(got.Status.SchedulingMessage).To(ContainSubstring("last seen"))
 		})
 
-		It("keeps the refusal when the stale MetalNode reports another Mac's pin", func() {
-			key := relayService("refusal-node-other", tenMinutesAgo())
-			metalNode("refusal-node-other-mac", otherPin, inferencev1alpha1.MetalNodeReasonHeartbeatStale)
+		// An agent installed without --metal-node has no MetalNode, llmkube
+		// metal remove deletes it, and the MetalNode controller clears the
+		// ingress SPKI once the Lease is gone. Nothing then shows the Mac is
+		// alive, so the stale heartbeat replaces the refusal as before #2457.
+		DescribeTable("reports AgentHeartbeatStale when no MetalNode reports the relay's pin",
+			func(name string, addNode func(name string)) {
+				key := relayService(name, tenMinutesAgo())
+				addNode(name + "-mac")
+
+				_, got := reconcileISVC(key)
+				Expect(got.Status.SchedulingStatus).To(Equal("AgentHeartbeatStale"))
+				Expect(got.Status.SchedulingMessage).To(ContainSubstring("last seen"))
+			},
+			Entry("with no MetalNode", "refusal-no-node", func(string) {}),
+			Entry("with a MetalNode that has no ingress SPKI", "refusal-node-no-pin", func(name string) {
+				metalNode(name, "", inferencev1alpha1.MetalNodeReasonLeaseNotFound)
+			}),
+			Entry("with a fresh MetalNode for another Mac", "refusal-node-other", func(name string) {
+				metalNode(name, otherPin, inferencev1alpha1.MetalNodeReasonHeartbeatFresh)
+			}),
+		)
+
+		// A failed List can't show the Mac is alive either, so it falls back the
+		// same way, even with a fresh MetalNode for the pin.
+		It("reports AgentHeartbeatStale when the MetalNode List fails", func() {
+			key := relayService("refusal-node-list-error", tenMinutesAgo())
+			metalNode("refusal-node-list-error-mac", pin, inferencev1alpha1.MetalNodeReasonHeartbeatFresh)
+			// interceptor wraps a WithWatch client; build one on the same apiserver.
+			base, err := client.NewWithWatch(cfg, client.Options{Scheme: k8sClient.Scheme()})
+			Expect(err).NotTo(HaveOccurred())
+			reconciler.Client = interceptor.NewClient(base, interceptor.Funcs{
+				List: func(ctx context.Context, c client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
+					if _, ok := list.(*inferencev1alpha1.MetalNodeList); ok {
+						return errors.New("injected MetalNode List failure")
+					}
+					return c.List(ctx, list, opts...)
+				},
+			})
 
 			_, got := reconcileISVC(key)
-			Expect(got.Status.SchedulingStatus).To(Equal(refusal))
+			Expect(got.Status.SchedulingStatus).To(Equal("AgentHeartbeatStale"))
 		})
 
 		// This controller does not watch MetalNodes and an unparseable

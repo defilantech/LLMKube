@@ -394,12 +394,12 @@ var _ = Describe("determinePhase", func() {
 		Expect(info.Status).To(Equal("WaitingForMetalAgent"))
 	})
 
-	It("should let a stale heartbeat replace an agent refusal once the MetalNode is stale too", func() {
+	It("should let a stale heartbeat replace an agent refusal once no MetalNode shows the Mac is alive", func() {
 		isvc := &inferencev1alpha1.InferenceService{
 			ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
 		}
 		isvc.Status.SchedulingStatus = "ExtraArgsRejected"
-		snap := &metalSnapshot{Kind: metalHBStale, RawHeartbeat: "2026-01-01T00:00:00Z", metalNodeStale: true}
+		snap := &metalSnapshot{Kind: metalHBStale, RawHeartbeat: "2026-01-01T00:00:00Z", refusalReplaced: true}
 		_, info := reconciler.determinePhase(context.Background(), isvc, 0, 1, true, nil, snap)
 		Expect(info).NotTo(BeNil())
 		Expect(info.Status).To(Equal("AgentHeartbeatStale"))

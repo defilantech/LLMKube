@@ -582,8 +582,8 @@ func (r *InferenceServiceReconciler) reconcileMetal(ctx context.Context, isvc *i
 		}
 		r.warnAgentVersionSkew(isvc, snap)
 		if (snap.Kind == metalHBStale || snap.Kind == metalHBUnparseable) && agentRefusalReasons[isvc.Status.SchedulingStatus] {
-			snap.metalNodeStale = r.metalNodeHeartbeatStale(ctx, isvc.Namespace, pin)
-			snap.refusalHeld = !snap.metalNodeStale
+			snap.refusalHeld = r.metalNodeNotStale(ctx, isvc.Namespace, pin)
+			snap.refusalReplaced = !snap.refusalHeld
 		}
 		available, err := r.reconcileRelay(ctx, isvc, pin)
 		if apierrors.IsConflict(err) {
@@ -1483,13 +1483,14 @@ type metalSnapshot struct {
 	// AgentVersion is the agent's llmkube.ai/agent-version annotation on the
 	// first metal-agent slice that carries one; empty when none does.
 	AgentVersion string
-	// metalNodeStale and refusalHeld are set by reconcileMetal in relay mode,
-	// for a refused service on a stale or unparseable snapshot. metalNodeStale
-	// means the MetalNode reporting the relay's pin has a stale heartbeat too:
-	// the Mac is gone, not only the slice. refusalHeld means it does not, so
-	// the refusal stays until it does.
-	metalNodeStale bool
-	refusalHeld    bool
+	// refusalHeld and refusalReplaced are set by reconcileMetal in relay mode,
+	// for a refused service on a stale or unparseable snapshot. refusalHeld
+	// means a MetalNode reporting the relay's pin does not say HeartbeatStale,
+	// so the Mac may still be alive and the refusal stays. refusalReplaced
+	// means none does: the one reporting the pin is stale, none reports it, or
+	// the List failed, and the slice heartbeat replaces the refusal.
+	refusalHeld     bool
+	refusalReplaced bool
 }
 
 // metalEndpointSnapshot lists the EndpointSlices of the Service name (the
@@ -1689,12 +1690,15 @@ func metalSliceNeedsWithdrawal(slice *discoveryv1.EndpointSlice, now time.Time) 
 	return false
 }
 
-// metalNodeHeartbeatStale reports whether the Mac behind the ingress pin has
-// stopped renewing its Lease: a MetalNode in namespace (a joined agent's
-// MetalNode is in the namespace it serves) reports pin as its ingress SPKI and
-// says HeartbeatStale. It reports false when no MetalNode reports pin, when
-// one that does is not stale, and on a List error.
-func (r *InferenceServiceReconciler) metalNodeHeartbeatStale(ctx context.Context, namespace, pin string) bool {
+// metalNodeNotStale reports whether the Mac behind the ingress pin may still
+// be alive: a MetalNode in namespace (a joined agent's MetalNode is in the
+// namespace it serves) reports pin as its ingress SPKI and does not say
+// HeartbeatStale. It reports false when every MetalNode reporting pin is
+// stale, when none reports it, and on a List error. None reports it for an
+// agent installed without --metal-node, after llmkube metal remove deletes the
+// MetalNode, and once the Lease is gone, since the MetalNode controller clears
+// the ingress SPKI then.
+func (r *InferenceServiceReconciler) metalNodeNotStale(ctx context.Context, namespace, pin string) bool {
 	if pin == "" {
 		return false
 	}
@@ -1703,18 +1707,16 @@ func (r *InferenceServiceReconciler) metalNodeHeartbeatStale(ctx context.Context
 		logf.FromContext(ctx).Error(err, "Failed to list MetalNodes", "namespace", namespace)
 		return false
 	}
-	stale := false
 	for i := range nodes.Items {
 		if nodes.Items[i].Status.IngressSPKI != pin {
 			continue
 		}
 		cond := meta.FindStatusCondition(nodes.Items[i].Status.Conditions, inferencev1alpha1.MetalNodeConditionAgentConnected)
 		if cond == nil || cond.Reason != inferencev1alpha1.MetalNodeReasonHeartbeatStale {
-			return false
+			return true
 		}
-		stale = true
 	}
-	return stale
+	return false
 }
 
 // metalHeartbeatRequeueDuration returns the RequeueAfter duration to use after
