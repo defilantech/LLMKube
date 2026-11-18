@@ -24,9 +24,16 @@ type stopEnginesOptions struct {
 	LogLevel    string
 }
 
-const stopEnginesUsage = "llmkube-metal-agent stop-engines [flags]: " +
-	"stop every engine this agent started and remove its records\n" +
-	"Stop the agent first (launchctl bootout gui/$(id -u)/com.llmkube.metal-agent), then run stop-engines.\n"
+// stopEnginesUsage is the subcommand's usage on goos, with the command that
+// stops the agent llmkube metal join installed there.
+func stopEnginesUsage(goos string) string {
+	stop := "systemctl --user stop llmkube-metal-agent.service"
+	if goos == "darwin" {
+		stop = "launchctl bootout gui/$(id -u)/com.llmkube.metal-agent"
+	}
+	return "llmkube-metal-agent stop-engines [flags]: stop every engine this agent started and remove its records\n" +
+		"Stop the agent first (" + stop + "), then run stop-engines.\n"
+}
 
 // parseStopEnginesArgs parses the subcommand's flags. --kubeconfig is the
 // flag controller-runtime registers on the default flag set, so it is added
@@ -36,7 +43,7 @@ func parseStopEnginesArgs(args []string) (stopEnginesOptions, error) {
 	fs := flag.NewFlagSet(metaljoin.StopEnginesCommand, flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 	fs.Usage = func() {
-		_, _ = fmt.Fprint(os.Stderr, stopEnginesUsage)
+		_, _ = fmt.Fprint(os.Stderr, stopEnginesUsage(hostGOOS))
 		fs.PrintDefaults()
 	}
 	fs.StringVar(&opts.StateDir, "state-dir", "",

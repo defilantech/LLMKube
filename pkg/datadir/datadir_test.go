@@ -28,8 +28,8 @@ func TestDirPerOS(t *testing.T) {
 		{"linux", "/xdg", "/xdg/llmkube"},
 		{"linux", "relative", "/home/u/.local/share/llmkube"},
 	} {
-		if got := dir(tc.goos, "/home/u", tc.xdg); got != tc.want {
-			t.Errorf("dir(%s, XDG_DATA_HOME=%q) = %q, want %q", tc.goos, tc.xdg, got, tc.want)
+		if got := DirFor(tc.goos, "/home/u", tc.xdg); got != tc.want {
+			t.Errorf("DirFor(%s, XDG_DATA_HOME=%q) = %q, want %q", tc.goos, tc.xdg, got, tc.want)
 		}
 	}
 }

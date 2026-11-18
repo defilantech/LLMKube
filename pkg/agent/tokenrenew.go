@@ -178,14 +178,15 @@ func (r *tokenRenewer) renewIfDue(ctx context.Context) time.Duration {
 }
 
 // tokenExpiredHint is how to give the agent a new token once cur has
-// expired, on goos. llmkube metal join runs only on macOS; elsewhere the
-// token is minted by hand and written over the token file.
+// expired, on goos. Off macOS a host may also have been joined by hand, so
+// the hint adds the kubectl command that mints a token for the token file.
 func tokenExpiredHint(goos string, cur serviceAccountToken, path string) string {
+	const join = "join the host again (llmkube metal token create, then llmkube metal join)"
 	if goos == "darwin" {
-		return "join the host again (llmkube metal token create, then llmkube metal join)"
+		return join
 	}
-	return fmt.Sprintf("mint a new token where you have cluster access "+
-		"(kubectl -n %s create token %s --duration=168h) and write it over %s", cur.namespace, cur.name, path)
+	return fmt.Sprintf("%s; on a host joined by hand, mint a new token where you have cluster access "+
+		"(kubectl -n %s create token %s --duration=168h) and write it over %s", join, cur.namespace, cur.name, path)
 }
 
 // renew requests a token with the current one's lifetime for the same

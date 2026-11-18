@@ -25,6 +25,7 @@ import (
 	"go.uber.org/zap/zaptest/observer"
 
 	"github.com/defilantech/llmkube/internal/platform"
+	"github.com/defilantech/llmkube/pkg/metaljoin"
 )
 
 func TestCheckHostPlatform(t *testing.T) {
@@ -114,6 +115,22 @@ func TestLogHailoDevicesNamesTheDevices(t *testing.T) {
 	got, _ := entries[0].ContextMap()["devices"].([]interface{})
 	if len(got) != 2 || got[0] != "/dev/hailo0" || got[1] != "/dev/hailo1" {
 		t.Errorf("devices = %v, want both device nodes", entries[0].ContextMap()["devices"])
+	}
+}
+
+// TestMacOSOnlyBinValuesCoverTheSharedTable: the agent reads a value for
+// every binary flag in metaljoin.MacOSOnlyBinFlags, the table join also
+// refuses on Linux, and for no other.
+func TestMacOSOnlyBinValuesCoverTheSharedTable(t *testing.T) {
+	values := macOSOnlyBinValues(&AgentConfig{})
+	if len(values) != len(metaljoin.MacOSOnlyBinFlags) {
+		t.Errorf("the agent reads %d macOS-only binary flags, the shared table has %d", len(values),
+			len(metaljoin.MacOSOnlyBinFlags))
+	}
+	for _, b := range metaljoin.MacOSOnlyBinFlags {
+		if _, ok := values[b.Flag]; !ok {
+			t.Errorf("the agent does not read --%s", b.Flag)
+		}
 	}
 }
 
