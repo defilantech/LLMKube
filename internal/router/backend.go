@@ -674,11 +674,17 @@ func (d *Dispatcher) Dispatch(
 		releasePrefill()
 		return nil, fmt.Errorf("upstream request: %w", err)
 	}
-	if resp.StatusCode >= 500 {
+	switch {
+	case resp.StatusCode == http.StatusNotImplemented:
+		// 501 says the backend does not implement this path or method, which
+		// a client can ask for on any unnamed /v1 path (#2470). It is a
+		// statement about the request, not the backend's health, so health is
+		// left as it was: no quarantine, and no reset of earlier failures.
+	case resp.StatusCode >= 500:
 		// Don't flip on 4xx: those are client errors, not backend
 		// problems. 5xx however means the backend itself misbehaved.
 		d.markUnhealthy(backend.Name, endpoint)
-	} else {
+	default:
 		d.markHealthy(backend.Name, endpoint)
 	}
 	if d.streamIdleTimeout > 0 {

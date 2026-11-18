@@ -33,14 +33,54 @@ import (
 	"encoding/json"
 )
 
-// usageEnvelope is the minimal OpenAI-compatible shape we read. Every field
-// is a pointer so "usage absent" is distinguishable from "usage all zeros".
+// openAIUsage is the usage object we read. Chat completions report
+// prompt_tokens and completion_tokens; the Responses API, and vLLM endpoints
+// built on its shapes such as /v1/decisions, report input_tokens and
+// output_tokens. Every field is a pointer so "usage absent" is
+// distinguishable from "usage all zeros".
+type openAIUsage struct {
+	PromptTokens     *int64 `json:"prompt_tokens"`
+	CompletionTokens *int64 `json:"completion_tokens"`
+	InputTokens      *int64 `json:"input_tokens"`
+	OutputTokens     *int64 `json:"output_tokens"`
+	TotalTokens      *int64 `json:"total_tokens"`
+}
+
+// counts returns the usage's prompt and completion counts, taking the
+// chat-completions fields and falling back to the Responses ones.
+func (u *openAIUsage) counts() (prompt, completion int64, ok bool) {
+	if u == nil {
+		return 0, 0, false
+	}
+	promptPtr, completionPtr := u.PromptTokens, u.CompletionTokens
+	if promptPtr == nil {
+		promptPtr = u.InputTokens
+	}
+	if completionPtr == nil {
+		completionPtr = u.OutputTokens
+	}
+	return usageCounts(promptPtr, completionPtr, u.TotalTokens)
+}
+
+// usageEnvelope is the minimal shape we read: a top-level usage object, or
+// for a streamed Responses API reply the response.completed event's
+// response.usage.
 type usageEnvelope struct {
-	Usage *struct {
-		PromptTokens     *int64 `json:"prompt_tokens"`
-		CompletionTokens *int64 `json:"completion_tokens"`
-		TotalTokens      *int64 `json:"total_tokens"`
-	} `json:"usage"`
+	Usage    *openAIUsage `json:"usage"`
+	Response *struct {
+		Usage *openAIUsage `json:"usage"`
+	} `json:"response"`
+}
+
+// usage returns the envelope's usage object, or nil when it carries none.
+func (e *usageEnvelope) usage() *openAIUsage {
+	if e.Usage != nil {
+		return e.Usage
+	}
+	if e.Response != nil {
+		return e.Response.Usage
+	}
+	return nil
 }
 
 // UsageTokens extracts prompt and completion token counts from a
@@ -52,10 +92,10 @@ func UsageTokens(body []byte) (prompt, completion int64, ok bool) {
 		return 0, 0, false
 	}
 	var env usageEnvelope
-	if err := json.Unmarshal(body, &env); err != nil || env.Usage == nil {
+	if err := json.Unmarshal(body, &env); err != nil {
 		return 0, 0, false
 	}
-	return usageCounts(env.Usage.PromptTokens, env.Usage.CompletionTokens, env.Usage.TotalTokens)
+	return env.usage().counts()
 }
 
 // UsageTokensFromSSE extracts usage from a buffered SSE stream. Providers
@@ -75,10 +115,10 @@ func UsageTokensFromSSE(body []byte) (prompt, completion int64, ok bool) {
 			continue
 		}
 		var env usageEnvelope
-		if err := json.Unmarshal(payload, &env); err != nil || env.Usage == nil {
+		if err := json.Unmarshal(payload, &env); err != nil {
 			continue
 		}
-		if p, c, ok2 := usageCounts(env.Usage.PromptTokens, env.Usage.CompletionTokens, env.Usage.TotalTokens); ok2 {
+		if p, c, ok2 := env.usage().counts(); ok2 {
 			prompt, completion, ok = p, c, true
 		}
 	}
