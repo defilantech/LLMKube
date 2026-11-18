@@ -5,6 +5,40 @@ All notable changes to LLMKube will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.19](https://github.com/defilantech/LLMKube/compare/v0.10.18...v0.10.19) (2026-11-18)
+
+
+### Features
+
+* **agent:** report Linux host capacity on the MetalNode ([#2541](https://github.com/defilantech/LLMKube/issues/2541)) ([2a28f21](https://github.com/defilantech/LLMKube/commit/2a28f217a944068ab3d02783401c6cde21ae0f50))
+* **cli:** metal token create names its target cluster and warns on a loopback server or a shared namespace ([#2555](https://github.com/defilantech/LLMKube/issues/2555)) ([4b6c2e2](https://github.com/defilantech/LLMKube/commit/4b6c2e2037527032f2ff18df1cb691ac07a259f1))
+* export InferenceService concurrency limit, context length, GPUs and config; allow parallelSlots above 64 for vLLM ([#2576](https://github.com/defilantech/LLMKube/issues/2576)) ([ffbdf4f](https://github.com/defilantech/LLMKube/commit/ffbdf4fe27a187e65db316f727c7ff80a7b03b41))
+* **metal-agent:** start on Linux hosts, experimentally ([#2542](https://github.com/defilantech/LLMKube/issues/2542)) ([c5740dc](https://github.com/defilantech/LLMKube/commit/c5740dcf73d27144b28fc124d2ed262c370392a0))
+* **metal:** check free disk space before a model download and report the model store size ([#2548](https://github.com/defilantech/LLMKube/issues/2548)) ([3ddfdc1](https://github.com/defilantech/LLMKube/commit/3ddfdc1ca1f7c5a5f602ae3bb32f3f5e56bb9135))
+* **metal:** report controller and agent version skew ([#2547](https://github.com/defilantech/LLMKube/issues/2547)) ([c240496](https://github.com/defilantech/LLMKube/commit/c240496b6c9207f3e1fcd4e7d87368f62efb8a12))
+* **router:** add spec.backendSelector to ModelRouter ([#2572](https://github.com/defilantech/LLMKube/issues/2572)) ([f07134c](https://github.com/defilantech/LLMKube/commit/f07134c7b963a946ddf7c5ab6f0685c5f9d38f21))
+* **router:** forward other POST /v1 paths to the model the request names ([#2544](https://github.com/defilantech/LLMKube/issues/2544)) ([0b9babc](https://github.com/defilantech/LLMKube/commit/0b9babc28057d0288324392e4b36e860c42ac5a4))
+* **router:** label per-endpoint metrics with pod and node, and count session bindings created ([#2574](https://github.com/defilantech/LLMKube/issues/2574)) ([79149ea](https://github.com/defilantech/LLMKube/commit/79149ea1632a2e56ae5bee891bffca6032b4bd5b))
+* **router:** per-pod KV, slot-utilization, running and waiting histograms, with a failed-scrape counter ([#2575](https://github.com/defilantech/LLMKube/issues/2575)) ([5952b32](https://github.com/defilantech/LLMKube/commit/5952b3271934f7f12c0dbd1685830d5163384e93))
+* ship third-party license and NOTICE files with release archives and images ([#2568](https://github.com/defilantech/LLMKube/issues/2568)) ([2ac4c44](https://github.com/defilantech/LLMKube/commit/2ac4c4476355f2ab3e246654ec7fd8222206a1bf))
+
+
+### Bug Fixes
+
+* **cli:** metal token create follow-ups from the [#2236](https://github.com/defilantech/LLMKube/issues/2236) review ([#2355](https://github.com/defilantech/LLMKube/issues/2355)) ([61ba31b](https://github.com/defilantech/LLMKube/commit/61ba31b6e9b89516e95ffefa473d5e19c74469c6))
+* **controller:** keep a Metal agent's refusal over a stale slice heartbeat ([#2556](https://github.com/defilantech/LLMKube/issues/2556)) ([6442fd5](https://github.com/defilantech/LLMKube/commit/6442fd541f553c02b029d72aefc4740bee938306))
+* **controller:** roll past a waitForIdle service whose pod is crash-looping ([#2557](https://github.com/defilantech/LLMKube/issues/2557)) ([d64655f](https://github.com/defilantech/LLMKube/commit/d64655fe695d5cdbb1b714e39d65820c00bec861))
+* **metal:** keep the engine while its Model is deleted and re-created ([#2546](https://github.com/defilantech/LLMKube/issues/2546)) ([b33a3e5](https://github.com/defilantech/LLMKube/commit/b33a3e5b6ffc5649d5db00b58971d38486c21b11))
+* **metal:** route the Mac client proxy by the model a request names ([#2543](https://github.com/defilantech/LLMKube/issues/2543)) ([7eda9a7](https://github.com/defilantech/LLMKube/commit/7eda9a74fc2d665ac3253cc5a024de871ba9d1f7))
+* **metal:** size a downloaded hybrid GGUF from its file's header ([#2551](https://github.com/defilantech/LLMKube/issues/2551)) ([30aad65](https://github.com/defilantech/LLMKube/commit/30aad65489cac27df8091b6b569666c0889bf882))
+* **model:** record the GGUF layer layout on the Model status ([#2559](https://github.com/defilantech/LLMKube/issues/2559)) ([e58aaa4](https://github.com/defilantech/LLMKube/commit/e58aaa450ccc88e72367a162a0f4b5dc586f0044))
+* use a memory-conscious default context for Llama 3.1 8B ([#2461](https://github.com/defilantech/LLMKube/issues/2461)) ([3f91c65](https://github.com/defilantech/LLMKube/commit/3f91c65cd7a9e2ca9d35eeb52bd239a31ae09acc))
+
+
+### Documentation
+
+* restore the standard Apache 2.0 wording in LICENSE clause 9 ([#2563](https://github.com/defilantech/LLMKube/issues/2563)) ([e18be27](https://github.com/defilantech/LLMKube/commit/e18be27d326d8c7b2d093392993b239120570eed))
+
 ## [0.10.18](https://github.com/defilantech/LLMKube/compare/v0.10.17...v0.10.18) (2026-11-14)
 
 
