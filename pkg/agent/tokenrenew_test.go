@@ -247,10 +247,11 @@ func TestTokenExpiredHint(t *testing.T) {
 	}{
 		{goos: "darwin", want: []string{"join the host again", "llmkube metal join"}},
 		{
-			goos:    "linux",
-			want:    []string{"kubectl -n edge create token llmkube-metal-edge-1", "write it over /srv/agent/token"},
-			notWant: []string{"metal join"},
+			goos: "linux",
+			want: []string{"join the host again", "llmkube metal join",
+				"kubectl -n edge create token llmkube-metal-edge-1", "write it over /srv/agent/token"},
 		},
+		{goos: "darwin", notWant: []string{"kubectl"}},
 	} {
 		t.Run(tc.goos, func(t *testing.T) {
 			got := tokenExpiredHint(tc.goos, cur, "/srv/agent/token")

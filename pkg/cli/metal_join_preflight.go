@@ -23,7 +23,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -32,7 +34,8 @@ import (
 
 // The checks here run before join redeems the join string, which is single
 // use: each one stands for a failure that would otherwise show only once the
-// string is spent, as an agent launchd cannot start or keeps restarting.
+// string is spent, as an agent launchd or systemd cannot start or keeps
+// restarting.
 
 // checkMetalAgentGUISession refuses when this user has no GUI login session.
 // The agent is a LaunchAgent in the gui/<uid> domain, which exists only while
@@ -63,9 +66,14 @@ const lsofTimeout = 5 * time.Second
 // best effort: run as this user, lsof cannot see other users' sockets, and
 // any failure means "cannot tell".
 func lsofPortHolders(ctx context.Context, port int) []portHolder {
+	return lsofPortHoldersWith(ctx, "/usr/sbin/lsof", port)
+}
+
+// lsofPortHoldersWith is lsofPortHolders with the lsof binary lsof.
+func lsofPortHoldersWith(ctx context.Context, lsof string, port int) []portHolder {
 	ctx, cancel := context.WithTimeout(ctx, lsofTimeout)
 	defer cancel()
-	out, _ := exec.CommandContext(ctx, "/usr/sbin/lsof", "-nP", "-iTCP:"+strconv.Itoa(port),
+	out, _ := exec.CommandContext(ctx, lsof, "-nP", "-iTCP:"+strconv.Itoa(port),
 		"-sTCP:LISTEN", "-Fpc").Output()
 	return parseLsofHolders(out)
 }
@@ -89,10 +97,53 @@ func parseLsofHolders(out []byte) []portHolder {
 	return holders
 }
 
+// procPIDListens reports whether process pid holds a socket listening on TCP
+// port, from proc (/proc): the listening sockets' inodes in net/tcp and
+// net/tcp6, and pid's open files in <pid>/fd. It needs no lsof, and sees the
+// processes of this user.
+func procPIDListens(proc string, pid, port int) bool {
+	listening := map[string]bool{}
+	for _, table := range []string{"tcp", "tcp6"} {
+		raw, err := os.ReadFile(filepath.Join(proc, "net", table))
+		if err != nil {
+			continue
+		}
+		for _, line := range strings.Split(string(raw), "\n")[1:] {
+			// sl local_address rem_address st tx:rx tr:when retrnsmt uid timeout inode
+			f := strings.Fields(line)
+			if len(f) < 10 || f[3] != "0A" {
+				continue
+			}
+			_, hexPort, ok := strings.Cut(f[1], ":")
+			if p, err := strconv.ParseUint(hexPort, 16, 16); ok && err == nil && int(p) == port {
+				listening["socket:["+f[9]+"]"] = true
+			}
+		}
+	}
+	if len(listening) == 0 {
+		return false
+	}
+	fdDir := filepath.Join(proc, strconv.Itoa(pid), "fd")
+	fds, err := os.ReadDir(fdDir)
+	if err != nil {
+		return false
+	}
+	for _, fd := range fds {
+		if target, err := os.Readlink(filepath.Join(fdDir, fd.Name())); err == nil && listening[target] {
+			return true
+		}
+	}
+	return false
+}
+
 // metalAgentJobPID is the pid of the com.llmkube.metal-agent job join is
 // about to boot out, from launchctl print's top-level "pid = N" line, or 0
-// when it is not loaded or not running.
+// when it is not loaded or not running. On Linux it is the systemd unit's
+// main pid.
 func metalAgentJobPID(ctx context.Context, host metalHost) int {
+	if host.goos == goosLinux {
+		return systemdAgentMainPID(ctx, host)
+	}
 	out, err := host.launchctl(ctx, "print", "gui/"+strconv.Itoa(host.uid)+"/"+metalAgentLabel)
 	if err != nil {
 		return 0
@@ -124,7 +175,7 @@ func checkMetalAgentPorts(ctx context.Context, host metalHost, ports []metalAgen
 		if replaced < 0 {
 			replaced = metalAgentJobPID(ctx, host)
 		}
-		if replaced > 0 && heldBy(holders, replaced) {
+		if replaced > 0 && (heldBy(holders, replaced) || host.pidListens != nil && host.pidListens(replaced, p.port)) {
 			_, _ = fmt.Fprintf(log, "port %d is held by the agent this join replaces (pid %d), which join stops first\n",
 				p.port, replaced)
 			continue
@@ -155,16 +206,16 @@ func metalAgentPortError(host metalHost, p metalAgentPort, err error, holders []
 	if !errors.Is(err, syscall.EADDRINUSE) {
 		state = fmt.Sprintf("not available (%v)", err)
 	}
-	effect := "the agent would exit at startup, and launchd would restart it every 30 seconds"
+	svc := host.service()
+	effect := "the agent would exit at startup, and " + svc.supervisor + " would restart it every 30 seconds"
 	if !p.fatal {
 		effect = "the agent would run without it (" + p.flag + "=0 turns it off)"
 	}
 	msg := fmt.Sprintf("port %d (%s), which the agent's %s (--%s) binds, is %s; %s. Stop that process, or give "+
 		"the agent another port with --agent-arg %s=<free port>", p.port, p.addr, p.what, p.flag, state, effect, p.flag)
-	if replaced > 0 && len(holders) == 0 {
+	if replaced > 0 && len(holders) == 0 && host.pidListens == nil {
 		// lsof could not tell; it may still be the agent join replaces.
-		msg += fmt.Sprintf(". If it is the agent join replaces (pid %d), stop it first: launchctl bootout gui/%d/%s",
-			replaced, host.uid, metalAgentLabel)
+		msg += fmt.Sprintf(". If it is the agent join replaces (pid %d), stop it first: %s", replaced, svc.stopAgent)
 	}
 	return errors.New(msg + ". The join string has not been used")
 }
