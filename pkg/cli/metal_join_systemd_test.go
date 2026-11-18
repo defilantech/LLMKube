@@ -25,6 +25,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	goruntime "runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -65,6 +66,7 @@ type fakeLinux struct {
 	noUserManager bool
 	lingering     bool
 	uid           int
+	username      string
 	pid           int
 	onAgent       func(args []string) error
 	busy          map[string]error
@@ -73,7 +75,7 @@ type fakeLinux struct {
 
 func newFakeLinux(t *testing.T) *fakeLinux {
 	t.Helper()
-	m := &fakeLinux{home: t.TempDir(), uid: 1000}
+	m := &fakeLinux{home: t.TempDir(), uid: 1000, username: "agent"}
 	m.agentBin = filepath.Join(t.TempDir(), "bin", metalAgentBinary)
 	if err := os.MkdirAll(filepath.Dir(m.agentBin), 0o755); err != nil {
 		t.Fatal(err)
@@ -98,7 +100,7 @@ func (m *fakeLinux) host(t *testing.T) metalHost {
 		goos:        goosLinux,
 		home:        m.home,
 		uid:         m.uid,
-		username:    "agent",
+		username:    m.username,
 		xdgDataHome: m.xdgDataHome,
 		lingering:   func() bool { return m.lingering },
 		launchctl: func(_ context.Context, args ...string) (string, error) {
@@ -826,10 +828,12 @@ func TestSystemdLeaveReloadsAfterAFailedRemoval(t *testing.T) {
 }
 
 // TestSystemdJoinSaysHowToStartAfterSystemctlFails: the string is used up
-// by then, so the error must say how to start the agent without a new one.
+// by then, so the error must say how to start the agent without a new one. A
+// failed stop fails join before enable --now, which would be a no-op on a
+// unit still active.
 func TestSystemdJoinSaysHowToStartAfterSystemctlFails(t *testing.T) {
 	_, _, ns := metalEnvtest(t)
-	for _, step := range []string{"daemon-reload", "enable"} {
+	for _, step := range []string{"daemon-reload", "stop", "enable"} {
 		t.Run(step, func(t *testing.T) {
 			host := newFakeLinux(t)
 			host.failOn = step
@@ -841,7 +845,36 @@ func TestSystemdJoinSaysHowToStartAfterSystemctlFails(t *testing.T) {
 			if _, err := os.Stat(host.paths().Unit); err != nil {
 				t.Errorf("the unit to start by hand is gone: %v", err)
 			}
+			if step == "stop" && slices.Contains(host.systemctlCalls(), "enable --now "+systemdAgentUnit) {
+				t.Errorf("join ran enable --now after a failed stop: %q", host.systemctlCalls())
+			}
 		})
+	}
+}
+
+// TestSystemdJoinLingerHintWithoutAUserName: with no user name known, the
+// enable-linger hints name the uid.
+func TestSystemdJoinLingerHintWithoutAUserName(t *testing.T) {
+	_, _, ns := metalEnvtest(t)
+	const want = "loginctl enable-linger 1000"
+
+	host := newFakeLinux(t)
+	host.username = ""
+	joinString, _ := issueJoinString(t, ns)
+	_, stderr, err := runMetal(t, "join", joinString, "--wait", "0")
+	if err != nil {
+		t.Fatalf("join: %v\n%s", err, stderr)
+	}
+	if !strings.Contains(stderr, "sudo "+want+"\n") {
+		t.Errorf("join without lingering or a user name: stderr %q, want %q", stderr, want)
+	}
+
+	host = newFakeLinux(t)
+	host.username = ""
+	host.noUserManager = true
+	joinString, _ = issueJoinString(t, ns)
+	if _, _, err := runMetal(t, "join", joinString, "--wait", "0"); err == nil || !strings.Contains(err.Error(), want) {
+		t.Errorf("join with no systemd user instance or user name: err = %v, want it to say %q", err, want)
 	}
 }
 

@@ -1,0 +1,97 @@
+name: E2E Linux host agent (kind, Hailo-10H simulator)
+
+# Runs hack/e2e-host-agent.sh: the operator in kind and two Linux host
+# agents, each next to a hailo-ollama simulator, serving hailo:// Models
+# through the relay.
+#
+# Scoped to the paths that build what it runs: the agent, the operator and
+# relay images, the llmkube CLI that joins the hosts, and the simulator. A
+# path-filtered workflow is not a required check and has no merge_group
+# trigger: GitHub ignores paths filters for merge_group (#2379).
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'pkg/agent/**'
+      - 'cmd/metal-agent/**'
+      - 'api/**'
+      - 'internal/controller/**'
+      - 'internal/relay/**'
+      - 'internal/router/**'
+      - 'internal/webhook/**'
+      - 'cmd/router-proxy/**'
+      - 'cmd/main.go'
+      - 'cmd/cli/**'
+      - 'pkg/cli/**'
+      - 'config/**'
+      - 'Dockerfile*'
+      - 'test/hailosim/**'
+      - 'hack/e2e-host-agent.sh'
+      - 'hack/go-mod-download.sh'
+      - 'Makefile'
+      - 'go.mod'
+      - 'go.sum'
+      - '.github/workflows/test-e2e-host-agent.yml'
+  pull_request:
+    paths:
+      - 'pkg/agent/**'
+      - 'cmd/metal-agent/**'
+      - 'api/**'
+      - 'internal/controller/**'
+      - 'internal/relay/**'
+      - 'internal/router/**'
+      - 'internal/webhook/**'
+      - 'cmd/router-proxy/**'
+      - 'cmd/main.go'
+      - 'cmd/cli/**'
+      - 'pkg/cli/**'
+      - 'config/**'
+      - 'Dockerfile*'
+      - 'test/hailosim/**'
+      - 'hack/e2e-host-agent.sh'
+      - 'hack/go-mod-download.sh'
+      - 'Makefile'
+      - 'go.mod'
+      - 'go.sum'
+      - '.github/workflows/test-e2e-host-agent.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A new push to a pull request cancels the run it supersedes. Pushes to main
+# and manual runs each get a group of their own, so none of them is cancelled.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  test-e2e-host-agent:
+    name: Linux host agents with the Hailo-10H simulator (kind)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Clone the code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      - name: Download Go modules
+        # Once, before any step builds; retried on network errors only (#2380).
+        run: hack/go-mod-download.sh
+
+      - name: Install the latest version of kind
+        run: |
+          curl -Lo ./kind https://kind.sigs.k8s.io/dl/latest/kind-linux-amd64
+          chmod +x ./kind
+          sudo mv ./kind /usr/local/bin/kind
+          kind version
+
+      - name: Run the host agent e2e
+        env:
+          KIND_CLUSTER: llmkube-host-agent-e2e
+        run: make test-e2e-host-agent

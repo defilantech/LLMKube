@@ -382,6 +382,7 @@ var _ = Describe("determinePhase", func() {
 		Entry("sourceSecretRef Secret not allowed", inferencev1alpha1.ReasonSourceSecretNotAllowed),
 		Entry("runtime with no executor on the agent", inferencev1alpha1.ReasonRuntimeNotAvailable),
 		Entry("runtime that cannot serve the Model's source", inferencev1alpha1.ReasonRuntimeCannotServeSource),
+		Entry("a second hailo:// service on the host", inferencev1alpha1.ReasonHailoDeviceInUse),
 		Entry("a start that failed and is being retried", inferencev1alpha1.ReasonStartFailed),
 	)
 

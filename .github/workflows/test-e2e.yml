@@ -8,6 +8,9 @@ on:
   # The merge queue runs the required checks on the merged result before it
   # lands (#2379). GitHub ignores paths filters for merge_group, which is why
   # the path-filtered workflows are not required checks and have no trigger.
+  # No job here is a required check either: those are Unit and envtest, Lint
+  # and static checks, and DCO (CONTRIBUTING.md). A failure here shows on the
+  # pull request and in the queue without stopping the merge.
   merge_group:
     types: [checks_requested]
 
@@ -62,11 +65,12 @@ jobs:
   test-e2e-quota:
     name: Run on Ubuntu (kind, GPUQuota webhook via Helm)
     runs-on: ubuntu-latest
-    # Best-effort while this Helm-based Context is hardened in CI; the default
-    # kind job above remains the merge gate. The GPUQuota validating webhook
-    # (#416) ships only through the Helm chart (multitenancy.enabled), so unlike
-    # the make-deploy Contexts it needs Helm and a self-contained release
-    # rather than the shared kustomize deploy — hence its own focused job.
+    # Best-effort while this Helm-based Context is hardened in CI: unlike the
+    # default kind job above, a failure here does not fail the workflow. The
+    # GPUQuota validating webhook (#416) ships only through the Helm chart
+    # (multitenancy.enabled), so unlike the make-deploy Contexts it needs Helm
+    # and a self-contained release rather than the shared kustomize deploy —
+    # hence its own focused job.
     continue-on-error: true
     steps:
       - name: Clone the code
@@ -115,11 +119,11 @@ jobs:
   test-e2e-apisix:
     name: Run on Ubuntu (kind, APISIX ai-proxy-multi via Helm)
     runs-on: ubuntu-latest
-    # Best-effort while this Helm-based Context is hardened in CI; the default
-    # kind job above remains the merge gate. It Helm-installs the operator chart
-    # and APISIX (standalone mode) and serves the stub upstream as keyed
-    # InferenceServices behind ai-proxy-multi, so it needs Helm and a
-    # self-contained cluster, hence its own focused job.
+    # Best-effort while this Helm-based Context is hardened in CI: unlike the
+    # default kind job above, a failure here does not fail the workflow. It
+    # Helm-installs the operator chart and APISIX (standalone mode) and serves
+    # the stub upstream as keyed InferenceServices behind ai-proxy-multi, so it
+    # needs Helm and a self-contained cluster, hence its own focused job.
     continue-on-error: true
     steps:
       - name: Clone the code
@@ -167,7 +171,8 @@ jobs:
     name: Run on Ubuntu (kind, two workers, shared host directory)
     runs-on: ubuntu-latest
     # Best-effort while the two-worker harness settles in CI, like the other
-    # recent e2e jobs; the default kind job above remains the merge gate.
+    # recent e2e jobs: unlike the default kind job above, a failure here does
+    # not fail the workflow.
     continue-on-error: true
     steps:
       - name: Clone the code
@@ -208,10 +213,10 @@ jobs:
   test-e2e-longhorn:
     name: Run on Ubuntu (kind + Longhorn, restrictive storage)
     runs-on: ubuntu-latest
-    # Best-effort while the Longhorn-in-CI setup is hardened. The default
-    # kind job above remains the merge gate. This job catches restrictive-
-    # storage-class regressions (refs #418, #420) and will be promoted to
-    # required once stable.
+    # Best-effort while the Longhorn-in-CI setup is hardened: unlike the
+    # default kind job above, a failure here does not fail the workflow. This
+    # job catches restrictive-storage-class regressions (refs #418, #420) and
+    # will be promoted to required once stable.
     continue-on-error: true
     steps:
       - name: Clone the code
@@ -297,10 +302,10 @@ jobs:
   test-e2e-openshift:
     name: Run on Ubuntu (MicroShift via MINC, OpenShift SCC)
     runs-on: ubuntu-latest
-    # Best-effort while the MicroShift-in-CI setup is hardened. The
-    # default kind job above remains the merge gate. This job catches
-    # OpenShift SCC admission regressions (refs #418, #419, #421) and
-    # will be promoted to required once stable.
+    # Best-effort while the MicroShift-in-CI setup is hardened: unlike the
+    # default kind job above, a failure here does not fail the workflow.
+    # This job catches OpenShift SCC admission regressions (refs #418, #419,
+    # #421) and will be promoted to required once stable.
     #
     # Uses minc-org/minc to run MicroShift as a privileged Docker
     # container on the runner. MINC's own CI runs on ubuntu-24.04, so

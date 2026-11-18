@@ -76,8 +76,7 @@ jobs:
             echo "::error::no linux metal-agent binary under dist/"
             exit 1
           fi
-          file "${bins[@]}"
-          if file "${bins[@]}" | grep -v 'statically linked'; then
+          if file "${bins[@]}" | tee /dev/stderr | grep -v 'statically linked'; then
             echo "::error::a linux metal-agent binary is not statically linked"
             exit 1
           fi

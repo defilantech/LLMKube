@@ -442,6 +442,21 @@ spec:
 Like any Model change, editing the source does not restart a running
 service; change the InferenceService (or restart the agent) to pick it up.
 
+Clients send the hailo-ollama tag as `model` in the request body
+(`"model": "qwen2.5-instruct:1.5b"`), not the InferenceService's or the
+Model's name: nothing rewrites it, and hailo-ollama answers a name it does not
+know with `{"error":"model '<name>' not found"}`, with status 200.
+
+The agent serves one `hailo://` InferenceService per host: hailo-ollama keeps
+one model loaded on the Hailo-10H and reloads it on every switch. While one
+service holds the device (starting, serving, or owed a restart after failed
+health checks), the agent refuses a second one with `HailoDeviceInUse`, which
+`status.schedulingStatus` and a Warning event show, with a message naming the
+service that holds it. The first keeps serving. Delete the first or scale it
+to zero, and the agent starts the second at its next re-check, within a
+minute. Restarting or changing the service that holds the device does not
+refuse it.
+
 Before it pulls, the agent checks that the daemon on `--ollama-port` is
 hailo-ollama (it serves `GET /hailo/v1/list`) and that it lists the tag, so a
 host running stock Ollama refuses the service instead of pulling a different
@@ -467,12 +482,18 @@ certificates. `dev-public.hailo.ai` is public, so it needs no
 link-local address through, which matters when `--hailo-library-url` points
 at a mirror on your network or at the simulator.
 
+The estimate is the HEF's size (2.2 GiB for `qwen2.5-instruct:1.5b`), and like
+any `runtime: ollama` service it is budgeted against the host's RAM, not the
+Hailo-10H's own 8 GB. That is conservative: the weights run from the device's
+memory, so the host gives up less than the estimate, and a host short of RAM
+is refused before anything is pulled. Admission does not check the device's
+memory; a HEF larger than it fails when hailo-ollama loads it. To test that
+limit, use the simulator's `HAILO_SIM_DEVICE_MEMORY`.
+
 ### Known limits
 
 Checked on a Raspberry Pi 5 with an AI HAT+ 2:
 
-- Clients must send the hailo-ollama tag (`qwen2.5-instruct:1.5b`) as
-  `model` in the request body. Nothing rewrites the service's model name.
 - hailo-ollama serves only chat and generation. Through the relay it
   answers `GET /`, `POST /api/chat`, `POST /api/generate`, `GET /api/tags`,
   `POST /api/show`, `GET /api/version`, `GET /api/ps` and
@@ -484,16 +505,11 @@ Checked on a Raspberry Pi 5 with an AI HAT+ 2:
   `GET /hailo/v1/list`, on the host only.
 - `created` in `/v1/chat/completions` is in nanoseconds.
 - Requests need `Content-Type: application/json`.
-- hailo-ollama keeps one model loaded and reloads on every switch, so run one
-  `InferenceService` per Hailo-10H.
-- hailo-ollama runs one generation at a time and does not stop one when its
-  client disconnects, so a request that times out keeps the device busy until
-  its answer is done, and the next request waits behind it. Set `max_tokens`
-  on requests to bound that.
-- The memory estimate is the HEF's size (2.2 GiB for `qwen2.5-instruct:1.5b`),
-  but the budget it is checked against is the host's RAM, not the Hailo-10H's
-  own memory. To test the device's limit, use the simulator's
-  `HAILO_SIM_DEVICE_MEMORY`.
+- hailo-ollama runs one generation at a time. When a client disconnects or
+  times out, LLMKube's proxies close their connection to hailo-ollama, but
+  hailo-ollama keeps generating until the answer is done, so the device stays
+  busy and the next request waits behind it. Set `max_tokens` on requests to
+  bound that.
 
 ### Raspberry Pi 5 with an AI HAT+ 2
 
@@ -543,3 +559,14 @@ into the agent's container, and pass `--hailo-manifests-dir` with their path,
 `--hailo-library-url http://127.0.0.1:8001` (the simulator's
 `HAILO_SIM_LIBRARY_LISTEN`) and `--allowed-download-hosts 127.0.0.1`, since
 the size check refuses loopback addresses that the allowlist does not name.
+
+`make test-e2e-host-agent` runs that whole path in kind: the operator, and two
+Linux agents in their own namespaces, each next to a simulator. It checks that
+both pass the dial-back, that each serves its own `hailo://` service through
+the relay and only its own, that memory admission sizes the HEF before
+anything is pulled, that a second `hailo://` service on one host is refused
+with `HailoDeviceInUse` while the first keeps serving, and that a `hailo://`
+Model on another accelerator is refused. CI runs it in the
+`test-e2e-host-agent.yml` workflow on pull requests and pushes to `main` that
+touch the agent, the operator, the relay, the CLI or the simulator. It is not
+a required check, so a failure does not block a merge.

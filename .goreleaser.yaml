@@ -428,22 +428,22 @@ release:
     **macOS**
     ```bash
     # ARM64 (Apple Silicon)
-    curl -L https://github.com/defilantech/LLMKube/releases/download/v{{ .Version }}/LLMKube_{{ .Version }}_darwin_arm64.tar.gz | tar xz
+    curl -fL https://github.com/defilantech/LLMKube/releases/download/v{{ .Version }}/LLMKube_{{ .Version }}_darwin_arm64.tar.gz | tar xz
     sudo mv llmkube /usr/local/bin/
 
     # AMD64
-    curl -L https://github.com/defilantech/LLMKube/releases/download/v{{ .Version }}/LLMKube_{{ .Version }}_darwin_amd64.tar.gz | tar xz
+    curl -fL https://github.com/defilantech/LLMKube/releases/download/v{{ .Version }}/LLMKube_{{ .Version }}_darwin_amd64.tar.gz | tar xz
     sudo mv llmkube /usr/local/bin/
     ```
 
     **Linux**
     ```bash
     # AMD64
-    curl -L https://github.com/defilantech/LLMKube/releases/download/v{{ .Version }}/LLMKube_{{ .Version }}_linux_amd64.tar.gz | tar xz
+    curl -fL https://github.com/defilantech/LLMKube/releases/download/v{{ .Version }}/LLMKube_{{ .Version }}_linux_amd64.tar.gz | tar xz
     sudo mv llmkube /usr/local/bin/
 
     # ARM64
-    curl -L https://github.com/defilantech/LLMKube/releases/download/v{{ .Version }}/LLMKube_{{ .Version }}_linux_arm64.tar.gz | tar xz
+    curl -fL https://github.com/defilantech/LLMKube/releases/download/v{{ .Version }}/LLMKube_{{ .Version }}_linux_arm64.tar.gz | tar xz
     sudo mv llmkube /usr/local/bin/
     ```
 
@@ -453,10 +453,10 @@ release:
     Static metal-agent builds for a Linux host; see the [Linux host agent guide](https://llmkube.com/docs/guides/linux-host-agent) to join one to a cluster.
     ```bash
     # ARM64
-    curl -L https://github.com/defilantech/LLMKube/releases/download/v{{ .Version }}/LLMKube-metal-agent_{{ .Version }}_linux_arm64.tar.gz | tar xz llmkube-metal-agent
+    curl -fL https://github.com/defilantech/LLMKube/releases/download/v{{ .Version }}/LLMKube-metal-agent_{{ .Version }}_linux_arm64.tar.gz | tar xz llmkube-metal-agent
 
     # AMD64
-    curl -L https://github.com/defilantech/LLMKube/releases/download/v{{ .Version }}/LLMKube-metal-agent_{{ .Version }}_linux_amd64.tar.gz | tar xz llmkube-metal-agent
+    curl -fL https://github.com/defilantech/LLMKube/releases/download/v{{ .Version }}/LLMKube-metal-agent_{{ .Version }}_linux_amd64.tar.gz | tar xz llmkube-metal-agent
     ```
 
     ### Verify Installation

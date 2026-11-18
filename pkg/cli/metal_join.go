@@ -162,6 +162,15 @@ var newMetalHost = func() (metalHost, error) {
 	return h, nil
 }
 
+// lingerName names this user to loginctl enable-linger: the user name, or the
+// uid when no name is known.
+func (h metalHost) lingerName() string {
+	if h.username != "" {
+		return h.username
+	}
+	return strconv.Itoa(h.uid)
+}
+
 func currentUsername() string {
 	if u, err := osuser.Current(); err == nil {
 		return u.Username

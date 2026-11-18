@@ -403,6 +403,11 @@ type MetalAgent struct {
 	// twice, enough to exhaust host memory.
 	starting map[string]bool
 
+	// hailoStarting is the key of the hailo:// start in flight, between
+	// claimHailoDevice and the store of its process; empty when none is.
+	// Guarded by mu.
+	hailoStarting string
+
 	// reservedMemory holds the admitted estimate of each start that
 	// passed memory admission and has not yet stored its process, keyed like
 	// processes. Admission counts it next to running processes, so two
@@ -527,6 +532,10 @@ type ManagedProcess struct {
 	// fit next to them, not just on its own (#2080). Zero when admission did
 	// not size the process (memory-check-mode=warn after a failed estimate).
 	AdmittedBytes uint64
+
+	// Hailo is set when the process serves a hailo:// source, so it holds
+	// the host's Hailo device (see claimHailoDevice).
+	Hailo bool
 
 	// PGID and StartToken are the engine's process group and kernel start
 	// token, as its record holds them (#2079).
@@ -1513,12 +1522,14 @@ func (a *MetalAgent) reconcileProcess(ctx context.Context, isvc *inferencev1alph
 		return err
 	}
 
-	// A hailo:// source on another runtime is refused before memory
-	// admission, for the same reason; the llama.cpp path would try to
-	// download it.
-	if err := inferencev1alpha1.HailoSourceRuntimeError(model, runtime); err != nil {
-		return a.refuseStart(ctx, isvc, EventReasonRuntimeCannotServeSource, err.Error())
+	// A hailo:// source on another runtime, or while another service holds
+	// the host's Hailo device, is refused before memory admission, for the
+	// same reason; the llama.cpp path would try to download it.
+	releaseHailo, err := a.checkHailoSource(ctx, isvc, key, model, runtime)
+	if err != nil {
+		return err
 	}
+	defer releaseHailo()
 	if err := a.validateRuntimeFormat(model, runtime); err != nil {
 		return err
 	}
@@ -1606,6 +1617,7 @@ func (a *MetalAgent) reconcileProcess(ctx context.Context, isvc *inferencev1alph
 	// The served model name lets the client proxy route a request that names
 	// it when several engines run (#2412).
 	process.ServedModel = engineServedName(runtime, cfg)
+	process.Hailo = inferencev1alpha1.IsHailoSource(model.Spec.Source)
 
 	// Store process and update metrics. The admission reservation moves onto
 	// the record in the same critical section, so the budget it holds is

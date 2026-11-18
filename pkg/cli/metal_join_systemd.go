@@ -118,8 +118,8 @@ func runSystemdJoin(ctx context.Context, host metalHost, p metaljoin.Payload, op
 		return err
 	}
 	if !host.lingering() {
-		_, _ = fmt.Fprintf(log, "the agent runs while %s is logged in; to keep it running after logout and start "+
-			"it at boot, an admin runs: sudo loginctl enable-linger %s\n", host.username, host.username)
+		_, _ = fmt.Fprintf(log, "the agent runs only while this user is logged in; to keep it running after logout "+
+			"and start it at boot, an admin runs: sudo loginctl enable-linger %s\n", host.lingerName())
 	}
 	return finishMetalJoin(ctx, host, p, paths.Kubeconfig, started, opts.wait, systemdAgentLogs, out, log)
 }
@@ -238,7 +238,7 @@ func checkSystemdUserManager(ctx context.Context, host metalHost) (string, error
 			"user unit, so join would use up the join string and then fail to start it. Run join in a login "+
 			"session of this user (over SSH, one that sets XDG_RUNTIME_DIR), or have an admin turn on lingering "+
 			"(sudo loginctl enable-linger %s), and run join again; the join string has not been used",
-			err, host.username)
+			err, host.lingerName())
 	}
 	return env, nil
 }
@@ -329,8 +329,11 @@ func installSystemdAgent(ctx context.Context, host metalHost, paths metalAgentPa
 		return time.Time{}, startErr(err)
 	}
 	// stop returns once the previous agent has exited; a unit that is not
-	// running is not an error.
-	_, _ = host.systemctl(ctx, "stop", systemdAgentUnit)
+	// running is not an error. One still active would make enable --now a
+	// no-op, leaving the old agent running with its old arguments.
+	if _, err := host.systemctl(ctx, "stop", systemdAgentUnit); err != nil {
+		return time.Time{}, startErr(err)
+	}
 	// Truncated to the Lease's renewTime precision, so a renewal in the
 	// same microsecond still counts as the new agent's.
 	started := time.Now().Truncate(time.Microsecond)

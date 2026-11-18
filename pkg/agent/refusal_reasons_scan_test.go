@@ -63,6 +63,7 @@ var knownReasonConstants = map[string]string{
 	"EventReasonSourceSecretNotAllowed":   EventReasonSourceSecretNotAllowed,
 	"EventReasonRuntimeNotAvailable":      EventReasonRuntimeNotAvailable,
 	"EventReasonRuntimeCannotServeSource": EventReasonRuntimeCannotServeSource,
+	"EventReasonHailoDeviceInUse":         EventReasonHailoDeviceInUse,
 	"EventReasonMemoryCheckFailed":        EventReasonMemoryCheckFailed,
 	"EventReasonInsufficientMemory":       EventReasonInsufficientMemory,
 	"EventReasonStartFailed":              EventReasonStartFailed,

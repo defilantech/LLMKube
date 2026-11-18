@@ -49,6 +49,7 @@ const (
 	EventReasonSourceSecretNotAllowed   = inferencev1alpha1.ReasonSourceSecretNotAllowed
 	EventReasonRuntimeNotAvailable      = inferencev1alpha1.ReasonRuntimeNotAvailable
 	EventReasonRuntimeCannotServeSource = inferencev1alpha1.ReasonRuntimeCannotServeSource
+	EventReasonHailoDeviceInUse         = inferencev1alpha1.ReasonHailoDeviceInUse
 )
 
 // runtimeNotAvailableMessage is the refusal message for an InferenceService
