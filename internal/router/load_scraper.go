@@ -49,6 +49,7 @@ const (
 type scrapeTarget struct {
 	backend string
 	profile MetricsProfile
+	limit   int32
 }
 
 // LoadScraper reads each pod's engine metrics for every LoadAware backend
@@ -83,7 +84,7 @@ func NewLoadScraper(cfg *Config, disp *Dispatcher, routerName string, logger *sl
 		if b.Balancing == nil || b.Balancing.Mode != BalancingLoadAware || b.Metrics == nil {
 			continue
 		}
-		s.targets = append(s.targets, scrapeTarget{backend: b.Name, profile: *b.Metrics})
+		s.targets = append(s.targets, scrapeTarget{backend: b.Name, profile: *b.Metrics, limit: b.ConcurrencyLimit})
 	}
 	return s
 }
@@ -116,18 +117,28 @@ var errPollUnreachable = errors.New("endpoint unreachable")
 // toward the endpoint's poll quarantine; any HTTP response clears it, since a
 // runtime without the metrics path may still serve inference.
 func (s *LoadScraper) scrapeOnce(ctx context.Context) {
-	var wg sync.WaitGroup
+	var (
+		wg       sync.WaitGroup
+		mu       sync.Mutex
+		observed = map[gaugeKey]struct{}{}
+	)
 	for _, tgt := range s.targets {
 		for _, ep := range s.disp.EndpointsOf(tgt.backend) {
 			wg.Add(1)
 			go func(tgt scrapeTarget, ep string) {
 				defer wg.Done()
-				running, waiting, kv, err := s.scrape(ctx, ep, tgt.profile)
+				running, waiting, kv, haveKV, err := s.scrape(ctx, ep, tgt.profile)
 				if ctx.Err() != nil {
 					return // shutting down; the failure says nothing about the endpoint
 				}
 				if err != nil {
 					s.logger.Debug("engine metrics scrape failed", "backend", tgt.backend, "endpoint", ep, "error", err)
+					if s.stillLive(tgt.backend, ep) {
+						k := s.countScrapeFailure(tgt.backend, ep)
+						mu.Lock()
+						observed[k] = struct{}{}
+						mu.Unlock()
+					}
 					if errors.Is(err, errPollUnreachable) {
 						s.disp.recordPollFailure(tgt.backend, ep, err)
 					} else {
@@ -140,6 +151,10 @@ func (s *LoadScraper) scrapeOnce(ctx context.Context) {
 				}
 				s.disp.recordPollAnswered(tgt.backend, ep)
 				s.disp.RecordSample(tgt.backend, ep, picker.Sample{Running: running, Waiting: waiting, KVUsage: kv, At: s.disp.nowFn()})
+				k := s.observeSample(tgt, ep, running, waiting, kv, haveKV)
+				mu.Lock()
+				observed[k] = struct{}{}
+				mu.Unlock()
 			}(tgt, ep)
 		}
 	}
@@ -161,15 +176,59 @@ func (s *LoadScraper) scrapeOnce(ctx context.Context) {
 			current[gaugeKey{tgt.backend, ep, t.Pod, t.Node}] = struct{}{}
 		}
 	}
+	// A histogram observed for a key the gauges did not write (the pod left, or
+	// its pod or node changed, after its scrape) would otherwise never be
+	// deleted.
+	for k := range observed {
+		if _, ok := current[k]; !ok {
+			s.deleteSeries(k)
+		}
+	}
 	for k := range s.written {
 		if _, ok := current[k]; !ok {
-			prommetrics.RouterEndpointLoad.DeleteLabelValues(s.routerName, k.backend, k.endpoint, k.pod, k.node)
-			prommetrics.RouterEndpointMetricsFresh.DeleteLabelValues(s.routerName, k.backend, k.endpoint, k.pod, k.node)
-			prommetrics.RouterEndpointPrefillTokens.DeleteLabelValues(s.routerName, k.backend, k.endpoint, k.pod, k.node)
-			prommetrics.RouterPrefillTokensEstimatedTotal.DeleteLabelValues(s.routerName, k.backend, k.endpoint, k.pod, k.node)
+			s.deleteSeries(k)
 		}
 	}
 	s.written = current
+}
+
+// deleteSeries drops every per-endpoint series the scraper writes for k.
+func (s *LoadScraper) deleteSeries(k gaugeKey) {
+	lvs := []string{s.routerName, k.backend, k.endpoint, k.pod, k.node}
+	prommetrics.RouterEndpointLoad.DeleteLabelValues(lvs...)
+	prommetrics.RouterEndpointMetricsFresh.DeleteLabelValues(lvs...)
+	prommetrics.RouterEndpointPrefillTokens.DeleteLabelValues(lvs...)
+	prommetrics.RouterPrefillTokensEstimatedTotal.DeleteLabelValues(lvs...)
+	prommetrics.RouterEndpointKVUsage.DeleteLabelValues(lvs...)
+	prommetrics.RouterEndpointSlotUtilization.DeleteLabelValues(lvs...)
+	prommetrics.RouterEndpointRunningRequests.DeleteLabelValues(lvs...)
+	prommetrics.RouterEndpointWaitingRequests.DeleteLabelValues(lvs...)
+	prommetrics.RouterEndpointLoadScrapeFailuresTotal.DeleteLabelValues(lvs...)
+}
+
+// countScrapeFailure records a live pod's failed scrape and returns its key.
+func (s *LoadScraper) countScrapeFailure(backend, ep string) gaugeKey {
+	t := s.disp.targetOf(backend, ep)
+	prommetrics.RouterEndpointLoadScrapeFailuresTotal.WithLabelValues(s.routerName, backend, ep, t.Pod, t.Node).Inc()
+	return gaugeKey{backend, ep, t.Pod, t.Node}
+}
+
+// observeSample records one stored sample in the pressure histograms. KV is
+// skipped when the exposition carried no KV gauge, whose parsed value is a
+// placeholder 0, and slot utilization for a backend without a known limit.
+// It returns the series key it wrote.
+func (s *LoadScraper) observeSample(tgt scrapeTarget, ep string, running, waiting, kv float64, haveKV bool) gaugeKey {
+	t := s.disp.targetOf(tgt.backend, ep)
+	lvs := []string{s.routerName, tgt.backend, ep, t.Pod, t.Node}
+	prommetrics.RouterEndpointRunningRequests.WithLabelValues(lvs...).Observe(running)
+	prommetrics.RouterEndpointWaitingRequests.WithLabelValues(lvs...).Observe(waiting)
+	if haveKV {
+		prommetrics.RouterEndpointKVUsage.WithLabelValues(lvs...).Observe(kv)
+	}
+	if tgt.limit > 0 {
+		prommetrics.RouterEndpointSlotUtilization.WithLabelValues(lvs...).Observe(running / float64(tgt.limit))
+	}
+	return gaugeKey{tgt.backend, ep, t.Pod, t.Node}
 }
 
 // stillLive reports whether endpoint is in backend's current endpoint set.
@@ -182,20 +241,20 @@ func (s *LoadScraper) stillLive(backend, endpoint string) bool {
 	return false
 }
 
-func (s *LoadScraper) scrape(ctx context.Context, endpoint string, p MetricsProfile) (float64, float64, float64, error) {
+func (s *LoadScraper) scrape(ctx context.Context, endpoint string, p MetricsProfile) (running, waiting, kv float64, haveKV bool, err error) {
 	ctx, cancel := context.WithTimeout(ctx, scrapeTimeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(endpoint, "/")+p.Path, nil)
 	if err != nil {
-		return 0, 0, 0, err
+		return 0, 0, 0, false, err
 	}
 	resp, err := s.client.Do(req)
 	if err != nil {
-		return 0, 0, 0, fmt.Errorf("%w: %w", errPollUnreachable, err)
+		return 0, 0, 0, false, fmt.Errorf("%w: %w", errPollUnreachable, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
-		return 0, 0, 0, fmt.Errorf("status %d", resp.StatusCode)
+		return 0, 0, 0, false, fmt.Errorf("status %d", resp.StatusCode)
 	}
 	return parseEngineGauges(io.LimitReader(resp.Body, 4<<20), p)
 }
@@ -204,11 +263,11 @@ func (s *LoadScraper) scrape(ctx context.Context, endpoint string, p MetricsProf
 // Prometheus text exposition. A metric matches only by its exact name, so a
 // sibling such as vllm:num_requests_waiting_by_reason is not counted. Running
 // and waiting are required; KV use is optional and takes the maximum across
-// label sets. A sample whose value is NaN or +/-Inf is skipped as if the line
+// label sets; haveKV reports whether any KV sample was seen. A sample whose value is NaN or +/-Inf is skipped as if the line
 // were absent, so a non-finite gauge never reaches the picker (converting a
 // non-finite float to an integer is architecture-dependent in Go), and a
 // negative value is clamped to 0 before summing.
-func parseEngineGauges(r io.Reader, p MetricsProfile) (running, waiting, kv float64, err error) {
+func parseEngineGauges(r io.Reader, p MetricsProfile) (running, waiting, kv float64, haveKV bool, err error) {
 	var haveRunning, haveWaiting bool
 	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 64*1024), 1024*1024)
@@ -245,16 +304,17 @@ func parseEngineGauges(r io.Reader, p MetricsProfile) (running, waiting, kv floa
 			waiting += v
 			haveWaiting = true
 		case p.KVUsage:
-			if p.KVUsage != "" && v > kv {
-				kv = v
+			if p.KVUsage != "" {
+				haveKV = true
+				kv = max(kv, v)
 			}
 		}
 	}
 	if err := sc.Err(); err != nil {
-		return 0, 0, 0, err
+		return 0, 0, 0, false, err
 	}
 	if !haveRunning || !haveWaiting {
-		return 0, 0, 0, fmt.Errorf("metrics lack %s or %s", p.Running, p.Waiting)
+		return 0, 0, 0, false, fmt.Errorf("metrics lack %s or %s", p.Running, p.Waiting)
 	}
-	return running, waiting, kv, nil
+	return running, waiting, kv, haveKV, nil
 }

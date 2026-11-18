@@ -164,6 +164,9 @@ func TestLoadConfigRoundTrip(t *testing.T) {
 	if !cfg.Rules[0].FailClosed {
 		t.Error("expected FailClosed=true on pii rule")
 	}
+	if cfg.Backends[0].ConcurrencyLimit != 104 {
+		t.Errorf("ConcurrencyLimit = %d, want 104", cfg.Backends[0].ConcurrencyLimit)
+	}
 }
 
 func TestLoadConfigSurfacesIOErrors(t *testing.T) {
@@ -238,7 +241,7 @@ func TestClassificationHeaderOverride(t *testing.T) {
 
 const canonicalJSON = `{
   "backends": [
-    {"name": "local-qwen", "tier": "local", "address": "http://qwen.svc:8080"},
+    {"name": "local-qwen", "tier": "local", "address": "http://qwen.svc:8080", "concurrencyLimit": 104},
     {"name": "cloud-opus", "tier": "cloud", "address": "https://api.anthropic.com",
      "provider": "anthropic", "model": "claude-opus-4-7", "credentialsEnv": "ANTHROPIC_API_KEY"}
   ],
