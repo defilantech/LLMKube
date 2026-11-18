@@ -117,13 +117,13 @@ func TestLoadScraperRecordsSamplesAndFreshness(t *testing.T) {
 	if smp := d.loadFor("qwen", slow.URL).sample.Load(); smp != nil {
 		t.Errorf("a timed-out scrape stored a sample: %+v", smp)
 	}
-	if got := testutil.ToFloat64(prommetrics.RouterEndpointMetricsFresh.WithLabelValues("r-scrape", "qwen", good.URL)); got != 1 {
+	if got := testutil.ToFloat64(prommetrics.RouterEndpointMetricsFresh.WithLabelValues("r-scrape", "qwen", good.URL, "", "")); got != 1 {
 		t.Errorf("fresh gauge for the good endpoint = %v, want 1", got)
 	}
-	if got := testutil.ToFloat64(prommetrics.RouterEndpointMetricsFresh.WithLabelValues("r-scrape", "qwen", slow.URL)); got != 0 {
+	if got := testutil.ToFloat64(prommetrics.RouterEndpointMetricsFresh.WithLabelValues("r-scrape", "qwen", slow.URL, "", "")); got != 0 {
 		t.Errorf("fresh gauge for the slow endpoint = %v, want 0", got)
 	}
-	if got := testutil.ToFloat64(prommetrics.RouterEndpointLoad.WithLabelValues("r-scrape", "qwen", good.URL)); got != 9 {
+	if got := testutil.ToFloat64(prommetrics.RouterEndpointLoad.WithLabelValues("r-scrape", "qwen", good.URL, "", "")); got != 9 {
 		t.Errorf("load gauge for the good endpoint = %v, want 9", got)
 	}
 }
@@ -164,10 +164,10 @@ func TestLoadScraperFailedScrapeAgesOut(t *testing.T) {
 	if got := d.loadFor("qwen", srv.URL).sample.Load(); got != first {
 		t.Errorf("a failed scrape replaced the sample: %+v, want the first sample kept", got)
 	}
-	if got := testutil.ToFloat64(prommetrics.RouterEndpointMetricsFresh.WithLabelValues("r-stale", "qwen", srv.URL)); got != 0 {
+	if got := testutil.ToFloat64(prommetrics.RouterEndpointMetricsFresh.WithLabelValues("r-stale", "qwen", srv.URL, "", "")); got != 0 {
 		t.Errorf("fresh gauge after the sample aged out = %v, want 0", got)
 	}
-	if got := testutil.ToFloat64(prommetrics.RouterEndpointLoad.WithLabelValues("r-stale", "qwen", srv.URL)); got != 3 {
+	if got := testutil.ToFloat64(prommetrics.RouterEndpointLoad.WithLabelValues("r-stale", "qwen", srv.URL, "", "")); got != 3 {
 		t.Errorf("load gauge after the sample aged out = %v, want the in-flight count 3", got)
 	}
 }
@@ -203,10 +203,10 @@ func TestLoadScraperDropsDepartedEndpointSeries(t *testing.T) {
 	s.scrapeOnce(context.Background())
 
 	for name, vec := range map[string]*prometheus.GaugeVec{"load": prommetrics.RouterEndpointLoad, "fresh": prommetrics.RouterEndpointMetricsFresh} {
-		if vec.DeleteLabelValues("r-depart", "qwen", gone.URL) {
+		if vec.DeleteLabelValues("r-depart", "qwen", gone.URL, "", "") {
 			t.Errorf("%s gauge series of the departed endpoint survived", name)
 		}
-		if !vec.DeleteLabelValues("r-depart", "qwen", keep.URL) {
+		if !vec.DeleteLabelValues("r-depart", "qwen", keep.URL, "", "") {
 			t.Errorf("%s gauge series of the kept endpoint is missing", name)
 		}
 	}
@@ -239,7 +239,7 @@ func TestLoadScraperSkipsEndpointThatLeftMidScrape(t *testing.T) {
 	if _, ok := d.loads.Load(healthKey("qwen", leaving.URL)); ok {
 		t.Error("a scrape that finished after the pod left re-created its load record")
 	}
-	if prommetrics.RouterEndpointLoad.DeleteLabelValues("r-leave", "qwen", leaving.URL) {
+	if prommetrics.RouterEndpointLoad.DeleteLabelValues("r-leave", "qwen", leaving.URL, "", "") {
 		t.Error("a departed endpoint has a load gauge series")
 	}
 }
@@ -260,19 +260,70 @@ func TestScraperWritesAndDeletesPrefillGauge(t *testing.T) {
 	defer release()
 	s := NewLoadScraper(cfg, d, "r-prefill", slog.New(slog.NewTextHandler(io.Discard, nil)))
 	s.scrapeOnce(context.Background())
-	if got := testutil.ToFloat64(prommetrics.RouterEndpointPrefillTokens.WithLabelValues("r-prefill", "qwen", gone.URL)); got != 5000 {
+	if got := testutil.ToFloat64(prommetrics.RouterEndpointPrefillTokens.WithLabelValues("r-prefill", "qwen", gone.URL, "", "")); got != 5000 {
 		t.Fatalf("prefill gauge = %v, want 5000", got)
 	}
 
 	d.SetEndpoints("qwen", []string{keep.URL})
 	s.scrapeOnce(context.Background())
-	if prommetrics.RouterEndpointPrefillTokens.DeleteLabelValues("r-prefill", "qwen", gone.URL) {
+	if prommetrics.RouterEndpointPrefillTokens.DeleteLabelValues("r-prefill", "qwen", gone.URL, "", "") {
 		t.Error("prefill gauge series of the departed endpoint survived")
 	}
-	if prommetrics.RouterPrefillTokensEstimatedTotal.DeleteLabelValues("r-prefill", "qwen", gone.URL) {
+	if prommetrics.RouterPrefillTokensEstimatedTotal.DeleteLabelValues("r-prefill", "qwen", gone.URL, "", "") {
 		t.Error("estimated-tokens counter series of the departed endpoint survived")
 	}
-	if !prommetrics.RouterEndpointPrefillTokens.DeleteLabelValues("r-prefill", "qwen", keep.URL) {
+	if !prommetrics.RouterEndpointPrefillTokens.DeleteLabelValues("r-prefill", "qwen", keep.URL, "", "") {
 		t.Error("prefill gauge series of the kept endpoint is missing")
+	}
+}
+
+func TestLoadScraperLabelsSeriesWithPodAndNode(t *testing.T) {
+	body, _ := os.ReadFile("testdata/vllm-metrics.txt")
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write(body) }))
+	defer srv.Close()
+
+	cfg := scrapedConfig()
+	d := NewDispatcher(cfg)
+	d.SetReadyEndpoints("qwen", []ReadyEndpoint{{URL: srv.URL, EndpointTarget: EndpointTarget{Pod: "qwen-a", Node: "gpu-1"}}})
+	s := NewLoadScraper(cfg, d, "r-target", slog.New(slog.NewTextHandler(io.Discard, nil)))
+	s.scrapeOnce(context.Background())
+
+	for name, vec := range map[string]*prometheus.GaugeVec{
+		"load": prommetrics.RouterEndpointLoad, "fresh": prommetrics.RouterEndpointMetricsFresh, "prefill": prommetrics.RouterEndpointPrefillTokens,
+	} {
+		if !vec.DeleteLabelValues("r-target", "qwen", srv.URL, "qwen-a", "gpu-1") {
+			t.Errorf("%s series is not labelled with the endpoint's pod and node", name)
+		}
+	}
+}
+
+// A pod IP reused by another Pod (or the same Pod rescheduled elsewhere) must
+// not keep series labelled with the old one: they would double the endpoint.
+func TestLoadScraperDropsSeriesOfAReplacedTarget(t *testing.T) {
+	body, _ := os.ReadFile("testdata/vllm-metrics.txt")
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write(body) }))
+	defer srv.Close()
+
+	cfg := scrapedConfig()
+	d := NewDispatcher(cfg, WithRouterLabel("r-reuse"))
+	d.SetReadyEndpoints("qwen", []ReadyEndpoint{{URL: srv.URL, EndpointTarget: EndpointTarget{Pod: "qwen-old", Node: "gpu-1"}}})
+	s := NewLoadScraper(cfg, d, "r-reuse", slog.New(slog.NewTextHandler(io.Discard, nil)))
+	release := d.trackPrefill("qwen", srv.URL, 100)
+	release()
+	s.scrapeOnce(context.Background())
+
+	d.SetReadyEndpoints("qwen", []ReadyEndpoint{{URL: srv.URL, EndpointTarget: EndpointTarget{Pod: "qwen-new", Node: "gpu-2"}}})
+	s.scrapeOnce(context.Background())
+
+	for name, vec := range map[string]*prometheus.GaugeVec{"load": prommetrics.RouterEndpointLoad, "fresh": prommetrics.RouterEndpointMetricsFresh} {
+		if vec.DeleteLabelValues("r-reuse", "qwen", srv.URL, "qwen-old", "gpu-1") {
+			t.Errorf("%s series of the replaced pod survived", name)
+		}
+		if !vec.DeleteLabelValues("r-reuse", "qwen", srv.URL, "qwen-new", "gpu-2") {
+			t.Errorf("%s series of the new pod is missing", name)
+		}
+	}
+	if prommetrics.RouterPrefillTokensEstimatedTotal.DeleteLabelValues("r-reuse", "qwen", srv.URL, "qwen-old", "gpu-1") {
+		t.Error("prefill counter of the replaced pod survived")
 	}
 }
