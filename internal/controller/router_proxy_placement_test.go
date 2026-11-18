@@ -45,7 +45,7 @@ func TestRouterDeploymentBuilderAffinityAndSpread(t *testing.T) {
 	}}
 	mr.Spec.Proxy = &inferencev1alpha1.RouterProxySpec{Replicas: ptr.To[int32](2), Affinity: aff, TopologySpreadConstraints: onePerNode(mr)}
 	r := &ModelRouterReconciler{RouterProxyImage: "img"}
-	spec := r.newRouterDeployment(mr, "hash", false).Spec.Template.Spec
+	spec := r.newRouterDeployment(mr, &compiledConfig{Hash: "hash"}).Spec.Template.Spec
 	if !reflect.DeepEqual(spec.Affinity, aff) {
 		t.Errorf("pod Affinity = %+v, want %+v", spec.Affinity, aff)
 	}
@@ -58,10 +58,10 @@ func TestRouterDeploymentBuilderAffinityAndSpread(t *testing.T) {
 // do not re-roll on upgrade.
 func TestRouterDeploymentBuilderPlacementUnset(t *testing.T) {
 	r := &ModelRouterReconciler{RouterProxyImage: "img"}
-	base := r.newRouterDeployment(canonicalModelRouter(), "hash", false)
+	base := r.newRouterDeployment(canonicalModelRouter(), &compiledConfig{Hash: "hash"})
 	withProxy := canonicalModelRouter()
 	withProxy.Spec.Proxy = &inferencev1alpha1.RouterProxySpec{Replicas: ptr.To[int32](2)}
-	got := r.newRouterDeployment(withProxy, "hash", false)
+	got := r.newRouterDeployment(withProxy, &compiledConfig{Hash: "hash"})
 	if got.Spec.Template.Spec.Affinity != nil || got.Spec.Template.Spec.TopologySpreadConstraints != nil {
 		t.Fatalf("placement set without spec.proxy affinity or spread: %+v / %+v",
 			got.Spec.Template.Spec.Affinity, got.Spec.Template.Spec.TopologySpreadConstraints)
@@ -121,7 +121,7 @@ func TestRouterDeploymentStrategyForHardPlacement(t *testing.T) {
 			mr := canonicalModelRouter()
 			mr.Spec.Proxy = tc.proxy(mr)
 			r := &ModelRouterReconciler{RouterProxyImage: "img"}
-			got := r.newRouterDeployment(mr, "hash", tc.hasPools).Spec.Strategy
+			got := r.newRouterDeployment(mr, &compiledConfig{Hash: "hash", HasPools: tc.hasPools}).Spec.Strategy
 			if !reflect.DeepEqual(got, tc.want) {
 				t.Errorf("strategy = %+v, want %+v", got, tc.want)
 			}
@@ -146,11 +146,11 @@ func TestReconcileRouterDeploymentAppliesPlacement(t *testing.T) {
 		return dep
 	}
 
-	if err := rec.reconcileRouterDeployment(ctx, mr, "hash", false); err != nil {
+	if err := rec.reconcileRouterDeployment(ctx, mr, &compiledConfig{Hash: "hash"}); err != nil {
 		t.Fatal(err)
 	}
 	mr.Spec.Proxy = &inferencev1alpha1.RouterProxySpec{Replicas: ptr.To[int32](2), TopologySpreadConstraints: onePerNode(mr)}
-	if err := rec.reconcileRouterDeployment(ctx, mr, "hash", false); err != nil {
+	if err := rec.reconcileRouterDeployment(ctx, mr, &compiledConfig{Hash: "hash"}); err != nil {
 		t.Fatal(err)
 	}
 	dep := live()
@@ -162,7 +162,7 @@ func TestReconcileRouterDeploymentAppliesPlacement(t *testing.T) {
 	}
 
 	mr.Spec.Proxy = &inferencev1alpha1.RouterProxySpec{Replicas: ptr.To[int32](2)}
-	if err := rec.reconcileRouterDeployment(ctx, mr, "hash", false); err != nil {
+	if err := rec.reconcileRouterDeployment(ctx, mr, &compiledConfig{Hash: "hash"}); err != nil {
 		t.Fatal(err)
 	}
 	dep = live()

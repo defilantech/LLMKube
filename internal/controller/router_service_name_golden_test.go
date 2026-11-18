@@ -91,7 +91,7 @@ func renderRouterProxyObjects(t *testing.T, mr *inferencev1alpha1.ModelRouter) [
 	var out []byte
 	for _, obj := range []any{
 		newRouterConfigMap(mr, compiled),
-		r.newRouterDeployment(mr, compiled.Hash, false),
+		r.newRouterDeployment(mr, compiled),
 		newRouterService(mr),
 		newRouterAdminService(mr),
 		map[string]string{

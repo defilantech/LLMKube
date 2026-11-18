@@ -24,10 +24,10 @@ import (
 	inferencev1alpha1 "github.com/defilantech/llmkube/api/v1alpha1"
 )
 
-// routerNeedsEndpointWatch reports whether the router's proxy tracks pods
-// itself: any local backend with resolution: endpoint.
-func routerNeedsEndpointWatch(mr *inferencev1alpha1.ModelRouter) bool {
-	for _, b := range mr.Spec.Backends {
+// routerNeedsEndpointWatch reports whether the proxy tracks pods itself: any
+// resolved local backend with resolution: endpoint.
+func routerNeedsEndpointWatch(backends []inferencev1alpha1.RouterBackend) bool {
+	for _, b := range backends {
 		if b.InferenceServiceRef != nil && b.Resolution == inferencev1alpha1.RouterBackendResolutionEndpoint {
 			return true
 		}
@@ -51,10 +51,10 @@ func routerNeedsEndpointWatch(mr *inferencev1alpha1.ModelRouter) bool {
 func (r *ModelRouterReconciler) reconcileRouterActivationRBAC(
 	ctx context.Context,
 	mr *inferencev1alpha1.ModelRouter,
-	hasPools bool,
+	compiled *compiledConfig,
 ) error {
-	watch := routerNeedsEndpointWatch(mr)
-	if !hasPools && !watch {
+	watch := compiled.NeedsEndpointWatch
+	if !compiled.HasPools && !watch {
 		return nil
 	}
 	name := routerProxyResourceName(mr.Name)
@@ -71,7 +71,7 @@ func (r *ModelRouterReconciler) reconcileRouterActivationRBAC(
 	}
 
 	var rules []rbacv1.PolicyRule
-	if hasPools {
+	if compiled.HasPools {
 		rules = append(rules,
 			rbacv1.PolicyRule{
 				APIGroups: []string{"inference.llmkube.dev"},

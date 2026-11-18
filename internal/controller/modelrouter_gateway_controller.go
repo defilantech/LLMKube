@@ -159,9 +159,13 @@ func (r *ModelRouterGatewayReconciler) Reconcile(ctx context.Context, req ctrl.R
 			"dataPlane is Gateway but spec.gatewayRef is unset; cannot attach a route")
 	}
 
+	if msg := backendSelectorUnsupportedMessage(mr); msg != "" {
+		return ctrl.Result{}, r.setGatewayNotReady(ctx, mr, modelRouterGatewayReasonUnsupported, msg)
+	}
+
 	// A keyed backend would 401 through the gateway: fail loud before any
 	// generation, like the unsupported-match check.
-	if names, err := keyedBackends(ctx, r.Client, mr); err != nil {
+	if names, err := keyedBackends(ctx, r.Client, mr.Namespace, mr.Spec.Backends); err != nil {
 		return ctrl.Result{}, err
 	} else if len(names) > 0 {
 		return ctrl.Result{}, r.setGatewayNotReady(ctx, mr, ModelRouterReasonBackendAPIKeyUnsupported, keyedBackendsMessage(names))
