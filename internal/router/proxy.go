@@ -224,6 +224,9 @@ func (p *Proxy) Mount(mux *http.ServeMux) {
 	// completions does, so the same handler places and streams it.
 	mux.HandleFunc("POST /v1/messages", p.handleCompletion("/v1/messages"))
 	mux.HandleFunc("POST /v1/messages/count_tokens", p.handleCompletion("/v1/messages/count_tokens"))
+	// The Responses API carries model and stream where chat completions
+	// does, so the same handler routes, places and streams it.
+	mux.HandleFunc("POST /v1/responses", p.handleCompletion("/v1/responses"))
 	mux.HandleFunc("GET /v1/models", p.handleModels)
 	mux.HandleFunc("GET /health", p.handleHealth)
 	mux.HandleFunc("GET /healthz", p.handleHealth)
@@ -311,17 +314,19 @@ func (p *Proxy) handleModels(w http.ResponseWriter, _ *http.Request) {
 
 // handleCompletion is the shared handler for the OpenAI-compatible inference
 // endpoints the proxy fronts (/v1/chat/completions, /v1/completions,
-// /v1/embeddings, /v1/rerank). It buffers the inbound request body (needs
-// the "model" field for matching), evaluates the rule set, dispatches to the
-// chosen backend, and streams the response back. SSE / chunked passthrough
-// is automatic.
+// /v1/embeddings, /v1/rerank, /v1/responses) plus the Anthropic routes
+// (/v1/messages, /v1/messages/count_tokens). It buffers the inbound request
+// body (needs the "model" field for matching), evaluates the rule set,
+// dispatches to the chosen backend, and streams the response back. SSE /
+// chunked passthrough is automatic.
 //
 // upstreamPath is forwarded verbatim to the chosen backend, so each mounted
 // endpoint must pass its own path: the surface the proxy fronts is not just
 // chat completions, and a hardcoded path silently turns an embeddings request
 // into a chat request at the upstream.
 func (p *Proxy) handleCompletion(upstreamPath string) http.HandlerFunc {
-	anthropic := isAnthropicPath(upstreamPath)
+	shape := apiShapeFor(upstreamPath)
+	anthropic := shape == apiShapeAnthropic
 	return func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxRequestBodyBytes))
 		if err != nil {
@@ -384,8 +389,10 @@ func (p *Proxy) handleCompletion(upstreamPath string) http.HandlerFunc {
 		// is taken from the provider's own count and a stream that reports none
 		// is charged zero. The rewrite is gated on a budget applying to this
 		// request; unbudgeted traffic dispatches untouched.
-		// An Anthropic stream always reports usage and has no stream_options.
-		if isStream && len(scopeKeys) > 0 && !anthropic {
+		// An Anthropic stream always reports usage and has no stream_options,
+		// and the Responses API has no stream_options either, so the rewrite
+		// applies only to the OpenAI routes.
+		if isStream && len(scopeKeys) > 0 && shape == apiShapeOpenAI {
 			if injected, changed := InjectStreamUsage(body); changed {
 				body = injected
 			}
@@ -447,7 +454,7 @@ func (p *Proxy) handleCompletion(upstreamPath string) http.HandlerFunc {
 			if p.hasUSDBudget && !chosen.pricesTokens() {
 				prommetrics.RouterBudgetUnchargedTotal.WithLabelValues(p.routerName, "no_pricing").Inc()
 			}
-			prompt, completion, usageOK := parseUsageFor(anthropic, captured.Bytes(), streamed)
+			prompt, completion, usageOK := parseUsageFor(shape, captured.Bytes(), streamed)
 			if usageOK {
 				usd := CostUSD(prompt, completion, chosen.CostPerMillionTokens)
 				p.budgets.Charge(scopeKeys, prompt+completion, usd)
@@ -654,25 +661,56 @@ func (p *Proxy) budgetScopeKeys(f *RequestFeatures, dec *MatchResult) []string {
 	return keys
 }
 
+// apiShape selects the usage parser and the request-shape quirks a mounted
+// route needs.
+type apiShape int
+
+const (
+	apiShapeOpenAI apiShape = iota
+	apiShapeAnthropic
+	apiShapeResponses
+)
+
+// apiShapeFor maps a mounted route's path to the API it carries.
+func apiShapeFor(path string) apiShape {
+	switch {
+	case isAnthropicPath(path):
+		return apiShapeAnthropic
+	case path == "/v1/responses":
+		return apiShapeResponses
+	default:
+		return apiShapeOpenAI
+	}
+}
+
 // parseUsageFor extracts token usage from a captured response body, in the
 // shape of the API the request used: an Anthropic Messages response reports
-// usage in its own fields. Streaming and non-streaming bodies need different
+// usage in its own fields, and a Responses response in usage.input_tokens and
+// usage.output_tokens. Streaming and non-streaming bodies need different
 // parsers; a streamed response or a body that looks like SSE goes through the
 // SSE scanner, everything else through the JSON parser.
-func parseUsageFor(anthropic bool, body []byte, streamed bool) (prompt, completion int64, ok bool) {
-	if anthropic && len(body) > 0 {
-		if streamed || looksLikeSSE(body) {
-			return AnthropicUsageTokensFromSSE(body)
-		}
-		return AnthropicUsageTokens(body)
-	}
+func parseUsageFor(shape apiShape, body []byte, streamed bool) (prompt, completion int64, ok bool) {
 	if len(body) == 0 {
 		return 0, 0, false
 	}
-	if streamed || looksLikeSSE(body) {
-		return UsageTokensFromSSE(body)
+	streamed = streamed || looksLikeSSE(body)
+	switch shape {
+	case apiShapeAnthropic:
+		if streamed {
+			return AnthropicUsageTokensFromSSE(body)
+		}
+		return AnthropicUsageTokens(body)
+	case apiShapeResponses:
+		if streamed {
+			return ResponsesUsageTokensFromSSE(body)
+		}
+		return ResponsesUsageTokens(body)
+	default:
+		if streamed {
+			return UsageTokensFromSSE(body)
+		}
+		return UsageTokens(body)
 	}
-	return UsageTokens(body)
 }
 
 // observeBudgets republishes rolling-window token utilization from the

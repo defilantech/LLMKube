@@ -219,6 +219,66 @@ func AnthropicUsageTokens(body []byte) (prompt, completion int64, ok bool) {
 	return env.Usage.counts()
 }
 
+// responsesUsage is the usage object of the OpenAI Responses API.
+// input_tokens and output_tokens are the totals; the *_details objects break
+// them down, so their fields are not added again.
+type responsesUsage struct {
+	InputTokens  *int64 `json:"input_tokens"`
+	OutputTokens *int64 `json:"output_tokens"`
+	TotalTokens  *int64 `json:"total_tokens"`
+}
+
+func (u *responsesUsage) counts() (prompt, completion int64, ok bool) {
+	if u == nil {
+		return 0, 0, false
+	}
+	return usageCounts(u.InputTokens, u.OutputTokens, u.TotalTokens)
+}
+
+// ResponsesUsageTokens extracts usage from a non-streaming OpenAI Responses
+// response. ok is false when the body carries no usage object.
+func ResponsesUsageTokens(body []byte) (prompt, completion int64, ok bool) {
+	var env struct {
+		Usage *responsesUsage `json:"usage"`
+	}
+	if err := json.Unmarshal(body, &env); err != nil {
+		return 0, 0, false
+	}
+	return env.Usage.counts()
+}
+
+// ResponsesUsageTokensFromSSE extracts usage from a buffered Responses
+// stream, where the final response.completed event carries it. Like the
+// Anthropic scanner it reads the usage object both under "response" and at
+// the event's top level, since providers differ on the nesting.
+func ResponsesUsageTokensFromSSE(body []byte) (prompt, completion int64, ok bool) {
+	for _, line := range bytes.Split(body, []byte("\n")) {
+		payload, found := bytes.CutPrefix(bytes.TrimSpace(line), []byte("data:"))
+		if !found {
+			continue
+		}
+		var event struct {
+			Usage    *responsesUsage `json:"usage"`
+			Response *struct {
+				Usage *responsesUsage `json:"usage"`
+			} `json:"response"`
+		}
+		if err := json.Unmarshal(bytes.TrimSpace(payload), &event); err != nil {
+			continue
+		}
+		usages := []*responsesUsage{event.Usage}
+		if event.Response != nil {
+			usages = append(usages, event.Response.Usage)
+		}
+		for _, u := range usages {
+			if p, c, ok2 := u.counts(); ok2 {
+				prompt, completion, ok = max(prompt, p), max(completion, c), true
+			}
+		}
+	}
+	return prompt, completion, ok
+}
+
 // AnthropicUsageTokensFromSSE extracts usage from a buffered Anthropic
 // Messages stream. The Anthropic API reports input in message_start and
 // output in message_delta; vLLM reports both in the final message_delta. The
