@@ -23,7 +23,7 @@ import (
 )
 
 // DetectHostCapacity reads the Mac's memory and chip name through sysctl.
-// GPU cores and the Metal version come from platform.DetectCapabilities,
+// GPU cores and the Metal version come from platform.DetectMetal,
 // which the agent already runs at startup.
 func DetectHostCapacity() HostCapacity {
 	return hostCapacityFromSysctl(func(name string) (string, error) {

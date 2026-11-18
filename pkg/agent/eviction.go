@@ -55,7 +55,10 @@ const SkipReasonRuntimeIneligible = "runtime_ineligible"
 //     simple and predictable.
 //  2. Skip non-llama-server processes. oMLX and Ollama use shared daemons
 //     where the agent does not own the actual process lifecycle, so evicting
-//     them via this code path would have no effect on memory.
+//     them via this code path would have no effect on memory. A runtime
+//     outside the agent's cgroup (runsOutsideAgentCgroup) is skipped
+//     whatever its ModelID: it uses none of the cgroup memory the watchdog
+//     reads on Linux.
 //  3. Skip processes with EvictionProtection=true so users can opt
 //     individual workloads out of eviction.
 //  4. Lowest InferenceService.Spec.Priority wins (batch < low < normal <
@@ -92,7 +95,7 @@ func pickEvictionTarget(processes map[string]*ManagedProcess, rss map[string]uin
 		// Rule 2: only llama-server processes are managed at the OS level.
 		// oMLX and Ollama set ModelID to a non-empty value because the agent
 		// uses model IDs (not PIDs) to unload them on the shared daemon.
-		if p.ModelID == "" {
+		if p.ModelID == "" && !runsOutsideAgentCgroup(p.Runtime) {
 			llamaServer = append(llamaServer, p)
 		}
 	}

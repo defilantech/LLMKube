@@ -21,9 +21,12 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 	"testing"
+
+	"github.com/defilantech/llmkube/pkg/datadir"
 )
 
 // CheckModelStore refuses a model store another local user could tamper with.
@@ -106,10 +109,8 @@ var systemTempRoots = []string{"/private/tmp", "/tmp", "/private/var/tmp", "/var
 // directory. Even a store the agent owns there is not safe: /tmp is emptied
 // at boot, so another local user can create the store directory first after
 // a reboot and either own it (the agent then refuses to start) or wait for
-// the agent to trust whatever they put in it. 0.10.0 plists pinned
-// --model-store /tmp/llmkube-models, and launchd keeps running a loaded job's
-// old definition across `launchctl kickstart -k` (and across a re-rendered
-// plist file) until the job is booted out, so the error names both steps.
+// the agent to trust whatever they put in it. The error ends with
+// tmpStoreFix for this OS.
 func checkStoreNotInTmp(where, path, resolved string) error {
 	literal := path
 	if abs, err := filepath.Abs(path); err == nil {
@@ -119,15 +120,44 @@ func checkStoreNotInTmp(where, path, resolved string) error {
 		for _, root := range systemTempRoots {
 			if candidate == root || strings.HasPrefix(candidate, root+"/") {
 				return fmt.Errorf("model store %s is under %s, a shared temporary directory any local user "+
-					"can recreate after a reboot: re-render the launchd plist with the new default store "+
-					"(0.10.0 plists pinned --model-store /tmp/llmkube-models): run "+
-					"`launchctl bootout gui/$(id -u)/com.llmkube.metal-agent`, wait until it has unloaded, then "+
-					"`make install-metal-agent` (see \"Upgrading to 0.10.1\" in deployment/macos/README.md), "+
-					"or pass a --model-store the agent owns outside /tmp", where, root)
+					"can recreate after a reboot: %s", where, root, tmpStoreFix(runtime.GOOS, defaultModelStore()))
 			}
 		}
 	}
 	return nil
+}
+
+// tmpStoreFix is how to move the agent's model store out of /tmp on goos.
+// On macOS, 0.10.0 plists pinned --model-store /tmp/llmkube-models, and
+// launchd keeps running a loaded job's old definition across `launchctl
+// kickstart -k` (and across a re-rendered plist file) until the job is
+// booted out, so it names both steps. Elsewhere the agent runs under a
+// supervisor the operator configured by hand, and defaultStore is the store
+// the agent uses without --model-store ("" when it cannot be resolved).
+func tmpStoreFix(goos, defaultStore string) string {
+	if goos == "darwin" {
+		return "re-render the launchd plist with the new default store " +
+			"(0.10.0 plists pinned --model-store /tmp/llmkube-models): run " +
+			"`launchctl bootout gui/$(id -u)/com.llmkube.metal-agent`, wait until it has unloaded, then " +
+			"`make install-metal-agent` (see \"Upgrading to 0.10.1\" in deployment/macos/README.md), " +
+			"or pass a --model-store the agent owns outside /tmp"
+	}
+	if defaultStore == "" {
+		defaultStore = "under $XDG_DATA_HOME/llmkube"
+	}
+	return "change --model-store where the agent's supervisor (a systemd unit, a container) sets it: " +
+		"drop it for the default store (" + defaultStore + "), or pass a --model-store the agent " +
+		"owns outside /tmp, then restart the agent"
+}
+
+// defaultModelStore is the store the agent uses without --model-store, or ""
+// when the home directory is unknown.
+func defaultModelStore() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(datadir.Dir(home), "models")
 }
 
 // SetSystemTempRootsForTest overrides the shared temporary directories the
