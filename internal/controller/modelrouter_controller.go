@@ -59,8 +59,9 @@ const (
 	ModelRouterReasonClassifierNotImplemented = "ClassifierNotImplemented"
 	ModelRouterReasonCompileFailed            = "CompileFailed"
 	// ModelRouterReasonBackendResolutionFailed marks a router whose backend set
-	// could not be resolved from cluster state: a selected InferenceService
-	// vanished, or an overlay entry matches no selected service.
+	// could not be resolved from cluster state: a ref-less spec.backends entry
+	// names no InferenceService spec.backendSelector selects, or the selector
+	// selects nothing while spec.backends is empty.
 	ModelRouterReasonBackendResolutionFailed = "BackendResolutionFailed"
 	ModelRouterReasonReconcileFailed         = "ReconcileFailed"
 	// ModelRouterReasonRouterProxyNameTaken marks a router whose generated
