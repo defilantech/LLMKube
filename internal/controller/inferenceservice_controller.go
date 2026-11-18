@@ -230,6 +230,7 @@ func (r *InferenceServiceReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		// A live cluster hit this via #1225 — two Ready, serving services
 		// failed reconcileDeployment every pass and exported no series at all.
 		publishInferenceServiceState(inferenceService, model)
+		publishInferenceServiceConfig(inferenceService, model, r.RuntimeImageOverrides)
 	}()
 
 	log := logf.FromContext(ctx)

@@ -60,7 +60,7 @@ type LoadScraper struct {
 	routerName string
 	logger     *slog.Logger
 
-	// written is the (backend, endpoint) pairs whose gauge series the last
+	// written is the series keys (backend, endpoint, pod, node) the last
 	// scrapeOnce wrote. The scraper owns both gauge series: it alone writes
 	// and deletes them, from scrapeOnce, so a departed endpoint's series
 	// cannot be brought back by a late scrape. scrapeOnce must not run
@@ -68,7 +68,9 @@ type LoadScraper struct {
 	written map[gaugeKey]struct{}
 }
 
-type gaugeKey struct{ backend, endpoint string }
+// gaugeKey carries the pod and node too, so a URL that moves to another
+// Pod drops the series labelled with the old one.
+type gaugeKey struct{ backend, endpoint, pod, node string }
 
 // NewLoadScraper indexes the backends that need scraping. It starts nothing.
 func NewLoadScraper(cfg *Config, disp *Dispatcher, routerName string, logger *slog.Logger) *LoadScraper {
@@ -148,22 +150,23 @@ func (s *LoadScraper) scrapeOnce(ctx context.Context) {
 		for _, ep := range s.disp.EndpointsOf(tgt.backend) {
 			l := s.disp.loadFor(tgt.backend, ep)
 			c := picker.Candidate{Endpoint: ep, InFlight: l.inflight.Load(), Sample: l.sample.Load()}
-			prommetrics.RouterEndpointLoad.WithLabelValues(s.routerName, tgt.backend, ep).Set(float64(picker.Load(c, now)))
+			t := s.disp.targetOf(tgt.backend, ep)
+			prommetrics.RouterEndpointLoad.WithLabelValues(s.routerName, tgt.backend, ep, t.Pod, t.Node).Set(float64(picker.Load(c, now)))
 			fresh := 0.0
 			if c.Sample != nil && now.Sub(c.Sample.At) <= picker.StaleAfter {
 				fresh = 1
 			}
-			prommetrics.RouterEndpointMetricsFresh.WithLabelValues(s.routerName, tgt.backend, ep).Set(fresh)
-			prommetrics.RouterEndpointPrefillTokens.WithLabelValues(s.routerName, tgt.backend, ep).Set(float64(l.prefill.Load()))
-			current[gaugeKey{tgt.backend, ep}] = struct{}{}
+			prommetrics.RouterEndpointMetricsFresh.WithLabelValues(s.routerName, tgt.backend, ep, t.Pod, t.Node).Set(fresh)
+			prommetrics.RouterEndpointPrefillTokens.WithLabelValues(s.routerName, tgt.backend, ep, t.Pod, t.Node).Set(float64(l.prefill.Load()))
+			current[gaugeKey{tgt.backend, ep, t.Pod, t.Node}] = struct{}{}
 		}
 	}
 	for k := range s.written {
 		if _, ok := current[k]; !ok {
-			prommetrics.RouterEndpointLoad.DeleteLabelValues(s.routerName, k.backend, k.endpoint)
-			prommetrics.RouterEndpointMetricsFresh.DeleteLabelValues(s.routerName, k.backend, k.endpoint)
-			prommetrics.RouterEndpointPrefillTokens.DeleteLabelValues(s.routerName, k.backend, k.endpoint)
-			prommetrics.RouterPrefillTokensEstimatedTotal.DeleteLabelValues(s.routerName, k.backend, k.endpoint)
+			prommetrics.RouterEndpointLoad.DeleteLabelValues(s.routerName, k.backend, k.endpoint, k.pod, k.node)
+			prommetrics.RouterEndpointMetricsFresh.DeleteLabelValues(s.routerName, k.backend, k.endpoint, k.pod, k.node)
+			prommetrics.RouterEndpointPrefillTokens.DeleteLabelValues(s.routerName, k.backend, k.endpoint, k.pod, k.node)
+			prommetrics.RouterPrefillTokensEstimatedTotal.DeleteLabelValues(s.routerName, k.backend, k.endpoint, k.pod, k.node)
 		}
 	}
 	s.written = current

@@ -21,6 +21,10 @@ The operator's controller manager registers `ControllerCollectors` from [`intern
 | `llmkube_gpuquota_used_gpu_count` | gauge | `gpuquota`, `namespace` | GPUs currently used by InferenceServices in a GPUQuota's scope. |
 | `llmkube_gpuquota_used_vram_bytes` | gauge | `gpuquota`, `namespace` | Device memory (bytes) currently accounted to InferenceServices in a GPUQuota's scope. Workloads whose footprint cannot be derived contribute zero. |
 | `llmkube_gpuquota_vram_bytes_limit` | gauge | `gpuquota`, `namespace` | The device-memory cap (spec.vramBytes) declared by a GPUQuota. 0 means no cap. |
+| `llmkube_inferenceservice_concurrency_limit` | gauge | `inferenceservice`, `namespace` | Requests one replica serves concurrently, as configured (parallelSlots, `--max-num-seqs` times vLLM's `--data-parallel-size`, `--max-running-requests`). Absent when the runtime picks its own or the controller cannot know it. |
+| `llmkube_inferenceservice_config_info` | gauge | `generation`, `image`, `inferenceservice`, `namespace`, `runtime` | The spec generation and serving image an InferenceService runs; the image is empty when the metal-agent runs it. Value is always 1; a new generation replaces the series. |
+| `llmkube_inferenceservice_context_length` | gauge | `inferenceservice`, `namespace` | Context window one request gets, in tokens. Absent when the controller cannot know it. |
+| `llmkube_inferenceservice_gpus_per_replica` | gauge | `inferenceservice`, `namespace` | GPUs each replica requests. |
 | `llmkube_inferenceservice_info` | gauge | `accelerator`, `inferenceservice`, `namespace`, `runtime` | Information about inference services. Value is always 1; use accelerator and runtime labels for grouping. |
 | `llmkube_inferenceservice_phase` | gauge | `inferenceservice`, `namespace`, `phase` | Current phase of inference services. Value is always 1; use the phase label for filtering. |
 | `llmkube_inferenceservice_ready_duration_seconds` | histogram | `inferenceservice`, `namespace` | Time from InferenceService creation to Ready phase. |
@@ -75,14 +79,14 @@ The router-proxy binary serves `RouterRegistry` ([`cmd/router-proxy/main.go`](ht
 | `llmkube_router_budget_uncharged_total` | counter | `reason`, `router` | Requests not charged against a budget because usage was unavailable or the backend was unpriced. |
 | `llmkube_router_budget_utilization` | gauge | `router`, `scope` | Fraction of the resolved dispatch timeout consumed by a request (0.0 to 1.0). |
 | `llmkube_router_dispatch_retries_total` | counter | `backend`, `reason`, `router` | Requests the router proxy retried on a fresh connection, by reason. |
-| `llmkube_router_endpoint_load` | gauge | `backend`, `endpoint`, `router` | Router proxy load estimate for one pod of a LoadAware backend. |
-| `llmkube_router_endpoint_metrics_fresh` | gauge | `backend`, `endpoint`, `router` | Whether the router proxy holds a fresh engine-metrics sample for a pod (1) or not (0). |
-| `llmkube_router_endpoint_prefill_tokens` | gauge | `backend`, `endpoint`, `router` | Estimated uncached prompt tokens this router proxy replica has in flight to one pod, released at the first response byte. |
+| `llmkube_router_endpoint_load` | gauge | `backend`, `endpoint`, `router`, `target_node`, `target_pod` | Router proxy load estimate for one pod of a LoadAware backend. |
+| `llmkube_router_endpoint_metrics_fresh` | gauge | `backend`, `endpoint`, `router`, `target_node`, `target_pod` | Whether the router proxy holds a fresh engine-metrics sample for a pod (1) or not (0). |
+| `llmkube_router_endpoint_prefill_tokens` | gauge | `backend`, `endpoint`, `router`, `target_node`, `target_pod` | Estimated uncached prompt tokens this router proxy replica has in flight to one pod, released at the first response byte. |
 | `llmkube_router_endpoint_source_ready` | gauge | `backend`, `router` | Whether the router proxy's EndpointSlice watch for a backend has synced (1) or not (0). |
 | `llmkube_router_fail_closed_total` | counter | `classification`, `router`, `rule` | Total number of requests rejected by the fail-closed gate. |
 | `llmkube_router_first_token_seconds` | histogram | `backend`, `router` | Time from inbound request to first upstream response byte (streaming TTFT). |
 | `llmkube_router_placements_total` | counter | `backend`, `reason`, `result`, `router` | Router proxy placement decisions for balanced backends, by result and reason (waiting, kv_full, not_ready or quarantined; empty otherwise). |
-| `llmkube_router_prefill_tokens_estimated_total` | counter | `backend`, `endpoint`, `router` | Estimated uncached prompt tokens this router proxy replica has sent to one pod. |
+| `llmkube_router_prefill_tokens_estimated_total` | counter | `backend`, `endpoint`, `router`, `target_node`, `target_pod` | Estimated uncached prompt tokens this router proxy replica has sent to one pod. |
 | `llmkube_router_prefix_cached_tokens_total` | counter | `backend`, `router` | Estimated prompt tokens of requests placed with prefix affinity that the chosen pod already held. |
 | `llmkube_router_prefix_changed_placements_total` | counter | `backend`, `router` | Placements reported as prefix_match that load alone, with no prefix credit, would have sent to a different pod. |
 | `llmkube_router_prefix_match_ratio` | histogram | `backend`, `router` | Share of each request's estimated prompt tokens that the chosen pod already held, for requests placed with prefix affinity. |
@@ -90,6 +94,7 @@ The router-proxy binary serves `RouterRegistry` ([`cmd/router-proxy/main.go`](ht
 | `llmkube_router_request_duration_seconds` | histogram | `backend`, `router`, `rule` | Duration of router-proxy requests. |
 | `llmkube_router_requests_total` | counter | `backend`, `classification`, `outcome`, `router`, `rule` | Total number of router-proxy requests. |
 | `llmkube_router_session_bindings` | gauge | `backend`, `router` | Session-to-pod bindings held by the router proxy for a backend. |
+| `llmkube_router_session_bindings_created_total` | counter | `backend`, `router` | Session keys this router proxy replica bound to a pod while holding no binding for them; an upper bound on sessions started while the table has room. Sessions that start while it is full are not counted. |
 | `llmkube_router_shadow_request_duration_seconds` | histogram | `backend`, `router`, `rule` | Duration of mirrored shadow requests, from send to the end of the discarded response. |
 | `llmkube_router_shadow_requests_total` | counter | `backend`, `outcome`, `router`, `rule` | Requests a shadow rule mirrored to a backend, by outcome (ok, error, dropped). |
 | `llmkube_router_token_budget_utilization` | gauge | `budget`, `router`, `scope` | Fraction of a token budget consumed in its rolling window (0.0 to 1.0+). |
