@@ -243,23 +243,30 @@ func (r *InferenceServiceReconciler) checkServiceIdle(ctx context.Context, isvc 
 }
 
 // countOldPods lists the pods owned by the InferenceService and returns the
-// total count and the number of Ready pods. A pod is considered Ready when its
-// PodReady condition is True. This is used by reconcileRolloutPolicy to decide
-// whether there is in-flight work to protect before deferring a rollout.
+// total count, how many are Ready and how many are running a serving container.
+// A pod is Ready when its PodReady condition is True. It is running when the
+// runtime's container reports State.Running, terminating pods included: a
+// container that is not running holds no in-flight request, whatever its
+// readiness. It differs from classifyMemberPods in modelpool_idle.go, which
+// skips terminating pods and accepts any running container; this side has to
+// name the serving container because the drain decision is about it alone.
+// reconcileRolloutPolicy uses the counts to decide whether there is in-flight
+// work to protect before deferring a rollout.
 //
 // A List error is returned rather than swallowed as a zero count. The caller
 // promotes a zero count to a rollout gate (proceed when nothing is left to
 // drain), so a transient List failure reported as zero would roll a pod that
 // may still hold work. The caller must fail closed on the error.
-func (r *InferenceServiceReconciler) countOldPods(ctx context.Context, isvc *inferencev1alpha1.InferenceService) (total, ready int32, err error) {
+func (r *InferenceServiceReconciler) countOldPods(ctx context.Context, isvc *inferencev1alpha1.InferenceService) (total, ready, running int32, err error) {
 	podList := &corev1.PodList{}
 	labels := client.MatchingLabels{
 		"app":                           isvc.Name,
 		"inference.llmkube.dev/service": isvc.Name,
 	}
 	if listErr := r.List(ctx, podList, client.InNamespace(isvc.Namespace), labels); listErr != nil {
-		return 0, 0, listErr
+		return 0, 0, 0, listErr
 	}
+	containerName := resolveBackend(isvc).ContainerName()
 	for i := range podList.Items {
 		pod := &podList.Items[i]
 		total++
@@ -269,8 +276,28 @@ func (r *InferenceServiceReconciler) countOldPods(ctx context.Context, isvc *inf
 				break
 			}
 		}
+		if podServingContainerRunning(pod, containerName) {
+			running++
+		}
 	}
-	return total, ready, nil
+	return total, ready, running, nil
+}
+
+// podServingContainerRunning reports whether the pod is currently running its
+// serving container. A terminating pod still counts: its container keeps the
+// generations it already accepted until the process exits, so the rollout must
+// wait for it exactly as it waits for any other running container.
+//
+// The deployment builder gives the pod exactly one container
+// (deployment_builder.go), so a pod with a single reported container status
+// is that container even when its name differs from the runtime's.
+func podServingContainerRunning(pod *corev1.Pod, containerName string) bool {
+	for _, cs := range pod.Status.ContainerStatuses {
+		if cs.Name == containerName || len(pod.Spec.Containers) == 1 {
+			return cs.State.Running != nil
+		}
+	}
+	return false
 }
 
 // reconcileRolloutPolicy checks whether the rollout should be deferred based on
@@ -312,8 +339,10 @@ func (r *InferenceServiceReconciler) reconcileRolloutPolicy(
 	// removed from Service endpoints so new requests stop arriving, but
 	// generations already accepted keep running. checkServiceIdle probes both
 	// ready and not-ready endpoints, so we always consult it rather than
-	// proceeding on the basis of readiness alone.
-	totalPods, readyPods, countErr := r.countOldPods(ctx, isvc)
+	// proceeding on the basis of readiness alone. A pod whose serving
+	// container is not running is the one case that can be settled without a
+	// probe: it holds no request.
+	totalPods, _, runningPods, countErr := r.countOldPods(ctx, isvc)
 
 	idle, checkErr := r.checkServiceIdle(ctx, isvc, svc)
 	if errors.Is(checkErr, errNoEndpoints) {
@@ -336,6 +365,15 @@ func (r *InferenceServiceReconciler) reconcileRolloutPolicy(
 		default:
 			idle, checkErr = false, nil
 		}
+	}
+
+	if countErr == nil && totalPods > 0 && runningPods == 0 && !idle {
+		// No old pod is running its serving container, so none can hold a
+		// request (#2553), whether the probe could not answer or was never
+		// reached (no endpoint address). A running pod's unanswered probe
+		// still defers, which is what #1543 kept.
+		idle, checkErr = true, nil
+		log.Info("No serving container is running; nothing to protect, proceeding with rollout", "totalPods", totalPods)
 	}
 
 	if checkErr == nil && idle {
@@ -365,14 +403,16 @@ func (r *InferenceServiceReconciler) reconcileRolloutPolicy(
 			reason = ReasonIdleCheckFailed
 			message = fmt.Sprintf("Idle check failed (%v); deferring rollout until idle or timeout", checkErr)
 		}
-	} else if totalPods > readyPods {
-		// Mixed state: some old pods are Ready (serving) while others are
-		// crashlooping. The rollout is deferred to protect in-flight work
-		// on the Ready pods, but the reason must distinguish this from the
+	} else if totalPods > runningPods {
+		// Mixed state: some old pods are running a serving container while
+		// others are not. The rollout is deferred to protect in-flight work
+		// on the running pods, but the reason must distinguish this from the
 		// pure busy case so an operator can see why the rollout is waiting.
+		// The not-running pods hold nothing, so only the running count says
+		// how many are being protected (#2553).
 		reason = ReasonPodsCrashLooping
-		message = fmt.Sprintf("%d of %d old-generation pods are crashlooping; deferring rollout to protect in-flight work on Ready pods", totalPods-readyPods, totalPods)
-		log.Info("Mixed pod state, deferring rollout to protect in-flight work", "totalPods", totalPods, "readyPods", readyPods)
+		message = fmt.Sprintf("%d of %d old-generation pods are not running their serving container; deferring rollout to protect in-flight work on running pods", totalPods-runningPods, totalPods)
+		log.Info("Mixed pod state, deferring rollout to protect in-flight work", "totalPods", totalPods, "runningPods", runningPods)
 	} else {
 		log.Info("Backend slots are busy, deferring rollout")
 	}

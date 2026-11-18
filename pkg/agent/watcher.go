@@ -18,6 +18,9 @@ package agent
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"maps"
@@ -67,6 +70,12 @@ type InferenceServiceEvent struct {
 	Type             EventType
 	InferenceService *inferencev1alpha1.InferenceService
 }
+
+// defaultModelGoneGrace is how long a served InferenceService whose Model is
+// NotFound keeps its engine before the watcher releases it (#2411). A
+// delete-and-recreate of the Model (kubectl replace --force, a GitOps
+// re-create) is back well within it.
+const defaultModelGoneGrace = 5 * time.Minute
 
 // defaultPollInterval is how often the watcher re-lists InferenceServices
 // looking for changes. Five seconds is a balance between responsiveness for
@@ -131,6 +140,33 @@ type InferenceServiceWatcher struct {
 	// resetConnections and onReachable are the API hooks; see SetAPIHooks.
 	resetConnections func()
 	onReachable      func()
+	// modelGone maps the key of each served InferenceService whose Model is
+	// NotFound to the time the poll first found it missing. The service is
+	// kept, with no events, until defaultModelGoneGrace has passed, so a
+	// delete-and-recreate of the Model does not stop its engine (#2411).
+	// modelSeen maps the key of each served InferenceService to the Model it
+	// was last served with, so a Model re-created with a different spec
+	// restarts the engine. Only the goroutine running Watch touches them.
+	modelGone map[string]time.Time
+	modelSeen map[string]modelIdentity
+}
+
+// modelIdentity is what the watcher remembers of a served InferenceService's
+// Model: its UID, which a re-create changes, and a fingerprint of its spec.
+type modelIdentity struct {
+	uid  types.UID
+	spec string
+}
+
+// watchVerdict is decideWatch's answer for one InferenceService.
+type watchVerdict struct {
+	// watch is true when this agent serves the service.
+	watch bool
+	// modelMissing is true when the Model the service references does not
+	// exist.
+	modelMissing bool
+	// model is the referenced Model whenever the lookup found it.
+	model *inferencev1alpha1.Model
 }
 
 // NewInferenceServiceWatcher creates a new watcher with the default failure
@@ -224,8 +260,9 @@ func (w *InferenceServiceWatcher) SetNameAllowlist(names []string) {
 // SeedSeen makes the first poll treat keys as already seen, at no resource
 // version. The agent seeds the engines it adopted at startup: an adopted key
 // the poll watches then gets Updated (a no-op while its spec hash matches),
-// and one it does not watch (deleted, off the allowlist, its Model gone or no
-// longer metal) gets Deleted, which stops the engine. Call it before Watch.
+// and one it does not watch (deleted, off the allowlist, its Model gone for
+// longer than defaultModelGoneGrace or no longer metal) gets Deleted, which
+// stops the engine. Call it before Watch.
 func (w *InferenceServiceWatcher) SeedSeen(keys map[string]bool) {
 	w.seeded = maps.Clone(keys)
 }
@@ -472,7 +509,7 @@ func (w *InferenceServiceWatcher) poll(
 		isvc := &list.Items[i]
 		key := watchKey(isvc)
 
-		watch, err := w.shouldWatch(ctx, isvc)
+		d, err := w.decide(ctx, isvc)
 		if err != nil {
 			// Ownership is unknown this round (#2076). Counting the service
 			// as current keeps a seen one out of the deletion pass below,
@@ -481,14 +518,28 @@ func (w *InferenceServiceWatcher) poll(
 			current[key] = true
 			continue
 		}
-		if !watch {
+		if !d.watch {
+			if _, served := seen[key]; served && d.modelMissing && w.holdForMissingModel(isvc) {
+				// Kept like an unknown answer: no events, seen unchanged.
+				current[key] = true
+			}
 			continue
 		}
 		current[key] = true
+		w.noteModelBack(isvc)
 
 		lastVersion, exists := seen[key]
 		currentVersion := isvc.ResourceVersion
 		requeued := w.takeRequeue(key)
+
+		if w.modelReplaced(key, d.model) && exists {
+			// The Model was re-created with a different spec: restart the
+			// engine on it, as every re-create did before #2411.
+			w.logger.Infow("referenced model was re-created with a different spec; restarting the engine",
+				"namespace", isvc.Namespace, "inferenceService", isvc.Name, "modelRef", isvc.Spec.ModelRef)
+			eventChan <- InferenceServiceEvent{Type: EventTypeDeleted, InferenceService: isvc.DeepCopy()}
+			exists = false
+		}
 
 		if !exists {
 			// New service
@@ -509,6 +560,7 @@ func (w *InferenceServiceWatcher) poll(
 
 	w.forgetVanishedLookupFailures(current)
 	w.forgetVanishedRequeues(current)
+	w.forgetVanishedModels(current)
 
 	// Check for deleted services
 	for key := range seen {
@@ -540,7 +592,13 @@ func (w *InferenceServiceWatcher) poll(
 //  2. Model.spec.hardware.accelerator check -- looks up the referenced
 //     Model and returns true only when its accelerator is "metal".
 //
-// A NotFound Model means the service is not ours. Any other lookup error (a
+// A NotFound Model means the service is not ours. The poll loop still keeps a
+// service it is serving for defaultModelGoneGrace before releasing it, so a
+// delete-and-recreate of the Model keeps the engine (#2411); callers outside
+// the poll (owns, claimsForRestart) see only this answer and act on it at
+// once: an evicted engine waiting to restart is dropped, and the poll that
+// finds its Model again delivers the service as Updated (noteModelBack),
+// which starts it. Any other lookup error (a
 // timeout, client-side throttling, a 5xx while the API server restarts) is
 // returned instead, because the answer is unknown: callers must leave the
 // service as it was rather than treat it as not ours, or one transient error
@@ -548,7 +606,15 @@ func (w *InferenceServiceWatcher) poll(
 func (w *InferenceServiceWatcher) shouldWatch(
 	ctx context.Context, isvc *inferencev1alpha1.InferenceService,
 ) (bool, error) {
-	watch, err := w.decideWatch(ctx, isvc)
+	d, err := w.decide(ctx, isvc)
+	return d.watch, err
+}
+
+// decide is shouldWatch with the whole decision, for the poll loop.
+func (w *InferenceServiceWatcher) decide(
+	ctx context.Context, isvc *inferencev1alpha1.InferenceService,
+) (watchVerdict, error) {
+	d, err := w.decideWatch(ctx, isvc)
 	switch {
 	case err == nil:
 		w.noteLookupDecided(isvc)
@@ -561,15 +627,15 @@ func (w *InferenceServiceWatcher) shouldWatch(
 	default:
 		w.noteLookupFailed(isvc, err)
 	}
-	return watch, err
+	return d, err
 }
 
 // decideWatch is shouldWatch's decision without the failure tracking.
 func (w *InferenceServiceWatcher) decideWatch(
 	ctx context.Context, isvc *inferencev1alpha1.InferenceService,
-) (bool, error) {
+) (watchVerdict, error) {
 	if isvc.Spec.ModelRef == "" {
-		return false, nil
+		return watchVerdict{}, nil
 	}
 
 	if w.nameAllowlist != nil {
@@ -579,7 +645,7 @@ func (w *InferenceServiceWatcher) decideWatch(
 				"namespace", isvc.Namespace,
 				"inferenceService", isvc.Name,
 			)
-			return false, nil
+			return watchVerdict{}, nil
 		}
 	}
 
@@ -595,12 +661,99 @@ func (w *InferenceServiceWatcher) decideWatch(
 				"inferenceService", isvc.Name,
 				"modelRef", isvc.Spec.ModelRef,
 			)
-			return false, nil
+			return watchVerdict{modelMissing: true}, nil
 		}
-		return false, fmt.Errorf("get model %s/%s: %w", isvc.Namespace, isvc.Spec.ModelRef, err)
+		return watchVerdict{}, fmt.Errorf("get model %s/%s: %w", isvc.Namespace, isvc.Spec.ModelRef, err)
 	}
 
-	return model.Spec.Hardware != nil && model.Spec.Hardware.Accelerator == "metal", nil
+	return watchVerdict{
+		watch: model.Spec.Hardware != nil && model.Spec.Hardware.Accelerator == "metal",
+		model: model,
+	}, nil
+}
+
+// holdForMissingModel reports whether the poll keeps a served isvc whose Model
+// is NotFound: from the first poll that finds it missing until
+// defaultModelGoneGrace has passed. It logs the start of the hold and the
+// release at Warn.
+func (w *InferenceServiceWatcher) holdForMissingModel(isvc *inferencev1alpha1.InferenceService) bool {
+	key := watchKey(isvc)
+	now := w.clock()
+	since, holding := w.modelGone[key]
+	if !holding {
+		if w.modelGone == nil {
+			w.modelGone = map[string]time.Time{}
+		}
+		w.modelGone[key] = now
+		w.logger.Warnw("referenced model not found; keeping the engine in case the model is re-created",
+			"namespace", isvc.Namespace, "inferenceService", isvc.Name, "modelRef", isvc.Spec.ModelRef,
+			"grace", defaultModelGoneGrace)
+		return true
+	}
+	if now.Sub(since) < defaultModelGoneGrace {
+		return true
+	}
+	delete(w.modelGone, key)
+	w.logger.Warnw("referenced model still not found; stopping the engine",
+		"namespace", isvc.Namespace, "inferenceService", isvc.Name, "modelRef", isvc.Spec.ModelRef,
+		"missingFor", now.Sub(since).Round(time.Second))
+	return false
+}
+
+// noteModelBack ends the hold of isvc, if any, once its Model is found again,
+// and has this poll deliver the service as Updated. The hold sent no events,
+// so a service whose engine stopped meanwhile (an eviction whose restart was
+// dropped because the Model was missing) would otherwise wait for an
+// unrelated change to start again; for a running engine with an unchanged
+// spec the Updated is a no-op.
+func (w *InferenceServiceWatcher) noteModelBack(isvc *inferencev1alpha1.InferenceService) {
+	key := watchKey(isvc)
+	since, holding := w.modelGone[key]
+	if !holding {
+		return
+	}
+	delete(w.modelGone, key)
+	w.Requeue(key)
+	w.logger.Infow("referenced model found again; the engine kept running",
+		"namespace", isvc.Namespace, "inferenceService", isvc.Name, "modelRef", isvc.Spec.ModelRef,
+		"missingFor", w.clock().Sub(since).Round(time.Second))
+}
+
+// modelReplaced records model as the one key is served with, and reports
+// whether it replaced a different Model: a new UID (a re-create) with a
+// different spec. An in-place edit keeps the UID and is not a replacement,
+// as before #2411; nor is the first Model seen for key.
+func (w *InferenceServiceWatcher) modelReplaced(key string, model *inferencev1alpha1.Model) bool {
+	if model == nil {
+		return false
+	}
+	spec, err := json.Marshal(model.Spec)
+	if err != nil {
+		return false
+	}
+	sum := sha256.Sum256(spec)
+	cur := modelIdentity{uid: model.UID, spec: hex.EncodeToString(sum[:])}
+	prev, known := w.modelSeen[key]
+	if w.modelSeen == nil {
+		w.modelSeen = map[string]modelIdentity{}
+	}
+	w.modelSeen[key] = cur
+	return known && prev.uid != cur.uid && prev.spec != cur.spec
+}
+
+// forgetVanishedModels drops the Model records of every service the latest
+// poll did not keep, so a deleted or released service starts fresh.
+func (w *InferenceServiceWatcher) forgetVanishedModels(current map[string]bool) {
+	for key := range w.modelGone {
+		if !current[key] {
+			delete(w.modelGone, key)
+		}
+	}
+	for key := range w.modelSeen {
+		if !current[key] {
+			delete(w.modelSeen, key)
+		}
+	}
 }
 
 // noteLookupFailed records a failed Model lookup for isvc: a Warn when this

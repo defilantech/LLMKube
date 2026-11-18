@@ -1404,7 +1404,7 @@ func computeCacheKey(source string) string {
 // is populated at every site by construction; the local and remote paths are
 // pinned by test, the s3 path is covered only by this shared helper.
 func ggufMetadataFromParsed(parsed *gguf.GGUFFile) *inferencev1alpha1.GGUFMetadata {
-	return &inferencev1alpha1.GGUFMetadata{
+	meta := &inferencev1alpha1.GGUFMetadata{
 		Architecture:  parsed.Architecture(),
 		ModelName:     parsed.Name(),
 		Quantization:  parsed.Quantization(),
@@ -1419,6 +1419,13 @@ func ggufMetadataFromParsed(parsed *gguf.GGUFFile) *inferencev1alpha1.GGUFMetada
 		FileVersion:   parsed.Header.Version,
 		License:       license.Normalize(parsed.License()),
 	}
+	// A hybrid keeps a KV cache only on some of its layers, and whether the
+	// header said so is exactly what a first start of a remote source cannot
+	// work out for itself: the file is not on the machine yet. Record it with
+	// the rest of the shape, from whichever read this is (local, http(s) or
+	// s3), so the agent sizes that first start from the real layout.
+	meta.KVHeadLayers, meta.RecurrentStatePerSeq = gguf.KVLayout(parsed)
+	return meta
 }
 
 func (r *ModelReconciler) parseGGUFMetadata(path string) (*inferencev1alpha1.GGUFMetadata, error) {

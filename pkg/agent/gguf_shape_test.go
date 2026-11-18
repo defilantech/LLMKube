@@ -194,15 +194,15 @@ func TestEstimateModelMemory_StoreGGUFChargesKVFromFileHeader(t *testing.T) {
 	}
 }
 
-// The controller's Model.status.gguf stays the first source: a downloaded
-// model whose status carries a shape is charged from it, not from the store
-// file, so estimates for models the controller could read do not change.
-func TestEstimateModelMemory_StatusShapeTakesPrecedenceOverFileHeader(t *testing.T) {
+// Header and status read the same six accessors, so a dense model's charge
+// is unchanged by which one wins; this pins that for a file whose status
+// matches it.
+func TestEstimateModelMemory_DenseKVUnchangedHeaderVersusStatus(t *testing.T) {
 	agent := newAdmissionTestAgent(t, nil, MetalAgentConfig{})
 	source := "https://model-host.invalid/Qwen3-32B-Q4_K_M.gguf"
 	model := newAdmissionTestModel(source, "")
 	model.Status.GGUF = &inferencev1alpha1.GGUFMetadata{
-		LayerCount: 32, EmbeddingSize: 4096, HeadCount: 32, HeadCountKV: 8, KeyLength: 128, ValueLength: 128,
+		LayerCount: 64, EmbeddingSize: 5120, HeadCount: 64, HeadCountKV: 8, KeyLength: 128, ValueLength: 128,
 	}
 	writeTestGGUF(t, modelCacheSlot(agent.config.ModelStorePath, model.Name, source), qwen3_32BShape)
 
@@ -210,9 +210,63 @@ func TestEstimateModelMemory_StatusShapeTakesPrecedenceOverFileHeader(t *testing
 	if err != nil {
 		t.Fatalf("estimateModelMemory: %v", err)
 	}
-	// 32 layers * 8 KV heads * 131072 * (128 + 128) * 2 bytes = 16 GiB.
-	if want := uint64(32 * 8 * 131072 * 256 * 2); est.KVCacheBytes != want {
-		t.Errorf("KVCacheBytes = %d, want %d (the status shape, not the file's)", est.KVCacheBytes, want)
+	if est.KVCacheBytes != qwen3_32BKVAt131072 {
+		t.Errorf("KVCacheBytes = %d, want %d (a dense model charges every layer either way)",
+			est.KVCacheBytes, qwen3_32BKVAt131072)
+	}
+	if est.RecurrentStateBytes != 0 {
+		t.Errorf("RecurrentStateBytes = %d, want 0 (a dense model has no recurrent layer)", est.RecurrentStateBytes)
+	}
+}
+
+// The first start of a download, before the file is on the Mac, uses the
+// status shape.
+func TestEstimateModelMemory_StatusShapeUsedBeforeDownloadLands(t *testing.T) {
+	agent := newAdmissionTestAgent(t, nil, MetalAgentConfig{})
+	source := "https://model-host.invalid/Qwen3-32B-Q4_K_M.gguf"
+	model := newAdmissionTestModel(source, "4.0 KiB")
+	model.Status.GGUF = &inferencev1alpha1.GGUFMetadata{
+		LayerCount: 64, EmbeddingSize: 5120, HeadCount: 64, HeadCountKV: 8, KeyLength: 128, ValueLength: 128,
+	}
+
+	est, err := agent.estimateModelMemory(context.Background(), model, 131072, "", "", 0)
+	if err != nil {
+		t.Fatalf("estimateModelMemory: %v", err)
+	}
+	if est.KVCacheBytes != qwen3_32BKVAt131072 {
+		t.Errorf("KVCacheBytes = %d, want %d (the status shape, the file is not on the Mac yet)",
+			est.KVCacheBytes, qwen3_32BKVAt131072)
+	}
+}
+
+// A store file present but with an unreadable header (a partial download)
+// falls back to the status shape.
+func TestEstimateModelMemory_UnreadableFileHeaderFallsBackToStatusShape(t *testing.T) {
+	agent := newAdmissionTestAgent(t, nil, MetalAgentConfig{})
+	source := "https://model-host.invalid/Qwen3-32B-Q4_K_M.gguf"
+	model := newAdmissionTestModel(source, "")
+	model.Status.GGUF = &inferencev1alpha1.GGUFMetadata{
+		LayerCount: 64, EmbeddingSize: 5120, HeadCount: 64, HeadCountKV: 8, KeyLength: 128, ValueLength: 128,
+	}
+	partial := buildTestGGUF("qwen3", qwen3_32BShape)
+	slot := modelCacheSlot(agent.config.ModelStorePath, model.Name, source)
+	if err := os.MkdirAll(filepath.Dir(slot), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(slot, partial[:len(partial)/2], 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	est, err := agent.estimateModelMemory(context.Background(), model, 131072, "", "", 0)
+	if err != nil {
+		t.Fatalf("estimateModelMemory: %v", err)
+	}
+	if est.KVCacheBytes != qwen3_32BKVAt131072 {
+		t.Errorf("KVCacheBytes = %d, want %d (the status shape, a partial file has no header)",
+			est.KVCacheBytes, qwen3_32BKVAt131072)
+	}
+	if est.KVCacheNotCounted != "" {
+		t.Errorf("KVCacheNotCounted = %q, want empty: the status shape is charged", est.KVCacheNotCounted)
 	}
 }
 

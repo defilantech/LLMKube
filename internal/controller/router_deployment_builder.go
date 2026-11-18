@@ -49,15 +49,14 @@ const routerProxyDrainGraceMargin = 5 * time.Second
 func (r *ModelRouterReconciler) reconcileRouterDeployment(
 	ctx context.Context,
 	mr *inferencev1alpha1.ModelRouter,
-	configHash string,
-	hasPools bool,
+	compiled *compiledConfig,
 ) error {
-	if hasPools && mr.Spec.Proxy != nil && mr.Spec.Proxy.Replicas != nil && *mr.Spec.Proxy.Replicas > 1 {
+	if compiled.HasPools && mr.Spec.Proxy != nil && mr.Spec.Proxy.Replicas != nil && *mr.Spec.Proxy.Replicas > 1 {
 		logf.FromContext(ctx).Info(
 			"pinning router-proxy to a single replica: ModelPool activation requires one proxy; ignoring spec.proxy.replicas",
 			"requestedReplicas", *mr.Spec.Proxy.Replicas)
 	}
-	desired := r.newRouterDeployment(mr, configHash, hasPools)
+	desired := r.newRouterDeployment(mr, compiled)
 	if err := setControllerReferenceUnblocked(mr, desired, r.Scheme); err != nil {
 		return fmt.Errorf("set owner ref on router Deployment: %w", err)
 	}
@@ -141,8 +140,7 @@ func routerProxyScrapeAnnotations() map[string]string {
 // clusters and don't violate the restricted PodSecurityStandard.
 func (r *ModelRouterReconciler) newRouterDeployment(
 	mr *inferencev1alpha1.ModelRouter,
-	configHash string,
-	hasPools bool,
+	compiled *compiledConfig,
 ) *appsv1.Deployment {
 	replicas := int32(1)
 	image := r.routerProxyImage()
@@ -177,7 +175,7 @@ func (r *ModelRouterReconciler) newRouterDeployment(
 	// serializes swaps through a single in-process lock, so a second replica
 	// would race it and thrash the shared GPU slot. Pin to 1 regardless of
 	// spec.proxy.replicas until cross-replica swap coordination lands.
-	if hasPools {
+	if compiled.HasPools {
 		replicas = 1
 	}
 	if resources.Requests == nil && resources.Limits == nil {
@@ -198,7 +196,7 @@ func (r *ModelRouterReconciler) newRouterDeployment(
 		// Re-roll pods automatically when the ConfigMap content
 		// changes. controller-runtime's CreateOrUpdate doesn't trigger
 		// a rollout on its own; the hash annotation does.
-		routerProxyConfigHashAnnotation: configHash,
+		routerProxyConfigHashAnnotation: compiled.Hash,
 	}
 	if r.EmitScrapeAnnotations {
 		for k, v := range routerProxyScrapeAnnotations() {
@@ -216,7 +214,7 @@ func (r *ModelRouterReconciler) newRouterDeployment(
 	// under a dedicated ServiceAccount bound to the Role reconcileRouterActivationRBAC
 	// provisions; other routers keep the namespace default SA and no API access.
 	serviceAccountName := ""
-	if hasPools || routerNeedsEndpointWatch(mr) {
+	if compiled.HasPools || compiled.NeedsEndpointWatch {
 		serviceAccountName = routerProxyResourceName(mr.Name)
 	}
 	// Every proxy labels its metrics with this router's name, whatever else it does.
@@ -254,7 +252,7 @@ func (r *ModelRouterReconciler) newRouterDeployment(
 							Name:            routerProxyContainerName,
 							Image:           image,
 							ImagePullPolicy: corev1.PullIfNotPresent,
-							Args:            routerProxyArgs(mr, hasPools),
+							Args:            routerProxyArgs(mr, compiled.HasPools),
 							Ports: []corev1.ContainerPort{
 								{
 									Name:          "http",

@@ -59,6 +59,7 @@ var knownReasonConstants = map[string]string{
 	"EventReasonServiceNameTooLong":     EventReasonServiceNameTooLong,
 	"EventReasonModelDigestMismatch":    EventReasonModelDigestMismatch,
 	"EventReasonModelDownloadTooLarge":  EventReasonModelDownloadTooLarge,
+	"EventReasonModelDownloadNoSpace":   EventReasonModelDownloadNoSpace,
 	"EventReasonSourceSecretNotAllowed": EventReasonSourceSecretNotAllowed,
 	"EventReasonRuntimeNotAvailable":    EventReasonRuntimeNotAvailable,
 	"EventReasonMemoryCheckFailed":      EventReasonMemoryCheckFailed,

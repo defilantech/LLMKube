@@ -24,6 +24,7 @@ package router
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -31,6 +32,11 @@ import (
 
 	"golang.org/x/net/http/httpguts"
 )
+
+// ErrUnknownBackend reports a config that names a backend it does not define.
+// The controller distinguishes it from the other validation failures to add
+// its spec.backendSelector hint.
+var ErrUnknownBackend = errors.New("does not name an existing backend")
 
 // Default-route strategies. These mirror the CRD enum and decide what the
 // matcher does for a request that no rule accepted.
@@ -83,6 +89,11 @@ type Backend struct {
 	// ModelInfo is published on this backend's /v1/models entry. Nil
 	// publishes the bare entry.
 	ModelInfo *ModelInfo `json:"modelInfo,omitempty"`
+
+	// ConcurrencyLimit is the requests one pod of the backend serves at once,
+	// compiled from its InferenceService. Zero when unknown or the runtime
+	// picks its own; the proxy then records no slot utilization.
+	ConcurrencyLimit int32 `json:"concurrencyLimit,omitempty"`
 
 	// Tier is "local" or "cloud". Used by the fail-closed gate: sensitive-
 	// data rules cannot route to cloud-tier backends.
@@ -174,6 +185,12 @@ type Backend struct {
 	// and charges 0 USD against dollar budgets. Compiled from
 	// ModelRouter.spec.backends[].costPerMillionTokens.
 	CostPerMillionTokens *TokenCost `json:"costPerMillionTokens,omitempty"`
+
+	// Hidden keeps a backend out of `/v1/models` without taking it out of
+	// dispatch; the controller sets it for a backend spec.backendSelector
+	// produced whose InferenceService is scaled to zero or suspended, never for
+	// an explicit entry or a ModelPool member.
+	Hidden bool `json:"hidden,omitempty"`
 }
 
 // EndpointSource identifies the Service behind an endpoint-resolution backend.
@@ -511,7 +528,7 @@ func (c *Config) Validate() error {
 		}
 	}
 	if c.DefaultRoute != "" && !names[c.DefaultRoute] {
-		return fmt.Errorf("defaultRoute %q does not name an existing backend", c.DefaultRoute)
+		return fmt.Errorf("defaultRoute %q %w", c.DefaultRoute, ErrUnknownBackend)
 	}
 	switch c.DefaultRouteStrategy {
 	case "", DefaultRouteStrategyStatic, DefaultRouteStrategyBackendNameMatch:
@@ -530,8 +547,8 @@ func (c *Config) Validate() error {
 		}
 		for j, name := range r.Route.Backends {
 			if !names[name] {
-				return fmt.Errorf("rules[%d] %s: route.backends[%d] %q does not name an existing backend",
-					i, r.Name, j, name)
+				return fmt.Errorf("rules[%d] %s: route.backends[%d] %q %w",
+					i, r.Name, j, name, ErrUnknownBackend)
 			}
 		}
 		switch r.Route.PoolActivation {

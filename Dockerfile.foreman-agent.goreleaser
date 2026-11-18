@@ -20,6 +20,9 @@ RUN apk upgrade --no-cache \
     && adduser -S -u 65532 -G nonroot nonroot
 WORKDIR /
 COPY $TARGETPLATFORM/foreman-agent /foreman-agent
+# Third-party license and NOTICE files (#2564).
+COPY LICENSE /licenses/LICENSE
+COPY third_party_licenses /licenses/third_party_licenses
 USER 65532:65532
 
 ENTRYPOINT ["/foreman-agent"]

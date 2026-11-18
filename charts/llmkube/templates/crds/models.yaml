@@ -1942,6 +1942,16 @@ spec:
                       it as unknown and derive it when needed.
                     format: int64
                     type: integer
+                  kvHeadLayers:
+                    description: |-
+                      KVHeadLayers is the KV head count summed over the layers that hold a KV
+                      cache, for a model whose layout is not blockCount layers of headCountKV
+                      heads (a hybrid with recurrent layers). 0 means the layout is the plain
+                      one, the header was unreadable, or an older controller wrote the status:
+                      consumers then charge every layer by headCountKV, which over-charges a
+                      hybrid and never under-charges it.
+                    format: int64
+                    type: integer
                   layerCount:
                     description: LayerCount is the number of transformer layers/blocks
                     format: int64
@@ -1958,6 +1968,14 @@ spec:
                     description: Quantization is the quantization type (e.g., "Q4_K_M",
                       "Q5_K_M")
                     type: string
+                  recurrentStatePerSeq:
+                    description: |-
+                      RecurrentStatePerSeq is the state all recurrent layers hold per
+                      sequence, in bytes, for the same hybrids. 0 means the model has no
+                      recurrent layer, or its state is not described by the generic
+                      convolution + SSM formula, and it is charged like an attention layer.
+                    format: int64
+                    type: integer
                   tensorCount:
                     description: TensorCount is the number of tensors in the model
                     format: int64

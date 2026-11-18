@@ -83,6 +83,15 @@ func resolveRuntimeImage(backend RuntimeBackend, model *inferencev1alpha1.Model,
 	return backend.DefaultImage()
 }
 
+// servingImage is the image the serving container runs: spec.image when set,
+// else resolveRuntimeImage.
+func servingImage(isvc *inferencev1alpha1.InferenceService, backend RuntimeBackend, model *inferencev1alpha1.Model, overrides map[string]string) string {
+	if isvc.Spec.Image != "" {
+		return isvc.Spec.Image
+	}
+	return resolveRuntimeImage(backend, model, overrides)
+}
+
 // runtimeImageOverrideKey maps a backend to its --runtime-images key. Only
 // backends whose defaults the operator owns are overridable; every other
 // backend (generic requires spec.image by contract) returns "".
@@ -540,10 +549,7 @@ func (r *InferenceServiceReconciler) constructDeploymentForCache(
 		"inference.llmkube.dev/runtime": runtimeNameLabel(isvc),
 	}
 
-	image := resolveRuntimeImage(backend, model, r.RuntimeImageOverrides)
-	if isvc.Spec.Image != "" {
-		image = isvc.Spec.Image
-	}
+	image := servingImage(isvc, backend, model, r.RuntimeImageOverrides)
 
 	port := backend.DefaultPort()
 	if isvc.Spec.ContainerPort != nil {

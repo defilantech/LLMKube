@@ -80,7 +80,7 @@ func TestRouterProxyScrapeAnnotations(t *testing.T) {
 			rec := newRouterReconcilerForTest(t, mr)
 			rec.RouterProxyImage = "ghcr.io/test/router-proxy:v1"
 			rec.EmitScrapeAnnotations = emit
-			if err := rec.reconcileRouterDeployment(context.Background(), mr, "hash", false); err != nil {
+			if err := rec.reconcileRouterDeployment(context.Background(), mr, &compiledConfig{Hash: "hash"}); err != nil {
 				t.Fatalf("reconcileRouterDeployment: %v", err)
 			}
 			dep := getRouterDeployment(t, rec, mr)
@@ -117,7 +117,7 @@ func TestRouterProxyScrapeAnnotations(t *testing.T) {
 func TestRouterProxyScrapeAnnotationsReachAnExistingDeployment(t *testing.T) {
 	mr := canonicalModelRouter()
 	scheme := builderTestScheme(t)
-	initial := (&ModelRouterReconciler{RouterProxyImage: "img"}).newRouterDeployment(mr, "hash", false)
+	initial := (&ModelRouterReconciler{RouterProxyImage: "img"}).newRouterDeployment(mr, &compiledConfig{Hash: "hash"})
 	if err := setControllerReferenceUnblocked(mr, initial, scheme); err != nil {
 		t.Fatalf("set controller reference: %v", err)
 	}
@@ -132,7 +132,7 @@ func TestRouterProxyScrapeAnnotationsReachAnExistingDeployment(t *testing.T) {
 		RouterProxyImage:      "img",
 		EmitScrapeAnnotations: true,
 	}
-	if err := rec.reconcileRouterDeployment(context.Background(), mr, "hash", false); err != nil {
+	if err := rec.reconcileRouterDeployment(context.Background(), mr, &compiledConfig{Hash: "hash"}); err != nil {
 		t.Fatalf("reconcileRouterDeployment: %v", err)
 	}
 	dep := getRouterDeployment(t, rec, mr)
@@ -152,7 +152,7 @@ func TestRouterProxyScrapeAnnotationsLeaveWithTheFlag(t *testing.T) {
 	mr := canonicalModelRouter()
 	scheme := builderTestScheme(t)
 	initial := (&ModelRouterReconciler{RouterProxyImage: "img", EmitScrapeAnnotations: true}).
-		newRouterDeployment(mr, "hash", false)
+		newRouterDeployment(mr, &compiledConfig{Hash: "hash"})
 	initial.Spec.Template.Annotations["prometheus.io/path"] = "/custom-metrics"
 	if err := setControllerReferenceUnblocked(mr, initial, scheme); err != nil {
 		t.Fatalf("set controller reference: %v", err)
@@ -162,7 +162,7 @@ func TestRouterProxyScrapeAnnotationsLeaveWithTheFlag(t *testing.T) {
 		Scheme:           scheme,
 		RouterProxyImage: "img",
 	}
-	if err := rec.reconcileRouterDeployment(context.Background(), mr, "hash", false); err != nil {
+	if err := rec.reconcileRouterDeployment(context.Background(), mr, &compiledConfig{Hash: "hash"}); err != nil {
 		t.Fatalf("reconcileRouterDeployment: %v", err)
 	}
 	got := getRouterDeployment(t, rec, mr).Spec.Template.Annotations

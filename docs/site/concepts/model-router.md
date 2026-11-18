@@ -253,7 +253,7 @@ Point any OpenAI-compatible client at that URL and it just works. The proxy serv
 | `POST /v1/messages` | Anthropic Messages API: Claude Code and the Anthropic SDKs |
 | `POST /v1/messages/count_tokens` | Anthropic token counting |
 | `POST /v1/<anything else>` | Any other endpoint the runtime serves, such as vLLM's `/v1/responses` or `/v1/decisions`, forwarded on the same path to local-tier backends only (see below) |
-| `GET /v1/models` | Model discovery: one entry per backend, under its `displayName`, else its `name`, the id `BackendNameMatch` resolves. An external backend's upstream `model` is not listed. |
+| `GET /v1/models` | Model discovery: one entry per backend, under its `displayName`, else its `name`, the id `BackendNameMatch` resolves. An external backend's upstream `model` is not listed. An InferenceService that `backendSelector` selected is left out while it is scaled to zero or suspended, unless it is a ModelPool member, and a ref-less `backends` entry of that name is that backend, so it is left out too; an explicit entry with `inferenceServiceRef` for it replaces the selected backend and is listed even then (see [Selecting backends by label](#selecting-backends-by-label)). |
 
 The two Anthropic routes are placed, balanced and session-bound exactly like chat completions, and headers such as `anthropic-version` and `anthropic-beta` pass through. The backend must serve them itself: vLLM does natively; a backend that does not returns its own `404`, which reaches the client unchanged and does not count against the backend. Token budgets charge Anthropic responses from their own usage fields (cached input included), and errors the router itself returns on these routes use the Anthropic error shape.
 
@@ -280,6 +280,40 @@ That backend's entry then carries `"context_length"` and an OpenRouter-style `ar
 A value you set wins. If `inputModalities` leaves out `image` while `capabilities` lists `vision`, the controller records a `ModelInfoMismatch` warning event, and `/v1/models` publishes `inputModalities`. A backend without `modelInfo` publishes the bare entry, as before.
 
 The router doesn't enforce `modelInfo`, so keep it in step with what the backend serves: a vLLM backend started with `--limit-mm-per-prompt '{"image":0}'` rejects images whatever the list says. `modelInfo` applies to the Proxy data plane only. The Gateway and AgentGateway data planes ignore it, and AgentGateway answers `/v1/models` itself.
+
+## Selecting backends by label
+
+A router that fronts every model in a namespace does not have to list each InferenceService. `spec.backendSelector` adds every InferenceService in the router's namespace that matches it as a `tier: local` backend named after the service, so a service created, relabelled or deleted later needs no router edit:
+
+```yaml
+apiVersion: inference.llmkube.dev/v1alpha1
+kind: ModelRouter
+metadata:
+  name: models
+spec:
+  defaultRouteStrategy: BackendNameMatch
+  backendSelector:
+    matchLabels:
+      llmkube.dev/router: models
+```
+
+The name is the model id `GET /v1/models` publishes and the id `BackendNameMatch` resolves. An empty selector (`{}`) matches every InferenceService in the namespace, which is how to route to all of them.
+
+Explicit `backends` entries still work beside the selector. An entry whose name is a selected service and that sets neither `inferenceServiceRef` nor `external` overrides only the fields it carries, so per-model tuning does not restate the backend:
+
+```yaml
+  backends:
+    - name: glm-5-3-flash
+      timeout: 600s       # overrides for the selected backend of this name
+```
+
+An entry with `external`, or with an `inferenceServiceRef` naming another service, keeps its own meaning, and the selected service of that name is not added. An entry's `displayName` claims the model id the same way its `name` does, so a selected service of that name is not added either and no id is published twice. A ref-less entry whose name is not a selected service makes the router report `Validated=False`: the webhook reads no other objects, so the controller is the only place that can check it.
+
+A selected service at `spec.replicas: 0` or `spec.suspend: true` stays in the compiled config and stays dispatchable, so a rule or `BackendNameMatch` request still reaches it, but the backend the selector added is left out of `GET /v1/models` so client model pickers do not offer a model that cannot answer. An explicit `backends` entry that references the same service keeps today's behavior and stays listed. A ModelPool member is never hidden: the pool holds every non-resident member at `replicas: 0`, and hiding it would remove a model clients are meant to request. Starting or stopping a selected service changes the compiled config, so the proxy pods roll as they do for any other spec change, and `spec.proxy.drainTimeout` (30s by default) bounds the streams a roll cuts.
+
+`backendSelector` is a Proxy data-plane field: `dataPlane: Gateway` and `dataPlane: AgentGateway` refuse it at `kubectl apply`. A `failClosed` rule may name only `spec.backends` entries that do not depend on the selector, because the fail-closed guarantee is checked without the cluster. A `maxUSD` budget cannot be combined with `backendSelector`, because a selected backend declares no `costPerMillionTokens` and the budget would charge 0 USD and never block. A rule or `spec.defaultRoute` naming a selected backend that stops being selected stops the compile, with a message naming the rule and the backend; the router keeps serving its last config.
+
+Anyone who can label an InferenceService in the namespace can add it to the router. That is ordinary namespace RBAC. The selector itself only reads InferenceServices (the operator already holds `get`, `list` and `watch` on them), and selecting a service creates no object for it. A selected backend is still subject to `spec.rules`, `spec.defaultRoute`, and the `failClosed` restriction above, so adding a service never routes sensitive traffic to it.
 
 Headers that change routing:
 
@@ -478,7 +512,7 @@ Each proxy replica keeps its own binding table and prefix memory. A restart star
 - `migrated`: a session moved because its pod left the ready endpoint set (`not_ready`) or was still in that set but quarantined by the proxy (`quarantined`).
 - `fallback`: the table was full and the consistent-hash home was used, or no pod was dispatchable (all quarantined or circuit-open) and the request went round-robin over the live endpoints. A fallback count alone does not mean the table is full.
 
-`reason` is set only for `spill` and `migrated`, and empty otherwise. `llmkube_router_session_bindings{router,backend}` is the current number of bindings. It counts every session used within `idleTimeout`, not only live ones, so a client that starts a new session whenever one ends can hold several times its concurrent session count. Per pod, `llmkube_router_endpoint_load`, `llmkube_router_endpoint_metrics_fresh` and `llmkube_router_endpoint_prefill_tokens` cover `LoadAware` backends with a metrics profile (vLLM today). `llmkube_router_prefill_tokens_estimated_total` counts the prefill tokens this proxy estimated it sent to each pod; compare its rate with `rate(vllm:prompt_tokens_by_source_total{source="local_compute"}[1m])` on the same pod to check the estimate.
+`reason` is set only for `spill` and `migrated`, and empty otherwise. `llmkube_router_session_bindings{router,backend}` is the current number of bindings. It counts every session used within `idleTimeout`, not only live ones, so a client that starts a new session whenever one ends can hold several times its concurrent session count. `llmkube_router_session_bindings_created_total{router,backend}` counts keys this proxy replica bound with no binding held: a key's first request, or its first after the binding expired. Bindings live in each replica's memory, so a proxy restart, a session hashed to another replica, or a session idle past `idleTimeout` binds again; read its rate as an upper bound on sessions started while the table has room. A session that starts while the table is full gets a `fallback` placement with no binding and is not counted. A session moved to another pod is a `spill` or `migrated` placement, not a new binding. Per pod, `llmkube_router_endpoint_load`, `llmkube_router_endpoint_metrics_fresh` and `llmkube_router_endpoint_prefill_tokens` cover `LoadAware` backends with a metrics profile (vLLM today). Every per-pod series carries `target_pod` and `target_node` from the EndpointSlice, empty for a backend with a static endpoint list. They are named apart from the `pod` and `node` labels a scrape attaches to the router-proxy pod itself, so the chart's PodMonitor stores them as written; to join with dcgm-exporter's `pod`, copy `target_pod` into `pod` with `label_replace`. `llmkube_router_prefill_tokens_estimated_total` counts the prefill tokens this proxy estimated it sent to each pod; compare its rate with `rate(vllm:prompt_tokens_by_source_total{source="local_compute"}[1m])` on the same pod to check the estimate.
 
 With prefix affinity, `llmkube_router_prefix_prompt_tokens_total{router,backend}` counts the estimated prompt tokens of each placed request and `llmkube_router_prefix_cached_tokens_total{router,backend}` the part the chosen pod already held. The ratio of their rates is the prefix hit rate this proxy expects; on vLLM, compare it with the engine's own `vllm:prefix_cache_hits_total` over `vllm:prefix_cache_queries_total`.
 
@@ -841,12 +875,13 @@ status:
 
 `phase` is the coarse summary; the conditions tell the full story.
 
-When the spec itself is invalid, `Validated` is `False`, `phase` is `Failed`, and the operator changes nothing in the router-proxy: a new router gets no proxy, and an existing one keeps serving the last config that compiled. The message lists every problem, and the reason is one of these:
+When `Validated` is `False`, `phase` is `Failed`, and the operator changes nothing in the router-proxy: a new router gets no proxy, and an existing one keeps serving the last config that compiled. The message lists every problem, and the reason is one of these:
 
 | Reason | Meaning |
 | --- | --- |
 | `SpecInvalid` | The spec breaks a rule the schema cannot express, such as a sensitive rule routed to a cloud backend or a `defaultRoute` naming no backend. |
 | `ClassifierNotImplemented` | `policy.classification.mode` is `detector` or `hybrid`, which need the in-proxy classifier that is not built yet ([#441](https://github.com/defilantech/LLMKube/issues/441)), and nothing else in the spec is invalid. Set `header-only`. See [Where the classification comes from](#where-the-classification-comes-from). |
+| `BackendResolutionFailed` | The backends `spec.backendSelector` resolves cannot serve as they stand: a ref-less `backends` entry that names no selected service, or a selector that selects nothing while `spec.backends` is empty. The message names the entry. |
 
 When the data plane cannot serve, `Available` flips to `False` with one of these reasons:
 

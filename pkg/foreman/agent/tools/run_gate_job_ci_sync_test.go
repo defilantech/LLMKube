@@ -58,6 +58,10 @@ var gateExemptCIChecks = map[string]string{
 	"test-envtest": "the CI-only second-seed envtest pass (#1693); the gate deliberately runs " +
 		"`make test` single-pass, so gating this target would double the ordering coverage the " +
 		"gate was decided not to pay for (see the DefaultGateChecks comment)",
+	"third-party-licenses": "release-please.yml invokes it only in the workflow_dispatch dry-run " +
+		"step, which no pull request runs; the tree derives from go.mod, so it carries no per-branch " +
+		"signal, and gating it would make every gate run install go-licenses and walk three GOOS " +
+		"module graphs",
 	"setup-test-e2e":                "provisions an e2e cluster; lifecycle, not a branch check",
 	"cleanup-test-e2e":              "tears down an e2e cluster; lifecycle, not a branch check",
 	"test-e2e":                      "needs a live cluster the gate Job does not own",

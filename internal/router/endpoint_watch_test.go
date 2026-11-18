@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus/testutil"
+	corev1 "k8s.io/api/core/v1"
 	discoveryv1 "k8s.io/api/discovery/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -197,5 +198,26 @@ func TestEndpointWatcherIgnoresUnwatchedService(t *testing.T) {
 	waitForSet(t, d, "b", []string{"http://10.0.0.1:8080", "http://10.0.0.2:8080"})
 	if _, ok := d.endpoints.Load("plain"); ok {
 		t.Error("plain backend received endpoints")
+	}
+}
+
+func TestEndpointWatcherLabelsEndpointsWithPodAndNode(t *testing.T) {
+	cfg := twoBackendsOneService()
+	d := NewDispatcher(cfg, WithRouterLabel("r-watch-target"))
+	s := watchedSlice("qwen-1", "qwen", true, "10.0.0.1")
+	node := "gpu-1"
+	s.Endpoints[0].TargetRef = &corev1.ObjectReference{Kind: "Pod", Namespace: "ns", Name: "qwen-abc"}
+	s.Endpoints[0].NodeName = &node
+	w := NewEndpointWatcher(fake.NewClientset(s), cfg, d, "r-watch-target", slog.New(slog.NewTextHandler(io.Discard, nil)))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go w.Start(ctx)
+	waitForSet(t, d, "a", []string{"http://10.0.0.1:8080"})
+
+	c := prommetrics.RouterPrefillTokensEstimatedTotal.WithLabelValues("r-watch-target", "a", "http://10.0.0.1:8080", "qwen-abc", "gpu-1")
+	before := testutil.ToFloat64(c)
+	d.trackPrefill("a", "http://10.0.0.1:8080", 10)()
+	if got := testutil.ToFloat64(c) - before; got != 10 {
+		t.Errorf("prefill counter under the slice's pod and node rose by %v, want 10", got)
 	}
 }

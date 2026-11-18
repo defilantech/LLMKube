@@ -422,12 +422,22 @@ func TestEngineExit_WaitsForAStartInFlight(t *testing.T) {
 		t.Fatal("the engine was restarted while another start held its key")
 	}
 	// The start holding the key registers the endpoint Ready as it finishes,
-	// after the withdrawal, as reconcileProcess does after StartProcess.
-	if err := f.agent.registry.RegisterEndpoint(ctx, f.isvc, proc.Port); err != nil {
-		t.Fatalf("register the endpoint: %v", err)
-	}
-	if ready, _ := endpointReady(t, f.client, f.isvc.Name); !ready {
-		t.Fatal("setup: the start's registration did not make the endpoint Ready")
+	// after the withdrawal, as reconcileProcess does after StartProcess. The
+	// exit loop withdraws the endpoint again every restartGuardRetry while
+	// the guard is held, so a registration can lose its write to one of those
+	// withdrawals ("object was modified") or be withdrawn before it is read
+	// back. reconcileProcess retries (RegisterEndpointWithRetry), and so does
+	// this, until a registration is read back Ready.
+	var regErr error
+	if !eventually(func() bool {
+		if regErr = f.agent.registry.RegisterEndpoint(ctx, f.isvc, proc.Port); regErr != nil {
+			return false
+		}
+		ready, _ := endpointReady(t, f.client, f.isvc.Name)
+		return ready
+	}) {
+		t.Fatalf("setup: no registration made the endpoint Ready within %s (last error: %v)",
+			exitWaitTimeout, regErr)
 	}
 
 	f.agent.mu.Lock()
