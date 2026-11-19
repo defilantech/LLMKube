@@ -520,6 +520,22 @@ type GGUFMetadata struct {
 	// +optional
 	ValueLength uint64 `json:"valueLength,omitempty"`
 
+	// KVHeadLayers is the KV head count summed over the layers that hold a KV
+	// cache, for a model whose layout is not blockCount layers of headCountKV
+	// heads (a hybrid with recurrent layers). 0 means the layout is the plain
+	// one, the header was unreadable, or an older controller wrote the status:
+	// consumers then charge every layer by headCountKV, which over-charges a
+	// hybrid and never under-charges it.
+	// +optional
+	KVHeadLayers uint64 `json:"kvHeadLayers,omitempty"`
+
+	// RecurrentStatePerSeq is the state all recurrent layers hold per
+	// sequence, in bytes, for the same hybrids. 0 means the model has no
+	// recurrent layer, or its state is not described by the generic
+	// convolution + SSM formula, and it is charged like an attention layer.
+	// +optional
+	RecurrentStatePerSeq uint64 `json:"recurrentStatePerSeq,omitempty"`
+
 	// TensorCount is the number of tensors in the model
 	// +optional
 	TensorCount uint64 `json:"tensorCount,omitempty"`

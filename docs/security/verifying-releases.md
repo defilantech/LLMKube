@@ -10,6 +10,10 @@ The commands below accept that identity and nothing else. A signature made by
 another workflow, by another repository under the same owner, or by this
 workflow run from any other branch fails them.
 
+Every release archive and image also carries the license and NOTICE files of
+the third-party Go modules the release links: `third_party_licenses/` next to
+`LICENSE` in each archive, and `/licenses/` in each image.
+
 ## Verify the image signature
 
     cosign verify ghcr.io/defilantech/llmkube-controller:<version> \

@@ -154,6 +154,7 @@ func main() {
 	var secureMetrics bool
 	var enableHTTP2 bool
 	var modelCachePath string
+	var controllerVersion string
 	var modelCacheSize string
 	var modelCacheClass string
 	var modelCacheAccessMode string
@@ -182,6 +183,9 @@ func main() {
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
 		"Use :8443 for HTTPS or :8080 for HTTP, or leave as 0 to disable the metrics service.")
 	flag.StringVar(&modelCachePath, "model-cache-path", "/models", "Path to the persistent model cache directory.")
+	flag.StringVar(&controllerVersion, "controller-version", Version,
+		"This controller's release version, which metal agents are checked against for version skew. "+
+			"The Helm chart sets it from the image tag; defaults to the build version.")
 	flag.StringVar(&modelCacheSize, "model-cache-size", "100Gi", "Size of the model cache PVC created in each namespace.")
 	flag.StringVar(&modelCacheClass, "model-cache-storage-class", "",
 		"Storage class for model cache PVCs (empty for default).")
@@ -756,6 +760,7 @@ func main() {
 		RuntimeImageOverrides: runtimeImageOverrides,
 		PodLogReader:          podLogReader,
 		RelayImage:            routerProxyImage,
+		ControllerVersion:     controllerVersion,
 	}
 	if reconcileTimeout > 0 {
 		isvcReconciler.ReconcileDecorator = controller.WithReconcileDeadline(
@@ -892,6 +897,7 @@ func main() {
 		APIReader:          mgr.GetAPIReader(),
 		InitContainerImage: initContainerImage,
 		AllowedCIDRs:       metalNodeAllowed,
+		ControllerVersion:  controllerVersion,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "MetalNode")
 		os.Exit(1)

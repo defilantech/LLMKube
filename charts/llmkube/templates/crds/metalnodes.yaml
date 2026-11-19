@@ -202,11 +202,13 @@ spec:
                 description: Capacity is the hardware the agent reports.
                 properties:
                   chip:
-                    description: Chip is the CPU brand string (for example "Apple
-                      M5 Max").
+                    description: |-
+                      Chip is the CPU brand string on macOS (for example "Apple M5 Max"),
+                      and the device-tree model or the cpuinfo model name on Linux.
                     type: string
                   gpuCores:
-                    description: GPUCores is the GPU core count.
+                    description: GPUCores is the GPU core count. Reported on macOS
+                      only.
                     format: int32
                     type: integer
                   memory:
@@ -214,12 +216,15 @@ spec:
                       128Gi), for display.
                     type: string
                   memoryBytes:
-                    description: MemoryBytes is the Mac's unified memory in bytes.
+                    description: |-
+                      MemoryBytes is the host's memory in bytes: unified memory on a Mac,
+                      RAM capped by the agent's cgroup limit on Linux.
                     format: int64
                     type: integer
                   metalVersion:
-                    description: MetalVersion is the Metal family the GPU supports
-                      (for example "Metal 4").
+                    description: |-
+                      MetalVersion is the Metal family the GPU supports (for example
+                      "Metal 4"). Reported on macOS only.
                     type: string
                 type: object
               conditions:

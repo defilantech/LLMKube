@@ -488,6 +488,7 @@ type MultiNodeRecreateStatus struct {
 	PodUID string `json:"podUID,omitempty"`
 }
 
+// +kubebuilder:validation:XValidation:rule="!has(self.parallelSlots) || self.parallelSlots <= 64 || (has(self.runtime) && self.runtime in ['vllm','vllm-swift'])",message="parallelSlots above 64 is supported for runtime vllm and vllm-swift only"
 // +kubebuilder:validation:XValidation:rule="!has(self.multiNode) || !has(self.replicas) || self.replicas <= 1",message="multiNode serves one group: replicas must be 1 or unset"
 // +kubebuilder:validation:XValidation:rule="!has(self.multiNode) || (has(self.runtime) && self.runtime == 'vllm')",message="multiNode is supported for runtime vllm in this release"
 // +kubebuilder:validation:XValidation:rule="!(has(self.stageModel) && self.stageModel && has(self.skipModelInit) && self.skipModelInit)",message="stageModel and skipModelInit cannot both be true: one asks the operator to stage the Model, the other declines staging"
@@ -673,12 +674,14 @@ type InferenceServiceSpec struct {
 	// +optional
 	RopeScaling *RopeScalingSpec `json:"ropeScaling,omitempty"`
 
-	// ParallelSlots sets the number of concurrent request slots for the llama.cpp
-	// server (--parallel flag). Each slot processes one request independently;
-	// higher values use more KV cache memory. If not specified, the operator
-	// omits --parallel and llama.cpp picks an auto value (currently 4).
+	// ParallelSlots sets how many requests one replica serves concurrently:
+	// llama.cpp --parallel, vLLM and vllm-swift --max-num-seqs, mlx-server
+	// --max-slots. More slots use more KV cache memory. If not specified, the
+	// operator omits the flag and the runtime picks its own default (llama.cpp:
+	// auto, currently 4). Values above 64 are accepted for vllm and vllm-swift
+	// only, whose batch schedulers are sized in the hundreds.
 	// +kubebuilder:validation:Minimum=1
-	// +kubebuilder:validation:Maximum=64
+	// +kubebuilder:validation:Maximum=1024
 	// +optional
 	ParallelSlots *int32 `json:"parallelSlots,omitempty"`
 

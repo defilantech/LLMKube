@@ -73,6 +73,9 @@ spec:
         # The binary defaults the deadline to 15m, so off has to be explicit.
         - --reconcile-timeout=0
         {{- end }}
+        # The release this controller runs, which metal agents are checked
+        # against for version skew (#2408): the image tag, else appVersion.
+        - --controller-version={{ .Values.controllerManager.image.tag | default .Chart.AppVersion }}
         - --oci-publisher-image={{ include "llmkube.controllerImage" . }}
         - --file-listing-image={{ include "llmkube.controllerImage" . }}
         {{- with .Values.modelSource.fileListing }}

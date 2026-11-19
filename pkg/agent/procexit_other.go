@@ -24,9 +24,8 @@ import (
 )
 
 // errProcessExitWatchUnsupported reports a platform without a process exit
-// watch for non-children. The agent only runs on macOS; this exists so the
-// package builds and its tests run on Linux CI, where the health probe stays
-// the detector for an adopted engine's exit.
+// watch for non-children. On Linux the health probe is the detector for an
+// adopted engine's exit.
 var errProcessExitWatchUnsupported = errors.New("watching a non-child process for its exit is unsupported here")
 
 func watchProcessExit(context.Context, int) (*childExit, error) {

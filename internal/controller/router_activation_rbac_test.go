@@ -48,7 +48,7 @@ func TestReconcileRouterActivationRBACNoPools(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(mr).Build()
 	r := &ModelRouterReconciler{Client: c, Scheme: scheme}
 
-	if err := r.reconcileRouterActivationRBAC(context.Background(), mr, false); err != nil {
+	if err := r.reconcileRouterActivationRBAC(context.Background(), mr, &compiledConfig{}); err != nil {
 		t.Fatalf("reconcile (no pools): %v", err)
 	}
 	name := routerProxyResourceName(mr.Name)
@@ -70,7 +70,7 @@ func TestReconcileRouterActivationRBACProvisions(t *testing.T) {
 	ctx := context.Background()
 	name := routerProxyResourceName(mr.Name)
 
-	if err := r.reconcileRouterActivationRBAC(ctx, mr, true); err != nil {
+	if err := r.reconcileRouterActivationRBAC(ctx, mr, &compiledConfig{HasPools: true}); err != nil {
 		t.Fatalf("reconcile (pools): %v", err)
 	}
 
@@ -99,7 +99,7 @@ func TestReconcileRouterActivationRBACProvisions(t *testing.T) {
 	}
 
 	// Second reconcile must not error (updates the existing Role/RoleBinding).
-	if err := r.reconcileRouterActivationRBAC(ctx, mr, true); err != nil {
+	if err := r.reconcileRouterActivationRBAC(ctx, mr, &compiledConfig{HasPools: true}); err != nil {
 		t.Fatalf("second reconcile: %v", err)
 	}
 	roles := &rbacv1.RoleList{}
@@ -169,7 +169,7 @@ func TestReconcileRouterActivationRBACEndpointWatch(t *testing.T) {
 			mr := endpointRouter(tc.name)
 			c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(mr).Build()
 			r := &ModelRouterReconciler{Client: c, Scheme: scheme}
-			if err := r.reconcileRouterActivationRBAC(ctx, mr, tc.pools); err != nil {
+			if err := r.reconcileRouterActivationRBAC(ctx, mr, &compiledConfig{HasPools: tc.pools, NeedsEndpointWatch: routerNeedsEndpointWatch(mr.Spec.Backends)}); err != nil {
 				t.Fatalf("reconcile: %v", err)
 			}
 			name := routerProxyResourceName(mr.Name)
@@ -223,7 +223,10 @@ func TestReconcileRouterActivationRBACAddsEndpointRuleOnTransition(t *testing.T)
 		return false
 	}
 
-	if err := r.reconcileRouterActivationRBAC(ctx, mr, true); err != nil {
+	if err := r.reconcileRouterActivationRBAC(ctx, mr, &compiledConfig{
+		HasPools:           true,
+		NeedsEndpointWatch: routerNeedsEndpointWatch(mr.Spec.Backends),
+	}); err != nil {
 		t.Fatalf("reconcile (pools only): %v", err)
 	}
 	role := &rbacv1.Role{}
@@ -238,7 +241,10 @@ func TestReconcileRouterActivationRBACAddsEndpointRuleOnTransition(t *testing.T)
 		Name: "q", InferenceServiceRef: &corev1.LocalObjectReference{Name: "q"},
 		Resolution: inferencev1alpha1.RouterBackendResolutionEndpoint,
 	}}
-	if err := r.reconcileRouterActivationRBAC(ctx, mr, true); err != nil {
+	if err := r.reconcileRouterActivationRBAC(ctx, mr, &compiledConfig{
+		HasPools:           true,
+		NeedsEndpointWatch: routerNeedsEndpointWatch(mr.Spec.Backends),
+	}); err != nil {
 		t.Fatalf("reconcile (after adding endpoint backend): %v", err)
 	}
 	role = &rbacv1.Role{}

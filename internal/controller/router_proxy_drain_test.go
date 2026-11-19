@@ -104,7 +104,7 @@ func TestRouterProxyDeploymentGolden(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			r := &ModelRouterReconciler{RouterProxyImage: "ghcr.io/test/router-proxy:v1"}
-			dep := r.newRouterDeployment(tc.mr, "deadbeef", tc.hasPools)
+			dep := r.newRouterDeployment(tc.mr, &compiledConfig{Hash: "deadbeef", HasPools: tc.hasPools})
 			// The namespace is per-test on the envtest helpers and fixed on this
 			// fixture; render it as a constant so the golden pins the shape.
 			dep.Namespace = "router-builder-test"
@@ -138,7 +138,7 @@ func TestRouterProxyDeploymentGolden(t *testing.T) {
 // margin, so the kubelet does not SIGKILL mid-drain.
 func TestRouterDeploymentBuilderDrainTimeout(t *testing.T) {
 	r := &ModelRouterReconciler{RouterProxyImage: "ghcr.io/test/router-proxy:v1"}
-	spec := r.newRouterDeployment(proxyDrainTestRouter(10*time.Minute), "hash", false).Spec.Template.Spec
+	spec := r.newRouterDeployment(proxyDrainTestRouter(10*time.Minute), &compiledConfig{Hash: "hash"}).Spec.Template.Spec
 
 	got, ok := shutdownTimeoutArg(t, spec.Containers[0].Args)
 	if !ok {
@@ -161,7 +161,7 @@ func TestRouterDeploymentBuilderDrainTimeout(t *testing.T) {
 // rather than a floor at the default: the drain is the real bound.
 func TestRouterDeploymentBuilderDrainTimeoutShort(t *testing.T) {
 	r := &ModelRouterReconciler{RouterProxyImage: "ghcr.io/test/router-proxy:v1"}
-	spec := r.newRouterDeployment(proxyDrainTestRouter(5*time.Second), "hash", false).Spec.Template.Spec
+	spec := r.newRouterDeployment(proxyDrainTestRouter(5*time.Second), &compiledConfig{Hash: "hash"}).Spec.Template.Spec
 
 	got, ok := shutdownTimeoutArg(t, spec.Containers[0].Args)
 	if !ok || got != "5s" {
@@ -177,7 +177,7 @@ func TestRouterDeploymentBuilderDrainTimeoutShort(t *testing.T) {
 // fractional drain must never truncate the grace period below the drain.
 func TestRouterDeploymentBuilderDrainTimeoutFractional(t *testing.T) {
 	r := &ModelRouterReconciler{RouterProxyImage: "ghcr.io/test/router-proxy:v1"}
-	spec := r.newRouterDeployment(proxyDrainTestRouter(1500*time.Millisecond), "hash", false).Spec.Template.Spec
+	spec := r.newRouterDeployment(proxyDrainTestRouter(1500*time.Millisecond), &compiledConfig{Hash: "hash"}).Spec.Template.Spec
 
 	got, ok := shutdownTimeoutArg(t, spec.Containers[0].Args)
 	if !ok || got != "1.5s" {
@@ -194,11 +194,11 @@ func TestRouterDeploymentBuilderDrainTimeoutFractional(t *testing.T) {
 // NOT set spec.proxy.drainTimeout, so existing proxies keep their pod template.
 func TestRouterDeploymentBuilderDrainTimeoutUnset(t *testing.T) {
 	r := &ModelRouterReconciler{RouterProxyImage: "ghcr.io/test/router-proxy:v1"}
-	base := r.newRouterDeployment(canonicalModelRouter(), "hash", false)
+	base := r.newRouterDeployment(canonicalModelRouter(), &compiledConfig{Hash: "hash"})
 
 	withProxy := canonicalModelRouter()
 	withProxy.Spec.Proxy = &inferencev1alpha1.RouterProxySpec{Replicas: ptr.To[int32](1)}
-	got := r.newRouterDeployment(withProxy, "hash", false)
+	got := r.newRouterDeployment(withProxy, &compiledConfig{Hash: "hash"})
 
 	for _, dep := range []*appsv1.Deployment{base, got} {
 		spec := dep.Spec.Template.Spec

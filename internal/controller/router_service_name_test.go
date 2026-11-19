@@ -83,7 +83,7 @@ func TestRouterProxyServiceNameBuilders(t *testing.T) {
 	r := &ModelRouterReconciler{RouterProxyImage: "ghcr.io/test/router-proxy:v1"}
 	// A Proxy block with only serviceName must render the Deployment of a
 	// router with no Proxy block at all: the field must not reach the pods.
-	if got, want := r.newRouterDeployment(named, "h", false), r.newRouterDeployment(plain, "h", false); !reflect.DeepEqual(got, want) {
+	if got, want := r.newRouterDeployment(named, &compiledConfig{Hash: "h"}), r.newRouterDeployment(plain, &compiledConfig{Hash: "h"}); !reflect.DeepEqual(got, want) {
 		t.Errorf("Deployment changed with serviceName; it would roll the proxy pods:\ngot:  %+v\nwant: %+v", got, want)
 	}
 }

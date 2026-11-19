@@ -17,6 +17,8 @@ import (
 	"strings"
 	"time"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
 	inferencev1alpha1 "github.com/defilantech/llmkube/api/v1alpha1"
 	"github.com/defilantech/llmkube/internal/router"
 )
@@ -72,7 +74,9 @@ func validationFailureReason(errs []ModelRouterValidationError) string {
 // validateModelRouter performs static validation of a ModelRouter spec.
 // It checks invariants that the kubebuilder OpenAPI schema cannot express:
 //
-//   - Each backend must declare exactly one of inferenceServiceRef or external.
+//   - Each backend must declare exactly one of inferenceServiceRef or external,
+//     or neither on a router with a backendSelector (an entry overriding a
+//     selected backend).
 //   - Backend tier must be consistent with its kind (local for
 //     inferenceServiceRef, cloud-or-omitted for external).
 //   - Backend names must be unique.
@@ -98,17 +102,23 @@ func validateModelRouter(mr *inferencev1alpha1.ModelRouter) []ModelRouterValidat
 	spec := &mr.Spec
 	var errs []ModelRouterValidationError
 
-	nameSet, backendsByName, backendErrs := validateBackends(spec)
+	hasSelector := spec.BackendSelector != nil
+	errs = append(errs, validateBackendSelector(spec)...)
+
+	nameSet, backendsByName, backendErrs := validateBackends(spec, hasSelector)
 	errs = append(errs, backendErrs...)
 
-	if spec.DefaultRoute != "" && !nameSet[spec.DefaultRoute] {
+	// With a selector, the backend set is cluster state: a name the spec does
+	// not declare may still resolve. The compile enforces every name against
+	// the resolved set, so the static undefined-name checks are skipped.
+	if spec.DefaultRoute != "" && !hasSelector && !nameSet[spec.DefaultRoute] {
 		errs = append(errs, ModelRouterValidationError{
 			Field:   "spec.defaultRoute",
 			Message: fmt.Sprintf("references undefined backend %q", spec.DefaultRoute),
 		})
 	}
 
-	ruleNames, ruleErrs := validateRules(spec, nameSet, backendsByName)
+	ruleNames, ruleErrs := validateRules(spec, nameSet, backendsByName, hasSelector)
 	errs = append(errs, ruleErrs...)
 	errs = append(errs, validateBudgets(spec, ruleNames)...)
 	errs = append(errs, validateAuditLog(spec)...)
@@ -197,9 +207,50 @@ func validateAuditLog(spec *inferencev1alpha1.ModelRouterSpec) []ModelRouterVali
 	return errs
 }
 
+// validateBackendSelector rejects a router with neither spec.backendSelector
+// nor a spec.backends entry. The CRD's CEL rule refuses it at the API server;
+// this repeats the check so the Validated condition explains a stored object
+// that predates the rule. It also resolves the selector, so an unknown operator
+// or an In expression with no values fails at admission rather than at
+// reconcile.
+func validateBackendSelector(spec *inferencev1alpha1.ModelRouterSpec) []ModelRouterValidationError {
+	if spec.BackendSelector == nil {
+		if len(spec.Backends) > 0 {
+			return nil
+		}
+		return []ModelRouterValidationError{{
+			Field:   "spec.backends",
+			Message: "must declare at least one backend or set spec.backendSelector",
+		}}
+	}
+	if _, err := metav1.LabelSelectorAsSelector(spec.BackendSelector); err != nil {
+		return []ModelRouterValidationError{{
+			Field:   "spec.backendSelector",
+			Message: err.Error(),
+		}}
+	}
+	return nil
+}
+
+// backendSelectorUnsupportedMessage reports the one data-plane limit that
+// applies to spec.backendSelector: only the Proxy data plane resolves it.
+// The Gateway and AgentGateway reconcilers and the webhook call this same
+// function, so admission and reconcile cannot diverge.
+func backendSelectorUnsupportedMessage(mr *inferencev1alpha1.ModelRouter) string {
+	if mr.Spec.BackendSelector == nil {
+		return ""
+	}
+	plane := string(mr.Spec.DataPlane)
+	if plane == "" {
+		plane = string(inferencev1alpha1.ModelRouterDataPlaneProxy)
+	}
+	return fmt.Sprintf("spec.backendSelector is a Proxy data-plane field; dataPlane %q cannot add "+
+		"InferenceServices by label", plane)
+}
+
 // validateBackends checks each RouterBackend in spec.backends and returns
 // the resolved name set, a name-to-backend lookup map, and any errors.
-func validateBackends(spec *inferencev1alpha1.ModelRouterSpec) (
+func validateBackends(spec *inferencev1alpha1.ModelRouterSpec, hasSelector bool) (
 	map[string]bool,
 	map[string]*inferencev1alpha1.RouterBackend,
 	[]ModelRouterValidationError,
@@ -211,15 +262,22 @@ func validateBackends(spec *inferencev1alpha1.ModelRouterSpec) (
 	for i := range spec.Backends {
 		b := &spec.Backends[i]
 		path := fmt.Sprintf("spec.backends[%d]", i)
-		errs = append(errs, validateBackendKindExclusivity(b, path)...)
+		errs = append(errs, validateBackendKindExclusivity(b, path, hasSelector)...)
 
 		// Tier consistency: an InferenceServiceRef backend is by definition
-		// local. Allowing cloud tier here would let users bypass the
+		// local, and so is a selected one an entry without a reference
+		// overrides. Allowing cloud tier here would let users bypass the
 		// fail-closed gate by mislabelling a local backend.
 		if b.InferenceServiceRef != nil && b.Tier == backendTierCloud {
 			errs = append(errs, ModelRouterValidationError{
 				Field:   path + ".tier",
 				Message: "tier=cloud is invalid for a backend with inferenceServiceRef (use tier=local)",
+			})
+		}
+		if hasSelector && b.InferenceServiceRef == nil && b.External == nil && b.Tier == backendTierCloud {
+			errs = append(errs, ModelRouterValidationError{
+				Field:   path + ".tier",
+				Message: "tier=cloud is invalid for an entry that overrides a backend selected by spec.backendSelector (use tier=local)",
 			})
 		}
 
@@ -270,8 +328,14 @@ func validateBackendTimeout(
 }
 
 // validateBackendKindExclusivity enforces exactly-one-of(inferenceServiceRef,
-// external) on a single backend.
-func validateBackendKindExclusivity(b *inferencev1alpha1.RouterBackend, path string) []ModelRouterValidationError {
+// external) on a single backend. On a router with a backendSelector an entry
+// may set neither: it then overrides the fields of the selected backend of the
+// same name.
+func validateBackendKindExclusivity(
+	b *inferencev1alpha1.RouterBackend,
+	path string,
+	hasSelector bool,
+) []ModelRouterValidationError {
 	hasLocal := b.InferenceServiceRef != nil
 	hasExt := b.External != nil
 	switch {
@@ -280,7 +344,7 @@ func validateBackendKindExclusivity(b *inferencev1alpha1.RouterBackend, path str
 			Field:   path,
 			Message: "exactly one of inferenceServiceRef or external must be set, not both",
 		}}
-	case !hasLocal && !hasExt:
+	case !hasLocal && !hasExt && !hasSelector:
 		return []ModelRouterValidationError{{
 			Field:   path,
 			Message: "exactly one of inferenceServiceRef or external must be set",
@@ -295,6 +359,7 @@ func validateRules(
 	spec *inferencev1alpha1.ModelRouterSpec,
 	nameSet map[string]bool,
 	byName map[string]*inferencev1alpha1.RouterBackend,
+	hasSelector bool,
 ) (map[string]bool, []ModelRouterValidationError) {
 	sensitiveSet := sensitiveClassificationSet(spec.Policy)
 	ruleNames := make(map[string]bool, len(spec.Rules))
@@ -307,9 +372,10 @@ func validateRules(
 		if rule.Name != "" {
 			ruleNames[rule.Name] = true
 		}
-		errs = append(errs, validateRuleRoute(rule, path, nameSet)...)
-		errs = append(errs, validateRuleWeights(rule, path, byName)...)
+		errs = append(errs, validateRuleRoute(rule, path, nameSet, hasSelector)...)
+		errs = append(errs, validateRuleWeights(rule, path, byName, nameSet, hasSelector)...)
 		errs = append(errs, validateRuleShadow(rule, path)...)
+		errs = append(errs, validateFailClosedNames(rule, path, byName, hasSelector)...)
 		errs = append(errs, validateRuleSensitiveData(rule, path, sensitiveSet, byName)...)
 		errs = append(errs, validateRuleTimeout(rule, path)...)
 	}
@@ -345,10 +411,13 @@ func validateRuleTimeout(
 }
 
 // validateRuleRoute checks that rule.route.backends references real backends.
+// With a backendSelector a name the spec does not declare may resolve, so the
+// undefined-name check moves to the compile, which sees the resolved set.
 func validateRuleRoute(
 	rule *inferencev1alpha1.RouterRule,
 	path string,
 	nameSet map[string]bool,
+	hasSelector bool,
 ) []ModelRouterValidationError {
 	var errs []ModelRouterValidationError
 	if len(rule.Route.Backends) == 0 {
@@ -357,6 +426,9 @@ func validateRuleRoute(
 			Message: "must reference at least one backend",
 		})
 	}
+	if hasSelector {
+		return errs
+	}
 	for j, name := range rule.Route.Backends {
 		if !nameSet[name] {
 			errs = append(errs, ModelRouterValidationError{
@@ -364,6 +436,35 @@ func validateRuleRoute(
 				Message: fmt.Sprintf("references undefined backend %q", name),
 			})
 		}
+	}
+	return errs
+}
+
+// validateFailClosedNames refuses a failClosed rule whose backend set depends
+// on the selector: the fail-closed guarantee has to be checkable without the
+// cluster, so such a rule may name only spec.backends entries that carry
+// their own reference.
+func validateFailClosedNames(
+	rule *inferencev1alpha1.RouterRule,
+	path string,
+	byName map[string]*inferencev1alpha1.RouterBackend,
+	hasSelector bool,
+) []ModelRouterValidationError {
+	if !hasSelector || !rule.FailClosed {
+		return nil
+	}
+	var errs []ModelRouterValidationError
+	for j, name := range rule.Route.Backends {
+		b := byName[name]
+		if b != nil && (b.InferenceServiceRef != nil || b.External != nil) {
+			continue
+		}
+		errs = append(errs, ModelRouterValidationError{
+			Field: fmt.Sprintf("%s.route.backends[%d]", path, j),
+			Message: fmt.Sprintf(
+				"a failClosed rule may name only spec.backends entries; %q comes from spec.backendSelector",
+				name),
+		})
 	}
 	return errs
 }
@@ -377,9 +478,21 @@ func validateRuleWeights(
 	rule *inferencev1alpha1.RouterRule,
 	path string,
 	byName map[string]*inferencev1alpha1.RouterBackend,
+	nameSet map[string]bool,
+	hasSelector bool,
 ) []ModelRouterValidationError {
 	if rule.Route.Strategy != weightedStrategy {
 		return nil
+	}
+	// A rule over a name only the selector can produce cannot be checked
+	// statically; the compile runs the same check over the resolved set.
+	if hasSelector {
+		for _, name := range rule.Route.Backends {
+			b := byName[name]
+			if !nameSet[name] || (b != nil && b.InferenceServiceRef == nil && b.External == nil) {
+				return nil
+			}
+		}
 	}
 	var required []string
 	if rule.Match != nil {
@@ -521,6 +634,21 @@ func validateBudgets(
 		if strings.TrimSpace(b.MaxUSD) != "" {
 			needsPricing = true
 		}
+	}
+	if needsPricing && spec.BackendSelector != nil {
+		// A backend selected by label declares no costPerMillionTokens, so a
+		// maxUSD budget on a selector router would charge 0 USD and never block.
+		for i, b := range spec.Policy.Budgets {
+			if strings.TrimSpace(b.MaxUSD) == "" {
+				continue
+			}
+			errs = append(errs, ModelRouterValidationError{
+				Field: fmt.Sprintf("spec.policy.budgets[%d].maxUSD", i),
+				Message: "cannot be combined with spec.backendSelector: a backend the selector adds " +
+					"declares no costPerMillionTokens, so the budget would charge 0 USD and never block",
+			})
+		}
+		return errs
 	}
 	if needsPricing {
 		for i, b := range spec.Backends {

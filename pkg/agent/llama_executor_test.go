@@ -18,6 +18,7 @@ package agent
 
 import (
 	"context"
+	goruntime "runtime"
 	"strings"
 	"testing"
 
@@ -139,6 +140,39 @@ func TestEnsureProcessRuntimeNotAvailableKeepsRunningEngine(t *testing.T) {
 	}
 }
 
+func TestEnsureProcessRefusesUnregisteredRuntime(t *testing.T) {
+	isvc := refusalISVC("svc")
+	isvc.Spec.Runtime = runtimeMLXServer
+	a, ex, rec := refusalFixture(t, MetalAgentConfig{}, isvc, refusalModel())
+	a.buildExecutors()
+	if _, ok := a.executors[runtimeMLXServer]; ok {
+		t.Fatalf("executors[%q] registered on an agent started without --mlx-server-bin", runtimeMLXServer)
+	}
+
+	err := a.ensureProcess(context.Background(), isvc)
+	if err == nil || !strings.Contains(err.Error(), EventReasonRuntimeNotAvailable) {
+		t.Fatalf("ensureProcess error = %v, want %s", err, EventReasonRuntimeNotAvailable)
+	}
+	if ex.starts != 0 {
+		t.Errorf("starts = %d, want 0", ex.starts)
+	}
+
+	got := &inferencev1alpha1.InferenceService{}
+	if gErr := a.config.K8sClient.Get(context.Background(),
+		types.NamespacedName{Name: "svc", Namespace: "default"}, got); gErr != nil {
+		t.Fatalf("get InferenceService: %v", gErr)
+	}
+	if got.Status.SchedulingStatus != EventReasonRuntimeNotAvailable {
+		t.Errorf("status.schedulingStatus = %q, want %q", got.Status.SchedulingStatus, EventReasonRuntimeNotAvailable)
+	}
+	if want := runtimeNotAvailableMessage(goruntime.GOOS, runtimeMLXServer); got.Status.SchedulingMessage != want {
+		t.Errorf("status.schedulingMessage = %q, want %q", got.Status.SchedulingMessage, want)
+	}
+	if events := warningEvents(rec, EventReasonRuntimeNotAvailable); len(events) != 1 {
+		t.Errorf("Warning %s events = %v, want one", EventReasonRuntimeNotAvailable, events)
+	}
+}
+
 func TestStopManagedProcessWithoutExecutor(t *testing.T) {
 	a := newAgentWithoutLlamaServer(t)
 	for _, tc := range []struct {
@@ -151,6 +185,58 @@ func TestStopManagedProcessWithoutExecutor(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			if err := a.stopManagedProcess(context.Background(), tc.process, true); err == nil {
 				t.Error("stopping a llama.cpp process with no executor returned nil; want an error")
+			}
+		})
+	}
+}
+
+// buildExecutors registers mlx-server exactly when --mlx-server-bin is set,
+// which TestEnsureProcessRefusesUnregisteredRuntime relies on.
+func TestBuildExecutorsRegistersMLXServerOnlyWithItsBinary(t *testing.T) {
+	for _, bin := range []string{"", "/opt/homebrew/bin/mlx-server"} {
+		a := NewMetalAgent(MetalAgentConfig{
+			K8sClient:      fake.NewClientBuilder().WithScheme(newTestScheme()).Build(),
+			Namespace:      "test-ns",
+			ModelStorePath: t.TempDir(),
+			MLXServerBin:   bin,
+		})
+		a.buildExecutors()
+		if _, ok := a.executors[runtimeMLXServer]; ok != (bin != "") {
+			t.Errorf("MLXServerBin %q: executors[%q] registered = %v, want %v", bin, runtimeMLXServer, ok, bin != "")
+		}
+	}
+}
+
+func TestRuntimeNotAvailableMessage(t *testing.T) {
+	for _, tc := range []struct {
+		goos, runtime string
+		want, notWant []string
+	}{
+		{
+			goos: "darwin", runtime: runtimeMLXServer,
+			want:    []string{`runtime "mlx-server"`, "started without that engine", "restart the agent"},
+			notWant: []string{"llama-server", "only on macOS"},
+		},
+		{
+			goos: "linux", runtime: runtimeMLXServer,
+			want:    []string{`runtime "mlx-server"`, "only on macOS", "on linux (llamacpp or ollama)"},
+			notWant: []string{"pass its binary flag", "brew"},
+		},
+		{goos: "linux", runtime: runtimeTensorFold, want: []string{`runtime "tensorfold"`, "only on macOS"}},
+		{goos: "linux", runtime: runtimeLlamaCPP, want: []string{"llama-server was not found", "--llama-server"}},
+		{goos: "linux", runtime: runtimeOllama, want: []string{"started without that engine"}},
+	} {
+		t.Run(tc.goos+"/"+tc.runtime, func(t *testing.T) {
+			got := runtimeNotAvailableMessage(tc.goos, tc.runtime)
+			for _, w := range tc.want {
+				if !strings.Contains(got, w) {
+					t.Errorf("message = %q, want it to contain %q", got, w)
+				}
+			}
+			for _, w := range tc.notWant {
+				if strings.Contains(got, w) {
+					t.Errorf("message = %q, want no %q", got, w)
+				}
 			}
 		})
 	}

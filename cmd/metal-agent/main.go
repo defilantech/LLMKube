@@ -98,6 +98,7 @@ type AgentConfig struct {
 	AllowedModelRoots         string
 	AllowedDownloadHosts      string
 	MaxDownloadSize           string
+	DownloadFreeSpaceHeadroom string
 	AllowUnsafeExtraArgs      bool
 	EngineEnvPassthrough      string
 	IngressPort               int
@@ -275,7 +276,7 @@ func resolveLlamaServerBin(override string) (string, error) {
 	}
 	return "", fmt.Errorf(
 		"llama-server not found in default paths (%v); install with: %s, or pass --llama-server=/path/to/binary",
-		defaultLlamaServerPaths, llamaServerInstallHint(goruntime.GOOS))
+		defaultLlamaServerPaths, llamaServerInstallHint(hostGOOS))
 }
 
 // defaultOMLXPaths is the list of paths to search for the omlx binary.
@@ -457,6 +458,32 @@ func resolveMaxDownloadBytes(flagValue string, totalMemory func() (uint64, error
 	return n, nil
 }
 
+// resolveDownloadLimits resolves --max-download-size and
+// --download-free-space-headroom. Each error names its flag.
+func resolveDownloadLimits(cfg *AgentConfig, totalMemory func() (uint64, error)) (maxBytes, headroom int64, err error) {
+	if maxBytes, err = resolveMaxDownloadBytes(cfg.MaxDownloadSize, totalMemory); err != nil {
+		return 0, 0, err
+	}
+	if headroom, err = parseByteQuantity("--download-free-space-headroom", cfg.DownloadFreeSpaceHeadroom); err != nil {
+		return 0, 0, err
+	}
+	return maxBytes, headroom, nil
+}
+
+// parseByteQuantity parses a flag holding a byte count or a Kubernetes quantity
+// (10Gi, 500M, 1073741824) into a whole, non-negative number of bytes.
+func parseByteQuantity(flagName, value string) (int64, error) {
+	qty, err := resource.ParseQuantity(value)
+	if err != nil {
+		return 0, fmt.Errorf("%s %q is not a byte count or a quantity such as 10Gi: %w", flagName, value, err)
+	}
+	n, ok := qty.AsInt64()
+	if !ok || n < 0 {
+		return 0, fmt.Errorf("%s %q must be a whole, non-negative number of bytes", flagName, value)
+	}
+	return n, nil
+}
+
 // resolveTensorFoldBin returns the tensorfold binary path. If override is
 // non-empty it is returned as-is. Otherwise the function searches
 // defaultTensorFoldPaths.
@@ -526,6 +553,77 @@ func llamaServerInstallHint(goos string) string {
 		return "brew install llama.cpp"
 	}
 	return "your distribution's llama.cpp package or a source build of llama-server"
+}
+
+// Host probes checkHostPlatform uses, replaced in tests.
+var (
+	detectCapabilities = platform.DetectMetal
+	hostGOOS           = goruntime.GOOS
+)
+
+// checkHostPlatform returns an error unless the host has Metal or is Linux,
+// where support is experimental and the engine brings its own accelerator. On
+// Linux it logs the accelerator devices it finds.
+func checkHostPlatform(logger *zap.SugaredLogger) (platform.Capabilities, error) {
+	logger.Infow("checking Metal support")
+	caps := detectCapabilities()
+	switch {
+	case caps.Metal:
+		logger.Infow("Metal support detected",
+			"gpuName", caps.GPUName,
+			"gpuCores", caps.GPUCores,
+			"metalVersion", caps.MetalVersion,
+		)
+	case hostGOOS == "linux":
+		logger.Warnw("Metal not available; Linux host support is experimental", "arch", caps.Arch)
+		logHailoDevices(logger)
+	default:
+		return caps, fmt.Errorf("metal support not detected on %s: the agent needs macOS with Apple Silicon, "+
+			"or Linux (experimental)", hostGOOS)
+	}
+	return caps, nil
+}
+
+// checkHostRuntimes refuses, off macOS, a --runtime or binary flag that
+// selects a macOS-only engine (inferencev1alpha1.IsMacOSOnlyRuntime), naming
+// the runtimes the agent serves there.
+func checkHostRuntimes(cfg *AgentConfig, goos string) error {
+	if goos == "darwin" {
+		return nil
+	}
+	var refused []string
+	if inferencev1alpha1.IsMacOSOnlyRuntime(cfg.Runtime) {
+		refused = append(refused, "--runtime "+cfg.Runtime)
+	}
+	for _, b := range []struct{ flag, runtime, value string }{
+		{"--mlx-server-bin", inferencev1alpha1.RuntimeMLXServer, cfg.MLXServerBin},
+		{"--omlx-bin", inferencev1alpha1.RuntimeOMLX, cfg.OMLXBin},
+		{"--vllm-swift-bin", inferencev1alpha1.RuntimeVLLMSwift, cfg.VLLMSwiftBin},
+		{"--tensorfold-bin", inferencev1alpha1.RuntimeTensorFold, cfg.TensorFoldBin},
+	} {
+		if b.value != "" && b.runtime != cfg.Runtime {
+			refused = append(refused, b.flag+" ("+b.runtime+")")
+		}
+	}
+	if len(refused) == 0 {
+		return nil
+	}
+	return fmt.Errorf("%s: only on macOS with Apple Silicon; on %s the agent serves --runtime llama-server "+
+		"(llama.cpp) and --runtime ollama", strings.Join(refused, ", "), goos)
+}
+
+// resolveRuntimes refuses runtimes this host cannot serve, then resolves the
+// binaries of the ones selected. A fatal error exits.
+func resolveRuntimes(cfg *AgentConfig, llamaServerFlag string, logger *zap.SugaredLogger) {
+	if err := checkHostRuntimes(cfg, hostGOOS); err != nil {
+		logger.Errorw("runtime not supported on this host", "error", err)
+		os.Exit(1)
+	}
+	if err := resolveDefaultLlamaServerBin(cfg, llamaServerFlag, logger); err != nil {
+		logger.Errorw("llama-server binary not found", "error", err)
+		os.Exit(1)
+	}
+	resolveOptionalRuntimeBins(cfg, logger)
 }
 
 // resolveOptionalRuntimeBins resolves the binaries of the non-default
@@ -628,7 +726,7 @@ func main() {
 		"Stable host-side listener (127.0.0.1:<port>) that forwards /v1/* to the current inference child; 0 disables")
 	flag.IntVar(&cfg.IngressPort, "ingress-port", 9443,
 		"TLS port of the authenticated ingress that in-cluster relays use to reach engines (engines listen on "+
-			"127.0.0.1 only). Open this port, not engine ports, in the macOS firewall.")
+			"127.0.0.1 only). Open this port, not engine ports, in the host's firewall.")
 	flag.StringVar(&cfg.StateDir, "state-dir", "",
 		"Directory for agent state (the ingress TLS key). Default: ~/Library/Application Support/llmkube/metal-agent "+
 			"on macOS, $XDG_DATA_HOME/llmkube/metal-agent (~/.local/share/llmkube/metal-agent) elsewhere.")
@@ -636,7 +734,7 @@ func main() {
 		"DEPRECATED, removed in a future release: bind engines on all interfaces without authentication and "+
 			"register them directly, as before the ingress. Only for a controller that predates relay support.")
 	flag.StringVar(&cfg.MetalNode, "metal-node", "",
-		"Name of this Mac's MetalNode in --namespace. When set, the agent renews the MetalNode's Lease every 15s "+
+		"Name of this host's MetalNode in --namespace. When set, the agent renews the MetalNode's Lease every 15s "+
 			"and reports its version, hardware, ingress pin and candidate addresses on it; it never writes the "+
 			"MetalNode itself. The Lease must already exist (llmkube metal token create). Empty (default) disables "+
 			"MetalNode reporting.")
@@ -676,8 +774,8 @@ func main() {
 	flag.StringVar(&cfg.InferenceServiceAllowlist, "inference-service-allowlist", "",
 		"Comma-separated list of InferenceService names this agent is permitted to claim. "+
 			"Empty (default) claims every metal-accelerator InferenceService in --namespace "+
-			"(v0.1 behavior). Set on multi-Mac fleets that share one Kubernetes cluster so "+
-			"each node claims only its own InferenceServices instead of racing with peers (#524).")
+			"(v0.1 behavior). Set on every host that shares one Kubernetes cluster and namespace so "+
+			"each host claims only its own InferenceServices instead of racing with peers (#524).")
 	flag.DurationVar(&cfg.LlamaServerStartupTimeout, "llama-server-startup-timeout",
 		agent.DefaultLlamaServerStartupTimeout,
 		"How long to wait for a freshly-spawned llama-server to respond on /health. "+
@@ -722,6 +820,10 @@ func main() {
 			"such as 128Gi. A download over it is stopped, its partial removed, and the start refused with "+
 			"ModelDownloadTooLarge. Default: the host's total memory (a model file larger than RAM cannot be "+
 			"wired). 0 disables the cap.")
+	flag.StringVar(&cfg.DownloadFreeSpaceHeadroom, "download-free-space-headroom", "10Gi",
+		"Free space a Model download must leave on the model store's filesystem, as a byte count or a "+
+			"quantity such as 10Gi. A download that would leave less is refused with ModelDownloadNoSpace "+
+			"before it starts, and retried on the refusal re-check. 0 still refuses a download that does not fit.")
 	flag.BoolVar(&cfg.AllowUnsafeExtraArgs, "allow-unsafe-extra-args", false,
 		"Relax the extraArgs policy (unknown flags, stray tokens, refused non-listener flags, path checks, "+
 			"vllm-swift code-loading) for hosts whose InferenceService authors are fully trusted; flags that "+
@@ -802,11 +904,7 @@ func main() {
 	// when their binary path flag is set or when the agent's --runtime flag
 	// selects them, so the agent can host multiple runtimes concurrently
 	// (#525).
-	if err := resolveDefaultLlamaServerBin(cfg, llamaServerFlag, logger); err != nil {
-		logger.Errorw("llama-server binary not found", "error", err)
-		os.Exit(1)
-	}
-	resolveOptionalRuntimeBins(cfg, logger)
+	resolveRuntimes(cfg, llamaServerFlag, logger)
 
 	hostIP := cfg.HostIP
 	if hostIP == "" {
@@ -817,9 +915,6 @@ func main() {
 		"namespace", cfg.Namespace,
 		"modelStore", cfg.ModelStorePath,
 		"runtime", cfg.Runtime,
-		"llamaServerBin", cfg.LlamaServerBin,
-		"omlxBin", cfg.OMLXBin,
-		"vllmSwiftBin", cfg.VLLMSwiftBin,
 		"agentPort", cfg.Port,
 		"ingressPort", cfg.IngressPort,
 		"legacyDirectEndpoints", cfg.LegacyDirectEndpoints,
@@ -828,27 +923,20 @@ func main() {
 		"engineEnvPassthrough", engineEnvPassthrough,
 	)
 
-	// Verify Metal support
-	logger.Infow("checking Metal support")
-	caps := platform.DetectCapabilities()
-	if !caps.Metal {
-		logger.Errorw("Metal support not detected",
-			"requirement", "macOS with Apple Silicon (M1/M2/M3/M4)",
-		)
-		os.Exit(1)
-	}
-	logger.Infow("Metal support detected",
-		"gpuName", caps.GPUName,
-		"gpuCores", caps.GPUCores,
-		"metalVersion", caps.MetalVersion,
-	)
-
-	maxDownloadBytes, err := resolveMaxDownloadBytes(cfg.MaxDownloadSize, agent.NewHostMemoryProvider().TotalMemory)
+	caps, err := checkHostPlatform(logger)
 	if err != nil {
-		logger.Errorw("invalid --max-download-size", "error", err)
+		logger.Errorw("unsupported host", "error", err)
 		os.Exit(1)
 	}
-	logger.Infow("model download cap", "maxDownloadBytes", maxDownloadBytes)
+
+	maxDownloadBytes, downloadFreeSpaceHeadroom, err := resolveDownloadLimits(cfg,
+		agent.NewHostMemoryProvider().TotalMemory)
+	if err != nil {
+		logger.Errorw("invalid download limit", "error", err)
+		os.Exit(1)
+	}
+	logger.Infow("model download cap", "maxDownloadBytes", maxDownloadBytes,
+		"downloadFreeSpaceHeadroom", downloadFreeSpaceHeadroom)
 
 	// Log which runtimes are available: each one whose binary path resolved.
 	if cfg.LlamaServerBin != "" {
@@ -955,6 +1043,7 @@ func main() {
 		AllowedModelRoots:         allowedModelRoots,
 		AllowedDownloadHosts:      splitCSV(cfg.AllowedDownloadHosts),
 		MaxDownloadBytes:          maxDownloadBytes,
+		DownloadFreeSpaceHeadroom: downloadFreeSpaceHeadroom,
 		AllowUnsafeExtraArgs:      cfg.AllowUnsafeExtraArgs,
 		EngineEnvPassthrough:      engineEnvPassthrough,
 		IngressPort:               cfg.IngressPort,

@@ -16,6 +16,9 @@ the model through an ordinary Service.
 The Mac is not a Kubernetes node: nothing schedules pods on it. The cluster
 sees it as a `MetalNode` object and as the Services the agent registers.
 
+The agent also starts on Linux, experimentally; see
+[Linux Host Agent](/docs/guides/linux-host-agent).
+
 The path, in order:
 
 1. Check the [prerequisites](#prerequisites), especially the
@@ -184,16 +187,28 @@ llmkube metal token create mac-studio -n metal
 ```
 
 ```
+target: context my-cluster, API server https://192.168.1.10:6443
 llmkube metal join llmkube://eyJ2IjoxLCJzZXJ2ZXIiOi...
 valid for 30 minutes (until 2026-11-04 15:04 PST), single use, Mac mac-studio in namespace metal
 CA pin: sha256:a5fee586b3b05aaff494d200d4c072e2e37126eaef344e2f295ad87479272655
 ```
 
+The target line names the kubeconfig context and API server `token create`
+writes to; `--context <name>` uses another context. A warning follows it when
+the server in the join string, the context's or the `--server` you passed, is
+a loopback address (`127.0.0.1`, `::1`, `localhost`): only a Mac on this
+machine could reach it, so pass `--server` with an address the Mac reaches (see
+[Network requirements](#network-requirements)). Another warning names the Macs
+already in the namespace: two Macs in one namespace both claim every Metal
+InferenceService there, so give each Mac its own namespace or set an allowlist
+(see [More than one Mac](#more-than-one-mac)).
+
 `mac-studio` is the name the cluster will use for this Mac (a DNS label). The
-first line is the whole command to run on the Mac; progress messages go to
-stderr, so it copies cleanly. Until it is used or expires, the string is a
-credential for the Mac's identity: paste it only on the Mac. What the command
-creates is under [What `token create` creates](#what-token-create-creates).
+first stdout line is the whole command to run on the Mac; progress messages
+and warnings go to stderr, so it copies cleanly. Until it is used or expires,
+the string is a credential for the Mac's identity: paste it only on the Mac.
+What the command creates is under
+[What `token create` creates](#what-token-create-creates).
 
 ### On the Mac: join
 
@@ -413,9 +428,17 @@ the client depends on whether the engine reads `X-Forwarded-For`; one that
 does not reports `127.0.0.1`.
 
 On the Mac itself, the agent's client proxy on `127.0.0.1:9999`
-(`--client-port`) forwards `/v1/*` to an engine. With one model running that
-is the model; with several it picks one per request, so use the Service to
-reach a specific model.
+(`--client-port`) forwards `/v1/*` to an engine. With one model running,
+every request goes to it, whatever `model` it names. With several, each
+request goes to the engine its `model` field names: the model ID
+`GET /v1/models` lists for it, the InferenceService name, or
+`<namespace>/<name>` when the same name is used in two namespaces. For
+llama-server, oMLX and TensorFold the listed ID is `spec.modelRef` unless
+`extraArgs` overrides it; mlx-server, vllm-swift and Ollama list IDs of their
+own. The proxy forwards the `model` field unchanged, so for an engine that
+checks it (all but llama-server), send the ID it lists.
+`GET /v1/models` lists the models of every engine. A request that names no
+model, or one no engine serves, gets an error listing the names to use.
 
 ```bash
 curl -sS http://127.0.0.1:9999/v1/chat/completions \
@@ -545,8 +568,9 @@ several Macs, give each Mac its own InferenceService, as below.
 Each agent claims every `accelerator: metal` InferenceService in its
 namespace, and `join` sets no limit. Two Macs joined to the same namespace
 both start every Metal model there and overwrite each other's registration,
-so traffic switches between them and the relay keeps restarting. Nothing
-warns you. Use one of:
+so traffic switches between them and the relay keeps restarting. Nothing in
+the join stops you, but `token create` warns when the namespace already has
+a MetalNode for another Mac and names the two fixes below. Use one of:
 
 - **One namespace per Mac.** The simplest:
 
@@ -580,7 +604,7 @@ Run `token create` and `join` again when:
   for more than 7 days always comes back with an expired token, and one away
   for more than 3.5 days may (less if the API server caps token lifetimes).
   The agent then logs
-  `the agent's token has expired and cannot be renewed; join the Mac again`.
+  `the agent's token has expired and cannot be renewed; join the host again`.
   `join --token-lifetime` asks for a different lifetime; the API server may
   issue a shorter one, and `join` warns when it does.
 - **You revoked it** with `llmkube metal remove`, or want it in another
@@ -808,30 +832,46 @@ so they are over-charged. Older deepseek2 conversions carry plain
 head dims and no `*_mla` keys, run the non-MLA path, and are charged
 exactly what llama-server allocates.
 
-The attention shape comes from the Model's `status.gguf` when the
-controller recorded it, which it does for http(s) and s3 sources whose
-header it could read over the network. The controller cannot read the
-Mac's disk, so for a local source (an absolute path or a `file://`
-URI), an `hf://` source, or a source whose remote header read failed,
-the agent reads the GGUF header of the file it will load: the local
-file (following symlinks, as the load does) or its own model-store copy
-once downloaded. It reads at most 32 MiB of header, never the tensor
-data, and reads a file again only when its size, modification time or
-inode changes. For a split GGUF that file is the first shard, the only
-one llama-server accepts as the model path. With no shape (an MLX
-model directory, whose `config.json` the agent does not read; a file
-that is not a GGUF; or the first start of a download the controller
-could not read, before the file is on the Mac) the estimate is the
-file size plus 20% and 512 MiB, with no KV-cache term at any
-`contextSize`. Above the default 2048-token context the agent logs
-that once per model, and an `InsufficientMemory` message then ends
-with `the KV cache for --ctx-size N is not counted (<reason>)`, so
-the figure is a lower bound. An MLX model with a long context is
-therefore admitted against less memory than it will use; leave room
-for its KV cache in `--memory-fraction`.
+The attention shape comes from the GGUF header of the file
+llama-server loads whenever that file is on the Mac, and from the
+Model's `status.gguf` only while it is not: the controller records that
+shape for http(s) and s3 sources whose header it could read over the
+network, and the first start of a download runs before the file lands.
+The controller cannot read the Mac's disk, so for a local source (an
+absolute path or a `file://` URI), an `hf://` source, or a source whose
+remote header read failed, the shape is always the header of the local
+file (following symlinks, as the load does) or of its own model-store
+copy once downloaded. Once the file is on disk its header wins over
+`status.gguf`: it is the file llama-server loads, and a status the
+controller wrote from that same header agrees with it, because the
+status records the layer layout too (see below). A status an older
+controller wrote records no per-layer layout and no KV head count for a
+file that stores them per layer, so a hybrid sized from that is
+over-charged; for a dense model the two read the same keys and the
+charge is the same. A header that cannot be read (a partial download, a directory)
+still falls back to the status shape. The agent reads at most 32 MiB of
+header, never the tensor data, and reads a file again only when its
+size, modification time or inode changes. For a split GGUF that file is
+the first shard, the only one llama-server accepts as the model path.
+With no shape (an MLX model directory, whose `config.json` the agent
+does not read; a file that is not a GGUF; or the first start of a
+download the controller could not read, before the file is on the Mac)
+the estimate is the file size plus 20% and 512 MiB, with no KV-cache
+term at any `contextSize`. Above the default 2048-token context the
+agent logs that once per model, and an `InsufficientMemory` message
+then ends with `the KV cache for --ctx-size N is not counted
+(<reason>)`, so the figure is a lower bound. An MLX model with a long
+context is therefore admitted against less memory than it will use;
+leave room for its KV cache in `--memory-fraction`.
 
-A header the agent reads also gives the model's layer layout, which
-`status.gguf` does not record. On a hybrid model only the attention
+A header also gives the model's layer layout, and the controller records
+it on `status.gguf` (`kvHeadLayers`, `recurrentStatePerSeq`) from the
+same `pkg/gguf` code the agent reads, so the first start of a remote
+hybrid is sized from its real layout instead of the embedding-width
+formula. A source whose header the controller cannot read (an `hf://`
+repository, a local path, or a failed remote read) records no layout,
+and neither does a status an older controller wrote. On a hybrid model
+only the attention
 layers keep a KV cache: the layers `<arch>.attention.recurrent_layers`
 or `<arch>.full_attention_interval` mark as attention, plus any MTP
 (`nextn_predict_layers`) layers, or, when the file has neither key but
@@ -848,7 +888,8 @@ falling back to the embedding-width formula. For Qwen3.8-27B at
 recurrent state, where counting all 64 layers charged 32 GiB. A file
 whose recurrent layers keep another kind of state (RWKV, LFM2, Kimi
 Linear) or lack SSM geometry is charged at every layer, as before, and
-so is a Model charged from its `status.gguf`.
+so is a Model charged from a `status.gguf` that carries no layout
+before its file is on the Mac.
 
 The estimate charges the total `--ctx-size` pool: llama-server shares
 that pool across `--parallel` slots rather than multiplying it, so the
@@ -856,11 +897,13 @@ KV term does not scale with slot count. A hybrid model's recurrent
 state, above, is per sequence and does.
 
 A Model parsed by an older controller keeps the
-embedding-width estimate until its GGUF metadata is re-parsed, which
-happens on the next download, or after any change to the Model's spec
-when the Available condition records an older generation than the
-spec (a Ready status written before that condition existed has no
-such record and needs the Model recreated). Editing a local source's
+embedding-width estimate in its `status.gguf` until its metadata is
+re-parsed, which happens on the next download, or after any change to
+the Model's spec when the Available condition records an older
+generation than the spec (a Ready status written before that condition
+existed has no such record and needs the Model recreated). Once the
+file is on the Mac the agent charges from its header, so a stale
+`status.gguf` no longer sets the estimate. Editing a local source's
 file on disk does nothing under the default `IfNotPresent` refresh
 policy; with `refreshPolicy: OnChange` the size and mtime change
 counts as drift, triggering a re-download and a fresh parse.
@@ -1000,10 +1043,11 @@ stays there, check the agent log for the service's name:
 - Nothing about it: no agent serves it. The Mac is joined to another
   namespace (`kubectl get mn -A`), it is asleep or logged out, or an
   allowlist leaves the service out.
-- An error about it: the start failed (a download error, a full disk, an
-  engine that exited while loading). Such a failure is logged but not shown
-  on the InferenceService, and is tried again only when the InferenceService
-  changes or the agent restarts.
+- An error about it: the start failed (a download error, an engine that
+  exited while loading). The InferenceService shows `StartFailed`, and the
+  agent retries the start on its restart backoff. A model store without
+  room for the download is refused as `ModelDownloadNoSpace` instead, and
+  retried once space is freed (see below).
 
 **Mac drops out a few minutes after an upgrade**
 Local Network access did not carry over to the new binary. See
@@ -1049,6 +1093,17 @@ wrong, or, if the model really is that large, raise
 "`--max-download-size` flag (download cap)" in
 [`deployment/macos/README.md`](https://github.com/defilantech/LLMKube/blob/main/deployment/macos/README.md#--max-download-size-flag-download-cap).
 
+**InferenceService refused with `ModelDownloadNoSpace`**
+The model store's filesystem has no room for the download: the bytes
+still to fetch plus the agent's `--download-free-space-headroom`
+(default `10Gi`) are more than the free space, or the disk filled up
+during the copy. Free space there (old models under
+`<model-store>/<model>`) and the agent retries on its own; a partial
+download is kept and resumes. The
+`llmkube_metal_agent_model_store_free_bytes` gauge shows the free space.
+See "`--download-free-space-headroom` flag (disk preflight)" in
+[`deployment/macos/README.md`](https://github.com/defilantech/LLMKube/blob/main/deployment/macos/README.md#--download-free-space-headroom-flag-disk-preflight).
+
 **InferenceService refused with `SourceSecretNotAllowed`**
 The Model's `spec.sourceSecretRef` names a Secret the agent will not
 read: it is not labeled
@@ -1060,6 +1115,18 @@ gives the `kubectl label` command; label, create, or allow the Secret
 and the next poll starts the service. Keep
 credentials out of the relay Secret. See
 ["Model-source credentials Secrets"](https://github.com/defilantech/LLMKube/blob/main/deployment/macos/README.md#model-source-credentials-secrets-sourcesecretref).
+
+**InferenceService refused with `RuntimeNotAvailable`**
+The service's runtime (`spec.runtime`, or the agent's `--runtime` when
+that is unset) has no engine on this agent: its binary was not found
+when the agent started, or the agent was started without that engine's
+flag. An engine that is already serving the service keeps running.
+`status.schedulingMessage` names the runtime. Install the engine, pass
+its binary flag (`--llama-server`, `--mlx-server-bin`, `--omlx-bin`,
+`--vllm-swift-bin`, `--tensorfold-bin`) or select it with `--runtime`,
+and restart the agent; or set `spec.runtime` to an engine the agent
+serves. See "`RuntimeNotAvailable`" in
+[`deployment/macos/README.md`](https://github.com/defilantech/LLMKube/blob/main/deployment/macos/README.md#runtimenotavailable).
 
 **Login Items lists the agent as "Defilan Technologies LLC"**
 System Settings > General > Login Items & Extensions lists a release
@@ -1107,6 +1174,18 @@ counts the services in this state. If it stays above zero, check the
 agent's RBAC and its connection to the API server. Of the possible
 lookup results, only a deleted Model, or one that is no longer
 `accelerator: metal`, stops the service.
+
+**Agent log shows `referenced model not found; keeping the engine in case the model is re-created`**
+The `InferenceService`'s Model was deleted. The engine keeps serving
+for up to 5 minutes, so deleting and re-creating the Model
+(`kubectl replace --force`, a GitOps re-create) does not stop it.
+Meanwhile the controller reports the `InferenceService` as `Failed`
+with `Model not found`, and changes to the `InferenceService` wait
+until the Model is back. A re-created Model with the same spec keeps
+the engine, and the log says `referenced model found again`. One with
+a different spec (another `source`, for example) restarts the engine
+on it. A Model still missing after 5 minutes stops the engine:
+`referenced model still not found; stopping the engine`.
 
 **Agent log shows `replicas=0; stopping process` unexpectedly**
 A controller-side reconcile saw `spec.replicas=0` on the
@@ -1177,7 +1256,11 @@ the Lease (the agent's heartbeat) and any `hostIP` or `verifier` you
 set on the MetalNode, and refuses to take over an object with one of
 these names that is not labeled for this Mac (or is labeled for
 another Mac). It checks all of them before it writes anything, so a
-refusal leaves the cluster as it was. If you created the
+refusal leaves the cluster as it was. The Lease is the exception: the
+Mac may update its own Lease, labels included, so a Lease whose label
+no longer says `<mac>` still counts as the Mac's when the Mac's
+MetalNode (labeled for the Mac, and not writable by the Mac) names it
+in `spec.leaseName`. `token create` then puts the label back. If you created the
 objects by hand (see [The objects for each Mac](#the-objects-for-each-mac)),
 label them (`kubectl label ... inference.llmkube.dev/metal-node=<mac>`)
 or delete them first.
@@ -1223,7 +1306,11 @@ token. The Mac trusts only that CA (no system roots).
   since the Mac would have nothing to trust. When the server address
   is not in the certificate (a tailnet address, say), it sets the TLS
   server name to `kubernetes` if the certificate covers that, or
-  stops and lists the names the certificate does cover.
+  stops and lists the names the certificate does cover. It then
+  connects again sending `kubernetes`, as the Mac will, and stops if
+  the certificate presented for that name (an API server with
+  `--tls-sni-cert-key`, or a proxy that routes by name, can present
+  another one) does not verify against the CA the string carries.
 
 ### On the Mac: join and leave
 
@@ -1343,10 +1430,13 @@ touch the Mac itself; run `llmkube metal leave` there.
 the Mac's names (another application's Lease, objects labeled for
 another Mac, a MetalNode applied by hand) is left in place and listed
 as `skipped`. If the ServiceAccount is among them, nothing was
-revoked and the command fails. For a Mac whose objects you applied by
+revoked and the command fails. The Lease is also deleted, with a
+warning, when the Mac's MetalNode names it as its Lease, whatever its
+label says (see above). For a Mac whose objects you applied by
 hand without the label, `--include-unlabeled` also deletes unlabeled
-objects with the Mac's names, with a warning for each; objects
-labeled for another Mac are never deleted.
+objects with the Mac's names, with a warning for each. Apart from the
+Lease the Mac's MetalNode names, objects labeled for another Mac are
+never deleted.
 
 ### Limit the agent's writes (Kubernetes 1.30+)
 
@@ -1665,6 +1755,10 @@ on schedule does not wake the controller; its 60 s resync does.
 | `Reachable` | `AgentNotConnected` | `Unknown`: the agent is not connected, so nothing is dialed and `hostIP` is empty. |
 | `Reachable` | `ReportInvalid` | `Unknown`: the agent's report on its Lease is invalid (see `AgentConnected`), so nothing is dialed and `hostIP` is empty. Fix the report, not the Mac's network. |
 | `Reachable` | `InvalidSpec` | `spec.hostIP` is not an IP address; nothing is dialed until it is fixed. |
+| `AgentVersionSupported` | `InSkewWindow` | The agent is on the controller's minor release and not newer than the controller. |
+| `AgentVersionSupported` | `AgentNewerThanController` | `False`: the agent is a newer release than the controller. Upgrade the chart; the controller must be at least as new as its agents. |
+| `AgentVersionSupported` | `AgentMinorBehind` | `False`: the agent is from an older minor release than the controller. Upgrade the agent. |
+| `AgentVersionSupported` | `VersionUnknown` | `Unknown`: the agent has not reported a version, or either side's version is not a release version, such as a development build (the controller's version comes from `--controller-version`, which the Helm chart sets from the image tag). |
 
 ### Engine environment
 

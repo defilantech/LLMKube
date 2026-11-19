@@ -168,6 +168,6 @@ func (w *EndpointWatcher) recompute(namespace, service string) {
 		}
 	}
 	for _, b := range backends {
-		w.disp.SetEndpoints(b.name, ReadyEndpointURLs(slices, b.port))
+		w.disp.SetReadyEndpoints(b.name, ReadyEndpoints(slices, b.port))
 	}
 }

@@ -1754,6 +1754,11 @@ func (in *ModelRouterSpec) DeepCopyInto(out *ModelRouterSpec) {
 		*out = new(AgentGatewayReference)
 		(*in).DeepCopyInto(*out)
 	}
+	if in.BackendSelector != nil {
+		in, out := &in.BackendSelector, &out.BackendSelector
+		*out = new(v1.LabelSelector)
+		(*in).DeepCopyInto(*out)
+	}
 	if in.Backends != nil {
 		in, out := &in.Backends, &out.Backends
 		*out = make([]RouterBackend, len(*in))

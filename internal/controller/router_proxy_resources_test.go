@@ -24,7 +24,7 @@ import (
 // since an idle proxy sits near 14Mi.
 func TestRouterProxyDefaultResources(t *testing.T) {
 	r := &ModelRouterReconciler{RouterProxyImage: "img"}
-	got := r.newRouterDeployment(canonicalModelRouter(), "hash", false).Spec.Template.Spec.Containers[0].Resources
+	got := r.newRouterDeployment(canonicalModelRouter(), &compiledConfig{Hash: "hash"}).Spec.Template.Spec.Containers[0].Resources
 	if lim := got.Limits[corev1.ResourceMemory]; lim.Cmp(resource.MustParse("1Gi")) != 0 {
 		t.Errorf("default memory limit = %s, want 1Gi", lim.String())
 	}
@@ -36,7 +36,7 @@ func TestRouterProxyDefaultResources(t *testing.T) {
 	mr.Spec.Proxy = &inferencev1alpha1.RouterProxySpec{Resources: &corev1.ResourceRequirements{
 		Limits: corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("2Gi")},
 	}}
-	set := r.newRouterDeployment(mr, "hash", false).Spec.Template.Spec.Containers[0].Resources
+	set := r.newRouterDeployment(mr, &compiledConfig{Hash: "hash"}).Spec.Template.Spec.Containers[0].Resources
 	if lim := set.Limits[corev1.ResourceMemory]; lim.Cmp(resource.MustParse("2Gi")) != 0 {
 		t.Errorf("user-set memory limit = %s, want 2Gi", lim.String())
 	}

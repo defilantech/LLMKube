@@ -12,6 +12,9 @@ before:
     # Info.plist without compiling the tool per binary. Not in dist/: the
     # dist directory must still be empty when the before hooks finish.
     - go build -o ./bin/machoplist ./cmd/machoplist
+    # Generates third_party_licenses/, shipped by every archive and image
+    # below (#2564).
+    - make third-party-licenses
 
 builds:
   - id: llmkube-cli
@@ -175,6 +178,7 @@ archives:
     # Files to include in archive
     files:
       - LICENSE
+      - third_party_licenses/**
       - README.md
       - CHANGELOG.md
       - examples/gpu-quickstart/*
@@ -195,6 +199,7 @@ archives:
     # Files to include
     files:
       - LICENSE
+      - third_party_licenses/**
       - README.md
       - examples/metal-quickstart/*
       # The quickstart's full text; the example README above points to it.
@@ -218,6 +223,7 @@ archives:
     # Files to include
     files:
       - LICENSE
+      - third_party_licenses/**
       - README.md
       # deployment/macos minus the *.Info.plist.tmpl files, which only the
       # build hook uses (internal/machoplist/release_identity_test.go).
@@ -244,6 +250,9 @@ dockers_v2:
     tags:
       - "{{ .Version }}"
     dockerfile: Dockerfile.goreleaser
+    extra_files:
+      - LICENSE
+      - third_party_licenses
     platforms:
       - linux/amd64
       - linux/arm64
@@ -262,6 +271,9 @@ dockers_v2:
     tags:
       - "{{ .Version }}"
     dockerfile: Dockerfile.foreman-operator.goreleaser
+    extra_files:
+      - LICENSE
+      - third_party_licenses
     platforms:
       - linux/amd64
       - linux/arm64
@@ -280,6 +292,9 @@ dockers_v2:
     tags:
       - "{{ .Version }}"
     dockerfile: Dockerfile.foreman-agent.goreleaser
+    extra_files:
+      - LICENSE
+      - third_party_licenses
     platforms:
       - linux/amd64
       - linux/arm64
@@ -298,6 +313,9 @@ dockers_v2:
     tags:
       - "{{ .Version }}"
     dockerfile: Dockerfile.router-proxy.goreleaser
+    extra_files:
+      - LICENSE
+      - third_party_licenses
     platforms:
       - linux/amd64
       - linux/arm64

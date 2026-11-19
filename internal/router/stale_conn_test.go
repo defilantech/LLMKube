@@ -236,7 +236,7 @@ func TestDispatchStaleRetryReleasesPrefill(t *testing.T) {
 	d := NewDispatcher(cfg, WithRouterLabel("r-stale-prefill"))
 	d.SetEndpoints("qwen", []string{srv.URL})
 	retries := prommetrics.RouterDispatchRetriesTotal.WithLabelValues("r-stale-prefill", "qwen", "stale_connection")
-	estimated := prommetrics.RouterPrefillTokensEstimatedTotal.WithLabelValues("r-stale-prefill", "qwen", srv.URL)
+	estimated := prommetrics.RouterPrefillTokensEstimatedTotal.WithLabelValues("r-stale-prefill", "qwen", srv.URL, "", "")
 
 	for i := 0; i < 2; i++ { // the second reuses the first's connection, which the upstream drops
 		resp, err := d.Dispatch(context.Background(), b, http.MethodPost, "/v1/chat/completions", http.Header{}, promptBody())

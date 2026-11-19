@@ -27,6 +27,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
@@ -213,7 +214,7 @@ var _ = Describe("Operator state metrics lifecycle", func() {
 			}
 			isvc := &inferencev1alpha1.InferenceService{
 				ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default", UID: "uid-early-return"},
-				Spec:       inferencev1alpha1.InferenceServiceSpec{ModelRef: model.Name},
+				Spec:       inferencev1alpha1.InferenceServiceSpec{ModelRef: model.Name, ParallelSlots: ptr.To(int32(4))},
 				Status: inferencev1alpha1.InferenceServiceStatus{
 					Phase:           PhaseReady,
 					ReadyReplicas:   2,
@@ -261,6 +262,12 @@ var _ = Describe("Operator state metrics lifecycle", func() {
 			Expect(testutil.ToFloat64(
 				llmkubemetrics.InferenceServiceInfo.WithLabelValues(name, "default", acceleratorCUDA, "llamacpp"),
 			)).To(Equal(1.0), "info must carry the Model's accelerator, not the cpu fallback")
+			Expect(testutil.ToFloat64(
+				llmkubemetrics.InferenceServiceConcurrencyLimit.WithLabelValues(name, "default"),
+			)).To(Equal(4.0), "the limit must be exported from the same deferred publish")
+			Expect(testutil.ToFloat64(
+				llmkubemetrics.InferenceServiceConfigInfo.WithLabelValues(name, "default", "0", "llamacpp", deployment.Spec.Template.Spec.Containers[0].Image),
+			)).To(Equal(1.0), "config_info must carry the image the Deployment runs")
 			llmkubemetrics.DeleteInferenceServiceSeries(name, "default")
 		})
 

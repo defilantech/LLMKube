@@ -37,15 +37,7 @@ type Capabilities struct {
 
 // DetectCapabilities detects the GPU and accelerator capabilities of the system
 func DetectCapabilities() Capabilities {
-	caps := Capabilities{
-		OS:   runtime.GOOS,
-		Arch: runtime.GOARCH,
-	}
-
-	// Detect Metal on macOS
-	if runtime.GOOS == "darwin" {
-		caps.Metal = detectMetal(&caps)
-	}
+	caps := DetectMetal()
 
 	// Detect CUDA on Linux/Windows
 	if runtime.GOOS == "linux" || runtime.GOOS == "windows" {
@@ -57,6 +49,20 @@ func DetectCapabilities() Capabilities {
 		caps.ROCm = detectROCm(&caps)
 	}
 
+	return caps
+}
+
+// DetectMetal reports the OS, the architecture and, on macOS, Metal support
+// and the GPU it names. It runs no CUDA or ROCm probe (nvidia-smi, rocm-smi),
+// so a wedged GPU driver cannot block it.
+func DetectMetal() Capabilities {
+	caps := Capabilities{
+		OS:   runtime.GOOS,
+		Arch: runtime.GOARCH,
+	}
+	if runtime.GOOS == "darwin" {
+		caps.Metal = detectMetal(&caps)
+	}
 	return caps
 }
 

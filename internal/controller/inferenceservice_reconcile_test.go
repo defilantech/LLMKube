@@ -378,6 +378,7 @@ var _ = Describe("determinePhase", func() {
 		Entry("relay service name too long", inferencev1alpha1.ReasonServiceNameTooLong),
 		Entry("model digest mismatch", inferencev1alpha1.ReasonModelDigestMismatch),
 		Entry("model download over the agent's cap", inferencev1alpha1.ReasonModelDownloadTooLarge),
+		Entry("model download without disk space", inferencev1alpha1.ReasonModelDownloadNoSpace),
 		Entry("sourceSecretRef Secret not allowed", inferencev1alpha1.ReasonSourceSecretNotAllowed),
 		Entry("runtime with no executor on the agent", inferencev1alpha1.ReasonRuntimeNotAvailable),
 		Entry("a start that failed and is being retried", inferencev1alpha1.ReasonStartFailed),
@@ -393,16 +394,33 @@ var _ = Describe("determinePhase", func() {
 		Expect(info.Status).To(Equal("WaitingForMetalAgent"))
 	})
 
-	It("should let a stale heartbeat replace an agent refusal", func() {
+	It("should let a stale heartbeat replace an agent refusal once no MetalNode shows the Mac is alive", func() {
 		isvc := &inferencev1alpha1.InferenceService{
 			ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
 		}
 		isvc.Status.SchedulingStatus = "ExtraArgsRejected"
-		snap := &metalSnapshot{Kind: metalHBStale, RawHeartbeat: "2026-01-01T00:00:00Z"}
+		snap := &metalSnapshot{Kind: metalHBStale, RawHeartbeat: "2026-01-01T00:00:00Z", refusalReplaced: true}
 		_, info := reconciler.determinePhase(context.Background(), isvc, 0, 1, true, nil, snap)
 		Expect(info).NotTo(BeNil())
 		Expect(info.Status).To(Equal("AgentHeartbeatStale"))
 	})
+
+	// A slice the agent does not re-stamp stays stale while it refuses, so the
+	// slice alone must not replace the refusal (#2457).
+	DescribeTable("should keep an agent refusal over a slice heartbeat alone",
+		func(kind metalHeartbeatKind) {
+			isvc := &inferencev1alpha1.InferenceService{
+				ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
+			}
+			isvc.Status.SchedulingStatus = "ExtraArgsRejected"
+			snap := &metalSnapshot{Kind: kind, RawHeartbeat: "2026-01-01T00:00:00Z"}
+			phase, info := reconciler.determinePhase(context.Background(), isvc, 0, 1, true, nil, snap)
+			Expect(phase).To(Equal(PhaseCreating))
+			Expect(info).To(BeNil())
+		},
+		Entry("stale", metalHBStale),
+		Entry("unparseable", metalHBUnparseable),
+	)
 
 	It("should return Stopped when replicas=0 on generic path", func() {
 		isvc := &inferencev1alpha1.InferenceService{

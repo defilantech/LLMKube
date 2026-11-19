@@ -19,6 +19,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -30,9 +31,16 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	authenticationv1 "k8s.io/api/authentication/v1"
+	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/clientcmd"
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	"github.com/defilantech/llmkube/pkg/metaljoin"
 )
@@ -287,6 +295,63 @@ func TestJWTLifetime(t *testing.T) {
 	}
 	if _, ok := jwtLifetime("not-a-jwt"); ok {
 		t.Error("jwtLifetime accepted a non-JWT")
+	}
+}
+
+// TestMintJoinToken: the join token is minted through the controller-runtime
+// client's serviceaccounts/token subresource (no second clientset), for the
+// Mac's ServiceAccount, with the asked lifetime and bound to the join Secret
+// by name and UID. envtest checks the minted token itself.
+func TestMintJoinToken(t *testing.T) {
+	s, err := metalScheme()
+	if err != nil {
+		t.Fatal(err)
+	}
+	n := newMetalNames("mac-a")
+	sa := &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{Namespace: "ns", Name: n.ServiceAccount}}
+	secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: "ns", Name: n.JoinSecret, UID: types.UID("u-1")}}
+
+	var calls []string
+	var got *authenticationv1.TokenRequest
+	c := interceptor.NewClient(fake.NewClientBuilder().WithScheme(s).WithObjects(sa).Build(), interceptor.Funcs{
+		SubResourceCreate: func(ctx context.Context, c client.Client, sub string, obj, subObj client.Object,
+			opts ...client.SubResourceCreateOption) error {
+			calls = append(calls, fmt.Sprintf("%s %T %s/%s", sub, obj, obj.GetNamespace(), obj.GetName()))
+			if tr, ok := subObj.(*authenticationv1.TokenRequest); ok {
+				got = tr.DeepCopy()
+			}
+			return c.SubResource(sub).Create(ctx, obj, subObj, opts...)
+		},
+	})
+	issued, err := mintJoinToken(context.Background(), c, "ns", n, secret, 30*time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"token *v1.ServiceAccount ns/" + n.ServiceAccount}; !reflect.DeepEqual(calls, want) {
+		t.Fatalf("subresource creates = %q, want %q", calls, want)
+	}
+	if got.Spec.ExpirationSeconds == nil || *got.Spec.ExpirationSeconds != 1800 {
+		t.Errorf("expirationSeconds = %v, want 1800", got.Spec.ExpirationSeconds)
+	}
+	wantRef := authenticationv1.BoundObjectReference{Kind: "Secret", APIVersion: "v1", Name: n.JoinSecret, UID: "u-1"}
+	if got.Spec.BoundObjectRef == nil || *got.Spec.BoundObjectRef != wantRef {
+		t.Errorf("boundObjectRef = %+v, want %+v", got.Spec.BoundObjectRef, wantRef)
+	}
+	if issued.token != "fake-token" {
+		t.Errorf("token = %q, want the one the API returned", issued.token)
+	}
+
+	// An API server that answers without a token is an error, not an empty
+	// join string.
+	empty := interceptor.NewClient(fake.NewClientBuilder().WithScheme(s).WithObjects(sa).Build(), interceptor.Funcs{
+		SubResourceCreate: func(context.Context, client.Client, string, client.Object, client.Object,
+			...client.SubResourceCreateOption) error {
+			return nil
+		},
+	})
+	if _, err := mintJoinToken(context.Background(), empty, "ns", n, secret, 30*time.Minute); err == nil ||
+		!strings.Contains(err.Error(), "returned no token") {
+		t.Errorf("empty TokenRequest status: err = %v, want a no-token error", err)
 	}
 }
 
