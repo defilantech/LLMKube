@@ -13,7 +13,8 @@ It is built for platform teams running on-prem, mixed-hardware, or air-gapped in
 - Kubernetes 1.27+
 - Helm 3.8+ for the OCI install (3.0+ for the Helm repository install)
 - (Optional) Prometheus Operator for metrics and alerts
-- (Optional) NVIDIA GPU Operator for GPU support
+- (Optional) A device plugin for your GPUs: the NVIDIA GPU Operator for NVIDIA nodes, or the AMD GPU device plugin (`amd.com/gpu`) for AMD nodes
+- (Optional) For Apple Silicon, Macs join the cluster through the metal-agent rather than a device plugin. See the [macOS guide](https://llmkube.com/docs/guides/macos-metal)
 
 ## Installing the Chart
 
@@ -176,7 +177,7 @@ fit, keeping the role suffix that identifies the object.
 | `prometheus.prometheusRule.rules.gpu.highTemperatureThreshold` | GPU high temperature threshold (°C) | `85` |
 | `prometheus.prometheusRule.rules.gpu.memoryPressureThreshold` | GPU memory pressure threshold (%) | `90` |
 | `prometheus.prometheusRule.rules.gpu.powerLimitThreshold` | GPU power limit threshold (W) | `250` |
-| `prometheus.prometheusRule.rules.gpuHealth.enabled` | Enable GPU fault alerts: Xids, recovery action, row remapping, DCGM health watches. Some need DCGM exporter counters that are off by default; see the [GPU fault handling guide](../../docs/site/guides/gpu-fault-handling.md) | `true` |
+| `prometheus.prometheusRule.rules.gpuHealth.enabled` | Enable GPU fault alerts: Xids, recovery action, row remapping, DCGM health watches. Some need DCGM exporter counters that are off by default; see the [GPU fault handling guide](https://llmkube.com/docs/guides/gpu-fault-handling) | `true` |
 | `prometheus.prometheusRule.rules.gpuHealth.criticalXids` | Xids that page as critical, from the NVIDIA Xid catalog's reset, reboot and support resolutions | See values.yaml |
 | `prometheus.prometheusRule.rules.inference.enabled` | Enable inference alerts | `true` |
 | `prometheus.prometheusRule.rules.serving.enabled` | Enable serving-quality alerts (also requires `prometheus.inferencePodMonitor.enabled`) | `true` |
@@ -421,7 +422,7 @@ context replaces the operator default), `runAsNonRoot: true`, a numeric
 `runAsUser`, and `seccompProfile: RuntimeDefault`. See `docs/MODEL-CACHE.md`
 under "Turning the prep off".
 
-See the [air-gapped guide](../../docs/site/guides/air-gapped.md#clusters-without-dynamic-provisioning)
+See the [air-gapped guide](https://llmkube.com/docs/guides/air-gapped#clusters-without-dynamic-provisioning)
 for a static-PV example.
 
 `modelSource.fileListing` defaults to `controller`: a glob in a Model's
@@ -430,7 +431,7 @@ the controller needs egress to the model host. Set it to `pod` and a
 short-lived Job in the Model's namespace, carrying the prefetch pods' labels
 and placement, lists it instead, so the NetworkPolicy that lets prefetch pods
 reach the host covers the listing. See the
-[model cache guide](../../docs/site/guides/model-cache.md#listing-from-a-pod-instead-of-the-controller).
+[model cache guide](https://llmkube.com/docs/guides/model-cache#listing-from-a-pod-instead-of-the-controller).
 
 ## Examples
 
@@ -565,9 +566,9 @@ EOF
 
 ## GPU Support
 
-For GPU-accelerated inference, ensure:
+For GPU-accelerated inference on Linux nodes, ensure:
 
-1. NVIDIA GPU Operator is installed in your cluster
+1. A device plugin advertises your GPUs: the NVIDIA GPU Operator (`nvidia.com/gpu`) or the AMD GPU device plugin (`amd.com/gpu`)
 2. GPU nodes are available
 3. Deploy with GPU configuration:
 
@@ -579,7 +580,7 @@ llmkube deploy llama-3b-gpu \
   --gpu-memory 8Gi
 ```
 
-See the [GPU Setup Guide](https://github.com/defilantech/LLMKube/blob/main/docs/gpu-setup-guide.md) for detailed instructions.
+See the [GPU Setup Guide](https://github.com/defilantech/LLMKube/blob/main/docs/gpu-setup-guide.md) for detailed instructions. Apple Silicon Macs don't use a device plugin: they join through the metal-agent, covered in the [macOS guide](https://llmkube.com/docs/guides/macos-metal).
 
 ## Troubleshooting
 

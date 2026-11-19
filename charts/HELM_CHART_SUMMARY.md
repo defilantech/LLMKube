@@ -175,11 +175,11 @@ Created three complete examples:
 ### For Issue #9
 The core issue is complete, but potential future improvements:
 
-1. **Helm Repository**: Publish to a Helm repository for easier installation
-2. **Chart Icon**: Add icon to Chart.yaml (noted in lint)
+1. **Helm Repository**: Done. Published at https://defilantech.github.io/LLMKube by chart-releaser
+2. **Chart Icon**: Done. `icon` is set in Chart.yaml
 3. **Chart Tests**: Add Helm chart tests in templates/tests/
-4. **ArtifactHub**: Publish chart to ArtifactHub.io
-5. **OCI Registry**: Push chart to OCI registry (ghcr.io)
+4. **ArtifactHub**: Chart metadata and annotations are in Chart.yaml. Still to do: register `oci://ghcr.io/defilantech/charts/llmkube` on artifacthub.io, then push the repository metadata file for the Verified Publisher badge
+5. **OCI Registry**: Done. Pushed to `oci://ghcr.io/defilantech/charts` on each release
 
 ### For Future Issues
 - Multi-chart setup (separate charts for operator and models)
