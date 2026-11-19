@@ -378,8 +378,11 @@ type MultiNodeSpec struct {
 	// +kubebuilder:validation:Maximum=65535
 	RendezvousPort *int32 `json:"rendezvousPort,omitempty"`
 
-	// Memory prepares each member node's memory right before the member's
-	// runtime starts. Unset adds nothing to the member pods.
+	// Memory looks after each member node's memory: it can prepare it right
+	// before the member's runtime starts (a page-cache drop and vm sysctls)
+	// and watch it for as long as the member runs (a sidecar that flushes the
+	// page cache and can suspend the group). Unset adds nothing to the member
+	// pods.
 	// +optional
 	Memory *MultiNodeMemory `json:"memory,omitempty"`
 }
@@ -389,10 +392,12 @@ type MultiNodeSpec struct {
 // whose KV cache is pinned (vLLM --kv-cache-memory-bytes) skips its own memory
 // profiling, so a page cache left by staging the weights takes memory the
 // model needs and nothing else notices. DropPageCacheBeforeBoot or Sysctls make
-// the operator add one privileged init container, the last one, to every
-// member pod; FlushBelowMemFree or SuspendBelowMemFree add a privileged sidecar
-// that runs beside the runtime. Either way the namespace's Pod Security level
-// must allow privileged pods. What they write is node-wide and outlives the pod.
+// the operator add one privileged init container to every member pod, after
+// the init containers that stage the weights; FlushBelowMemFree or
+// SuspendBelowMemFree add a privileged sidecar that runs beside the runtime
+// (a native sidecar, so the cluster needs Kubernetes 1.29 or newer). Either
+// way the namespace's Pod Security level must allow privileged pods. What
+// they write is node-wide and outlives the pod.
 type MultiNodeMemory struct {
 	// DropPageCacheBeforeBoot syncs and drops the node's page cache after the
 	// member has staged its weights and before its runtime container starts.
@@ -409,13 +414,18 @@ type MultiNodeMemory struct {
 	Sysctls map[string]MultiNodeSysctlValue `json:"sysctls,omitempty"`
 
 	// FlushBelowMemFree drops the node's page cache while the member runs
-	// whenever MemFree falls below it and there is page cache to drop, at
-	// most once every 5 seconds. Page cache that regrows while serving (row
-	// reads from weights on disk) is the memory a unified-memory GPU then
-	// cannot allocate. Setting it, or SuspendBelowMemFree, adds a privileged
-	// sidecar, multinode-memory-guard, to every member pod.
-	// A quantity, e.g. "4Gi".
+	// whenever MemFree falls below it and there is page cache to drop (more
+	// than 512Mi of Cached that is not Shmem), with at least 5 seconds between
+	// two drops.
+	// Page cache that regrows while serving (row reads from weights on disk)
+	// is the memory a unified-memory GPU then cannot allocate. Setting it, or
+	// SuspendBelowMemFree, adds a privileged sidecar, multinode-memory-guard,
+	// to every member pod.
+	// A quantity of at least 1Mi, e.g. "4Gi". Omit the field to turn the
+	// flusher off: the API server rejects "0" and anything under 1Mi.
+	// +kubebuilder:validation:MaxLength=32
 	// +kubebuilder:validation:Pattern=`^([+-]?[0-9.]+)([eEinumkKMGTP]*[-+]?[0-9]*)$`
+	// +kubebuilder:validation:XValidation:rule="isQuantity(self) && quantity(self).compareTo(quantity('1Mi')) >= 0",message="flushBelowMemFree must be a quantity of at least 1Mi; omit it to turn the flusher off"
 	// +optional
 	FlushBelowMemFree string `json:"flushBelowMemFree,omitempty"`
 
@@ -424,9 +434,17 @@ type MultiNodeMemory struct {
 	// operator sets spec.suspend to true and records a Warning event, so the
 	// members are deleted cleanly instead of starving the GPU allocator.
 	// Setting spec.suspend back to false starts the group again and re-arms
-	// the guard. Only a group that has formed is suspended.
-	// A quantity, e.g. "1536Mi".
+	// the guard. The guard is armed from the moment every member's runtime
+	// container is running, so it also watches the weight load. Set it well
+	// above the kernel's high watermark: a node with nothing left to reclaim
+	// stalls near that mark, and a lower floor fires too late.
+	// A floor above what the node can ever have free suspends the group
+	// shortly after every start.
+	// A quantity of at least 1Mi, e.g. "8Gi". Omit the field to turn the
+	// guard off: the API server rejects "0" and anything under 1Mi.
+	// +kubebuilder:validation:MaxLength=32
 	// +kubebuilder:validation:Pattern=`^([+-]?[0-9.]+)([eEinumkKMGTP]*[-+]?[0-9]*)$`
+	// +kubebuilder:validation:XValidation:rule="isQuantity(self) && quantity(self).compareTo(quantity('1Mi')) >= 0",message="suspendBelowMemFree must be a quantity of at least 1Mi; omit it to turn the guard off"
 	// +optional
 	SuspendBelowMemFree string `json:"suspendBelowMemFree,omitempty"`
 }

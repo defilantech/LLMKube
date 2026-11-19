@@ -467,7 +467,7 @@ var (
 			Name: "llmkube_multinode_guard_suspends_total",
 			Help: "Total number of multiNode groups suspended by the memory guard (spec.multiNode.memory.suspendBelowMemFree).",
 		},
-		[]string{"namespace", "inferenceservice"},
+		[]string{"inferenceservice", "namespace"},
 	)
 
 	// ModelPoolSwapDuration measures how long a swap takes from the router's
