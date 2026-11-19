@@ -131,8 +131,8 @@ A change is not done until all of these hold.
   works in its own namespace (`newTestNamespace`); do not call `t.Parallel`
   there. `make test-scripts` fails on a test that constructs an
   `envtest.Environment` of its own (#2141). The other envtest packages
-  (`pkg/cli`, `internal/watchcanary`, `internal/foreman/controller`) keep their
-  own control planes; they run in seconds.
+  (`pkg/cli`, `internal/watchcanary`) keep their own control planes; they run
+  in seconds.
 - Darwin-only tests (`//go:build darwin`, `_darwin_test.go`) run in CI on a
   hosted macOS runner, with `-race`, for the packages listed in
   `.github/workflows/test-macos.yml`; add a new package with darwin tests there.
@@ -180,7 +180,7 @@ A change is not done until all of these hold.
   The copyright step diffs against `BASE_REF` (default `upstream/main`,
   override with `BASE_REF=origin/main` in a fork clone, the same knob
   `make test-affected` uses), so an unresolvable base fails the gate.
-- Full suite (what CI and the Foreman gate run): `make test`, random seed and
+- Full suite (what CI runs): `make test`, random seed and
   coverage profile, unchanged.
 - Editing `scripts/gate.sh`, `scripts/test-affected.sh`,
   `scripts/check-ginkgo-seed_test.sh`, `scripts/check-envtest-sharing_test.sh`
@@ -244,18 +244,14 @@ Use `feat!:` / `fix!:` for breaking changes.
 
 | Path                    | Contents                                          |
 |-------------------------|---------------------------------------------------|
-| `cmd/`                  | Entry points (controller, router-proxy, metal-agent, foreman, CLI) |
+| `cmd/`                  | Entry points (controller, router-proxy, metal-agent, CLI) |
 | `internal/controller/`  | Model, InferenceService, ModelPool, ModelRouter reconcilers |
 | `internal/metrics/`     | Prometheus metrics                                |
-| `internal/foreman/`     | Foreman controllers                               |
 | `pkg/agent/`            | Metal-agent process executor and arg builders     |
-| `pkg/foreman/`          | Foreman agent core (gates, tools, review)         |
 | `pkg/cli/`              | Cobra CLI commands                                |
 | `api/v1alpha1/`         | Core CRD types (regenerate after editing)         |
-| `api/foreman/`          | Foreman CRD types                                 |
 | `api/federation/`       | Federation CRD types                              |
 | `charts/llmkube/`       | Helm chart (CRDs synced via `make chart-crds`)    |
-| `charts/foreman/`       | Foreman Helm chart                                |
 | `config/`               | Kustomize bases                                   |
 | `catalog/`              | Model catalog definitions                         |
 | `deployment/`           | Deployment manifests and Ansible                 |
@@ -265,8 +261,8 @@ Use `feat!:` / `fix!:` for breaking changes.
 | `scripts/`              | CI helper and validation scripts                  |
 
 The core API group (`api/v1alpha1/`) holds the inference CRDs (Model,
-InferenceService, ModelPool, ModelRouter, and the rest). Foreman and federation
-are separate API groups under their own directories.
+InferenceService, ModelPool, ModelRouter, and the rest). Federation is a
+separate API group under its own directory.
 
 ## Runtime-arg parity
 

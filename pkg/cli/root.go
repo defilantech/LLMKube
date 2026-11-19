@@ -50,8 +50,6 @@ built-in observability, SLO alerting, and edge-native capabilities.`,
 	cmd.AddCommand(NewCacheCommand())
 	cmd.AddCommand(NewInspectCommand())
 	cmd.AddCommand(NewLicenseCommand())
-	cmd.AddCommand(NewAuditCommand())
-	cmd.AddCommand(NewForemanCommand())
 	cmd.AddCommand(NewFleetCommand())
 	cmd.AddCommand(NewMetalCommand())
 

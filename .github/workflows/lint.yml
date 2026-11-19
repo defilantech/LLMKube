@@ -37,6 +37,19 @@ jobs:
         # Once, before any step builds; retried on network errors only (#2380).
         run: hack/go-mod-download.sh
 
+      - name: Guard against Foreman or Meitheal imports
+        # Foreman moved to github.com/defilantech/meitheal, which imports this
+        # module (#2526); nothing here may import it back. -e lists a package
+        # whose module is not in go.mod too, so this names the import where
+        # the linter below reports only a typecheck error and its depguard
+        # rule never runs.
+        run: |
+          deps="$(go list -e -deps ./...)"
+          if printf '%s\n' "$deps" | grep -i -E 'foreman|meitheal'; then
+            echo "::error::LLMKube must not import Foreman or Meitheal packages (#2526)"
+            exit 1
+          fi
+
       - name: Run linter
         uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
         with:
@@ -50,9 +63,6 @@ jobs:
         with:
           version: v2.15.0
           args: --config=.golangci-deadcode.yml ./...
-
-      - name: Check reviewer prompt sync
-        run: make check-reviewer-prompts
 
       - name: Check golang builder images match go.mod
         run: make check-go-version

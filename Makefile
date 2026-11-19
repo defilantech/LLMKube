@@ -50,20 +50,6 @@ manifests: controller-gen ## Generate WebhookConfiguration, ClusterRole and Cust
 chart-crds: manifests ## Generate CRDs and sync to Helm chart templates
 	@./scripts/sync-crds.sh
 
-.PHONY: foreman-chart-crds
-foreman-chart-crds: manifests ## Sync foreman.llmkube.dev CRDs to the foreman chart.
-	@mkdir -p charts/foreman/templates/crds
-	@synced=0; for src in config/crd/bases/foreman.llmkube.dev_*.yaml; do \
-	  [ -e "$$src" ] || { echo "no foreman CRDs in config/crd/bases (did make manifests run?)"; exit 1; }; \
-	  base=$$(basename $$src); short=$${base#foreman.llmkube.dev_}; \
-	  echo "Syncing $$base -> $$short"; \
-	  echo '{{- if .Values.crds.install }}' > charts/foreman/templates/crds/$$short; \
-	  cat $$src >> charts/foreman/templates/crds/$$short; \
-	  echo '' >> charts/foreman/templates/crds/$$short; \
-	  echo '{{- end }}' >> charts/foreman/templates/crds/$$short; \
-	  synced=$$((synced+1)); \
-	done; echo "Synced $$synced foreman CRD(s)"
-
 .PHONY: federation-chart-crds
 federation-chart-crds: manifests ## Sync federation.llmkube.dev CRDs into the main llmkube chart.
 # Federation runs IN the main llmkube operator (config-gated by --federation-role),
@@ -97,14 +83,6 @@ check-helm-webhook-cert: ## Verify the webhook serving cert names the capped Ser
 .PHONY: check-metal-agent-rbac
 check-metal-agent-rbac: ## Verify the chart's metal-agent identity and write policy match deployment/macos (#2152, #2081).
 	@go run ./cmd/check-metal-agent-rbac --root .
-
-.PHONY: sync-reviewer-prompts
-sync-reviewer-prompts: ## Sync reviewer.md into spec.systemPrompt of every reviewer Agent manifest (#804).
-	@go run ./cmd/sync-reviewer-prompts
-
-.PHONY: check-reviewer-prompts
-check-reviewer-prompts: ## Drift-check: fail if any reviewer Agent's systemPrompt diverges from reviewer.md (#804).
-	@go run ./cmd/sync-reviewer-prompts --check
 
 .PHONY: check-agents-md
 check-agents-md: ## Drift-check: fail if any make target, repo path, or Go version AGENTS.md references no longer resolves.
@@ -173,12 +151,12 @@ test: manifests generate fmt vet setup-envtest ## Run tests.
 	KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path)" GINKGO_SEED=$(GINKGO_SEED) go test -timeout $(GO_TEST_TIMEOUT) $(GO_TEST_FLAGS) $$(go list ./... | grep -v '/test/e2e$$') -coverprofile cover.out
 
 # The envtest suites only, so CI can run a second fixed seed over just the
-# specs whose ordering matters (#1693). Not part of the Foreman gate: the
-# gate stays single-pass, and `make test` above is what it runs.
+# specs whose ordering matters (#1693). Not part of the agent gate, which
+# stays single-pass.
 .PHONY: test-envtest
 test-envtest: manifests generate fmt vet setup-envtest ## Run the envtest suites only (CI second seed pass, #1693).
 	@echo "ginkgo seed: $(GINKGO_SEED) (replay: make test-envtest GINKGO_SEED=$(GINKGO_SEED))"
-	KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path)" GINKGO_SEED=$(GINKGO_SEED) go test -timeout $(GO_TEST_TIMEOUT) $(GO_TEST_FLAGS) ./internal/controller/ ./internal/foreman/controller/ -count=1
+	KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path)" GINKGO_SEED=$(GINKGO_SEED) go test -timeout $(GO_TEST_TIMEOUT) $(GO_TEST_FLAGS) ./internal/controller/ -count=1
 
 # The gate and test-affected pin the seed inside the scripts (default 4242)
 # so go's test cache survives between rounds: go help test caches a result
@@ -253,8 +231,8 @@ test-scripts: ## Run the shell regression tests (gate, test-affected, affected-p
 
 .PHONY: test-chart
 test-chart: ## Lint and unit-test the Helm charts (requires helm + helm-unittest plugin).
-	helm lint charts/llmkube charts/foreman
-	helm unittest charts/llmkube charts/foreman
+	helm lint charts/llmkube
+	helm unittest charts/llmkube
 
 # helm-unittest proves the rules render; promtool proves they fire on the
 # faults they name. Separate target so test-chart does not need promtool.
@@ -403,8 +381,8 @@ install-cli: build-cli ## Install llmkube CLI to /usr/local/bin (requires sudo).
 # Generated at build time and never committed: the tree goes stale with every
 # dependency bump. .goreleaser.yaml ships it in each archive and image (#2564).
 THIRD_PARTY_LICENSES_DIR ?= third_party_licenses
-# The six binaries .goreleaser.yaml builds; one tree covers their union.
-THIRD_PARTY_LICENSES_PKGS ?= ./cmd ./cmd/cli ./cmd/metal-agent ./cmd/router-proxy ./cmd/foreman-agent ./cmd/foreman-operator
+# The four binaries .goreleaser.yaml builds; one tree covers their union.
+THIRD_PARTY_LICENSES_PKGS ?= ./cmd ./cmd/cli ./cmd/metal-agent ./cmd/router-proxy
 # The windows cli links a module the linux and darwin builds do not (cobra's
 # mousetrap), so every shipped GOOS gets a pass and the trees are merged.
 THIRD_PARTY_LICENSES_GOOS ?= linux darwin windows
@@ -429,8 +407,8 @@ third-party-licenses: go-licenses ## Generate the third-party license tree the r
 ##@ Metal Agent (macOS only)
 
 # METAL_AGENT_VERSION is stamped into the ldflags Version variable. Defaults to
-# the git-describe tag (matching build-foreman-agent-versioned); override on the
-# command line when releasing, e.g. `make build-metal-agent METAL_AGENT_VERSION=0.8.6`.
+# the git-describe tag; override on the command line when releasing, e.g.
+# `make build-metal-agent METAL_AGENT_VERSION=0.8.6`.
 METAL_AGENT_VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
 
 .PHONY: build-metal-agent
@@ -507,105 +485,6 @@ uninstall-metal-agent: ## Uninstall Metal agent and launchd service (stops its e
 	sudo rm -f /usr/local/bin/llmkube-metal-agent
 	rm -f ~/Library/LaunchAgents/$(LLMKUBE_METAL_AGENT_LABEL).plist
 	@echo "Metal agent uninstalled"
-
-##@ Foreman Agent (macOS install)
-
-# LLMKUBE_FOREMAN_AGENT_LABEL is the launchd service label for foreman-agent.
-LLMKUBE_FOREMAN_AGENT_LABEL ?= com.llmkube.foreman-agent
-
-# FOREMAN_AGENT_VERSION is stamped into the versioned install layout and the
-# ldflags Version variable. Override on the command line when releasing.
-FOREMAN_AGENT_VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
-
-.PHONY: build-foreman-agent-versioned
-build-foreman-agent-versioned: fmt vet ## Build foreman-agent with ldflags version info.
-	go build \
-		-ldflags "-X main.Version=$(FOREMAN_AGENT_VERSION) -X main.GitCommit=$(shell git rev-parse --short HEAD 2>/dev/null || echo unknown) -X main.BuildDate=$(shell date -u +%Y-%m-%dT%H:%M:%SZ)" \
-		-o bin/foreman-agent \
-		./cmd/foreman-agent
-
-# FOREMAN_INSTALL_ROOT is the user-owned managed layout root for foreman-agent.
-# On macOS the default matches ResolveInstallRoot("foreman-agent"). Do NOT
-# backslash-escape the space: this value is always consumed inside double quotes
-# (recipe commands) or a sed replacement, where a literal backslash would be
-# kept verbatim and corrupt the path.
-FOREMAN_INSTALL_ROOT ?= $(HOME)/Library/Application Support/llmkube/foreman-agent
-
-# foreman-agent runtime configuration rendered into the launchd plist by
-# install-foreman-agent. Override on the command line, e.g.:
-#   make install-foreman-agent \
-#     FOREMAN_INSTALLED_MODELS=qwen36-35b-carnice-mtp \
-#     FOREMAN_NODE_NAME=m5max-coder \
-#     FOREMAN_KUBECONFIG=$(HOME)/.kube/shadowstack.yaml \
-#     FOREMAN_ACCELERATOR=metal
-FOREMAN_NODE_NAME        ?= $(shell hostname -s)
-FOREMAN_KUBECONFIG       ?= $(HOME)/.kube/config
-FOREMAN_ACCELERATOR      ?= metal
-FOREMAN_GIT_REMOTE_URL   ?= $(shell git remote get-url origin 2>/dev/null)
-FOREMAN_COMMIT_EMAIL     ?= $(shell git config user.email 2>/dev/null)
-# Required: comma-separated model names this node serves (used to match tasks).
-FOREMAN_INSTALLED_MODELS ?=
-
-.PHONY: check-foreman-install-vars
-check-foreman-install-vars:
-	@if [ -z "$(FOREMAN_INSTALLED_MODELS)" ]; then \
-		echo "ERROR: FOREMAN_INSTALLED_MODELS is required (comma-separated model names this node serves)."; \
-		echo "       e.g. make install-foreman-agent FOREMAN_INSTALLED_MODELS=qwen36-35b-carnice-mtp"; \
-		exit 1; \
-	fi
-	@if [ -z "$(FOREMAN_NODE_NAME)" ]; then \
-		echo "ERROR: FOREMAN_NODE_NAME is empty (hostname -s returned nothing); set it explicitly."; \
-		exit 1; \
-	fi
-
-.PHONY: install-foreman-agent
-install-foreman-agent: check-foreman-install-vars build-foreman-agent-versioned ## Install foreman-agent into user-owned managed layout and start launchd service (macOS only, no sudo).
-	@echo "Installing foreman-agent $(FOREMAN_AGENT_VERSION)..."
-	@# Create the versioned directory and stage the binary.
-	mkdir -p "$(FOREMAN_INSTALL_ROOT)/versions/$(FOREMAN_AGENT_VERSION)"
-	cp bin/foreman-agent "$(FOREMAN_INSTALL_ROOT)/versions/$(FOREMAN_AGENT_VERSION)/foreman-agent"
-	chmod 0755 "$(FOREMAN_INSTALL_ROOT)/versions/$(FOREMAN_AGENT_VERSION)/foreman-agent"
-	@# Flip the current symlink. `ln -sfn` replaces the link in place; -n keeps
-	@# it from following an existing current -> versions/<v> symlink. The old
-	@# "ln to current.tmp then mv -f current.tmp current" form was broken on
-	@# re-install: when current already points at a directory, mv descends INTO
-	@# that directory instead of replacing the link, so the flip silently no-ops
-	@# and the agent keeps running the previous version. (The self-update code
-	@# path uses os.Rename, which replaces the symlink atomically and is correct.)
-	@ln -sfn "$(FOREMAN_INSTALL_ROOT)/versions/$(FOREMAN_AGENT_VERSION)" \
-		"$(FOREMAN_INSTALL_ROOT)/current"
-	@echo "Staged at $(FOREMAN_INSTALL_ROOT)/current -> versions/$(FOREMAN_AGENT_VERSION)"
-	@echo "Installing launchd service..."
-	@# Render the launchd plist: substitute the install-root path AND every
-	@# REPLACE_WITH_* placeholder, so the installed service has a complete,
-	@# working command line with no leftover placeholders.
-	@sed \
-		-e "s|/Users/YOUR_USERNAME/Library/Application Support/llmkube/foreman-agent|$(FOREMAN_INSTALL_ROOT)|g" \
-		-e "s|REPLACE_WITH_NODE_NAME|$(FOREMAN_NODE_NAME)|g" \
-		-e "s|REPLACE_WITH_ACCELERATOR|$(FOREMAN_ACCELERATOR)|g" \
-		-e "s|REPLACE_WITH_INSTALLED_MODELS|$(FOREMAN_INSTALLED_MODELS)|g" \
-		-e "s|REPLACE_WITH_KUBECONFIG|$(FOREMAN_KUBECONFIG)|g" \
-		-e "s|REPLACE_WITH_GIT_REMOTE_URL|$(FOREMAN_GIT_REMOTE_URL)|g" \
-		-e "s|REPLACE_WITH_EMAIL|$(FOREMAN_COMMIT_EMAIL)|g" \
-		deployment/macos/com.llmkube.foreman-agent.plist \
-		> ~/Library/LaunchAgents/$(LLMKUBE_FOREMAN_AGENT_LABEL).plist
-	@echo "Starting foreman-agent service..."
-	@# Bootstrap the plist the first time (noop if already bootstrapped).
-	@launchctl bootstrap gui/$$(id -u) ~/Library/LaunchAgents/$(LLMKUBE_FOREMAN_AGENT_LABEL).plist 2>/dev/null || true
-	@# kickstart -k ensures a running instance picks up the new binary.
-	launchctl kickstart -k gui/$$(id -u)/$(LLMKUBE_FOREMAN_AGENT_LABEL)
-	@echo "foreman-agent installed and restarted"
-	@echo ""
-	@echo "Edit ~/Library/LaunchAgents/$(LLMKUBE_FOREMAN_AGENT_LABEL).plist to set flags, then run:"
-	@echo "  launchctl kickstart -k gui/$$(id -u)/$(LLMKUBE_FOREMAN_AGENT_LABEL)"
-	@echo "To view logs: tail -f /tmp/llmkube-foreman-agent.log"
-
-.PHONY: uninstall-foreman-agent
-uninstall-foreman-agent: ## Uninstall foreman-agent launchd service (leaves install root intact for rollback).
-	@echo "Stopping foreman-agent service..."
-	@launchctl bootout gui/$$(id -u)/$(LLMKUBE_FOREMAN_AGENT_LABEL) 2>/dev/null || true
-	rm -f ~/Library/LaunchAgents/$(LLMKUBE_FOREMAN_AGENT_LABEL).plist
-	@echo "foreman-agent service uninstalled (install root preserved at $(FOREMAN_INSTALL_ROOT))"
 
 # APPLE_POWER_INTERVAL_MS is the powermetrics -i value rendered into the
 # sudoers rule. It must equal what the agent passes: --apple-power-interval in
@@ -690,50 +569,6 @@ docker-push-router-proxy: ## Push the router-proxy image.
 .PHONY: build-router-proxy
 build-router-proxy: fmt vet ## Build router-proxy binary into bin/.
 	go build -o bin/router-proxy ./cmd/router-proxy
-
-# Foreman operator + agent: built per-arch via goreleaser at release
-# time; these targets exist for local development against a kind
-# cluster and for the helm-chart CI's smoke install.
-FOREMAN_OPERATOR_IMG     ?= ghcr.io/defilantech/llmkube-foreman-operator:dev
-FOREMAN_AGENT_IMG        ?= ghcr.io/defilantech/llmkube-foreman-agent:dev
-# Coder-Job builder image (#620) and in-cluster foreman-agent toolchain
-# image (#797): foreman-agent binary + go/make/git/golangci-lint/
-# controller-gen on a golang base pinned to go.mod's version, so the in-Job coder
-# and the in-cluster foreman-agent fast gate can run `make fmt vet lint
-# test`. Referenced by Agent.spec.execution.image.
-FOREMAN_AGENT_BUILDER_IMG ?= ghcr.io/defilantech/llmkube-foreman-agent-builder:dev
-
-.PHONY: docker-build-foreman-operator
-docker-build-foreman-operator: ## Build docker image for the foreman-operator.
-	$(CONTAINER_TOOL) build -f Dockerfile.foreman-operator -t ${FOREMAN_OPERATOR_IMG} .
-
-.PHONY: docker-build-foreman-agent
-docker-build-foreman-agent: ## Build docker image for the foreman-agent.
-	$(CONTAINER_TOOL) build -f Dockerfile.foreman-agent -t ${FOREMAN_AGENT_IMG} .
-
-.PHONY: docker-build-foreman-agent-builder
-docker-build-foreman-agent-builder: ## Build the coder-Job builder image (foreman-agent + go/make/git/golangci-lint/controller-gen).
-	$(CONTAINER_TOOL) build -f Dockerfile.foreman-agent-builder -t ${FOREMAN_AGENT_BUILDER_IMG} .
-
-.PHONY: docker-push-foreman-operator
-docker-push-foreman-operator: ## Push the foreman-operator image.
-	$(CONTAINER_TOOL) push ${FOREMAN_OPERATOR_IMG}
-
-.PHONY: docker-push-foreman-agent
-docker-push-foreman-agent: ## Push the foreman-agent image.
-	$(CONTAINER_TOOL) push ${FOREMAN_AGENT_IMG}
-
-.PHONY: docker-push-foreman-agent-builder
-docker-push-foreman-agent-builder: ## Push the coder-Job builder image.
-	$(CONTAINER_TOOL) push ${FOREMAN_AGENT_BUILDER_IMG}
-
-.PHONY: build-foreman-operator
-build-foreman-operator: fmt vet ## Build foreman-operator binary into bin/.
-	go build -o bin/foreman-operator ./cmd/foreman-operator
-
-.PHONY: build-foreman-agent
-build-foreman-agent: fmt vet ## Build foreman-agent binary into bin/.
-	go build -o bin/foreman-agent ./cmd/foreman-agent
 
 # Stub upstream used by the ModelRouter cluster e2e tests to play both
 # the "local InferenceService" and "cloud provider" roles. Image is only

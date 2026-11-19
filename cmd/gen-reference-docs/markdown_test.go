@@ -129,7 +129,7 @@ func TestPageHeaderFrontmatterParses(t *testing.T) {
 func TestAnchor(t *testing.T) {
 	tests := map[string]string{
 		"llmkube metal join": "llmkube-metal-join",
-		"Foreman: crds":      "foreman-crds",
+		"Metal agent: tls":   "metal-agent-tls",
 		"InferenceService":   "inferenceservice",
 		"a_b-c":              "a_b-c",
 	}

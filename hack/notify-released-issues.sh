@@ -26,8 +26,8 @@ REPO="${GITHUB_REPOSITORY:-defilantech/LLMKube}"
 OWNER="${REPO%%/*}"
 NAME="${REPO##*/}"
 
-# Only operator releases: the chart and Foreman tags (llmkube-*, foreman-*)
-# point at the same commit and would repeat every comment.
+# Only operator releases: the chart tags (llmkube-*) point at the same commit
+# and would repeat every comment.
 [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "not an operator release tag: $TAG" >&2; exit 2; }
 git rev-parse -q --verify "refs/tags/$TAG" >/dev/null || { echo "tag $TAG not found; fetch tags first" >&2; exit 2; }
 PREV=$(git describe --tags --abbrev=0 --match 'v[0-9]*' "${TAG}^")

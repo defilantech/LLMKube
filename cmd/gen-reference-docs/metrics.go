@@ -62,14 +62,6 @@ func metricsComponents() []metricsComponent {
 			trailer:    controllerRuntimeTrailer,
 		},
 		{
-			title: "Foreman operator",
-			intro: "The Foreman operator registers `ForemanCollectors` from " +
-				sourceLink("internal/metrics/metrics.go") + " in controller-runtime's registry (" +
-				sourceLink("cmd/foreman-operator/main.go") + ").",
-			collectors: llmkubemetrics.ForemanCollectors,
-			trailer:    controllerRuntimeTrailer,
-		},
-		{
 			title: "Router proxy and Metal relay",
 			intro: "The router-proxy binary serves `RouterRegistry` (" + sourceLink("cmd/router-proxy/main.go") +
 				"). It holds `RouterCollectors` from " + sourceLink("internal/metrics/metrics.go") +
@@ -97,7 +89,7 @@ const controllerRuntimeTrailer = "The same endpoint serves controller-runtime's 
 func renderMetrics() (string, error) {
 	var b strings.Builder
 	b.WriteString(pageHeader("Metrics",
-		"Every Prometheus metric the LLMKube controller, Foreman operator, router proxy, relay and Metal agent export.",
+		"Every Prometheus metric the LLMKube controller, router proxy, relay and Metal agent export.",
 		"the collectors each binary registers"))
 	b.WriteString("Every family is listed, including a labeled family that has no series until its first event. " +
 		"Labels are listed in alphabetical order.\n\n")

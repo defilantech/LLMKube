@@ -20,8 +20,8 @@ fi
 mkdir -p "$CRD_TARGET_DIR"
 
 synced=0
-# Scope to the inference.llmkube.dev group; other groups (e.g. foreman) have
-# their own chart-sync target (`make foreman-chart-crds`).
+# Scope to the inference.llmkube.dev group; other groups have their own
+# chart-sync target (`make federation-chart-crds`).
 for src in "$CRD_SOURCE_DIR"/inference.llmkube.dev_*.yaml; do
   # Strip kubebuilder group prefix: inference.llmkube.dev_inferenceservices.yaml → inferenceservices.yaml
   base="$(basename "$src")"

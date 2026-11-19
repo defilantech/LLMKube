@@ -116,7 +116,6 @@ func TestRenderMetricsCoversEveryCollector(t *testing.T) {
 	router := append(append([]prometheus.Collector{}, llmkubemetrics.RouterCollectors...), relay.Collectors...)
 	sections := map[string][]prometheus.Collector{
 		"## Controller":                   llmkubemetrics.ControllerCollectors,
-		"## Foreman operator":             llmkubemetrics.ForemanCollectors,
 		"## Router proxy and Metal relay": router,
 		"## Metal agent":                  agent.AgentCollectors,
 	}

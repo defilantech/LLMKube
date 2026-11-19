@@ -106,13 +106,13 @@ var (
 )
 
 // declaredNames returns the fqName of every collector this repo registers.
-// ControllerCollectors and ForemanCollectors are the operator binaries' sets;
-// the router-proxy and the Metal agent binary register theirs into their own
-// registries, and *prometheus.Registry is itself a Collector.
+// ControllerCollectors is the operator binary's set; the router-proxy and the
+// Metal agent binary register theirs into their own registries, and
+// *prometheus.Registry is itself a Collector.
 func declaredNames(t *testing.T) map[string]bool {
 	t.Helper()
 
-	return describedNames(t, slices.Concat(ControllerCollectors, ForemanCollectors,
+	return describedNames(t, slices.Concat(ControllerCollectors,
 		[]prometheus.Collector{RouterRegistry, agent.AgentRegistry})...)
 }
 

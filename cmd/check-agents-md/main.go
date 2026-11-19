@@ -63,8 +63,8 @@ var (
 
 func main() {
 	root := flag.String("root", ".", "repo root to check")
-	// --check is accepted for parity with sync-reviewer-prompts; this checker
-	// has no write mode, so it always verifies.
+	// --check is accepted so the make target reads like the other drift
+	// checks; this checker has no write mode, so it always verifies.
 	_ = flag.Bool("check", true, "verify references resolve (always on)")
 	flag.Parse()
 

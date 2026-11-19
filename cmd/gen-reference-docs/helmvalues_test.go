@@ -63,23 +63,21 @@ extraObjects: []
 last: 1
 `
 
-func writeCharts(t *testing.T, llmkube, foreman string) string {
+func writeChart(t *testing.T, llmkube string) string {
 	t.Helper()
 	root := t.TempDir()
-	for path, body := range map[string]string{llmkubeValues: llmkube, foremanValues: foreman} {
-		full := filepath.Join(root, path)
-		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(full, []byte(body), 0o644); err != nil {
-			t.Fatal(err)
-		}
+	full := filepath.Join(root, llmkubeValues)
+	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(full, []byte(llmkube), 0o644); err != nil {
+		t.Fatal(err)
 	}
 	return root
 }
 
 func TestRenderHelmValuesRows(t *testing.T) {
-	root := writeCharts(t, fixtureValues, "# Foreman knob\nknob: true\n")
+	root := writeChart(t, fixtureValues)
 	out, err := renderHelmValues(root)
 	if err != nil {
 		t.Fatal(err)
@@ -100,14 +98,13 @@ func TestRenderHelmValuesRows(t *testing.T) {
 		"| `controller.inline` | `5` | trailing comment |",
 		"| `controller.script` | multi-line string, 2 lines |  |",
 		"| `extraObjects` | `[]` | Extra objects |",
-		"| `knob` | `true` | Foreman knob |",
 	} {
 		if !strings.Contains(out, row+"\n") {
 			t.Errorf("missing row %s", row)
 		}
 	}
 	for _, want := range []string{
-		"## controller\n\nController settings\n\n", "## Foreman chart\n", "### Foreman: knob\n",
+		"## namespace\n", "## controller\n\nController settings\n\n",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("missing %q", want)
@@ -120,30 +117,28 @@ func TestRenderHelmValuesRows(t *testing.T) {
 	}
 }
 
-// Every leaf of both real charts has a row. The leaves come from a plain map
+// Every leaf of the real chart has a row. The leaves come from a plain map
 // decode, not the yaml.Node walk the page is rendered with.
 func TestRenderHelmValuesCoversEveryLeaf(t *testing.T) {
 	out, err := renderHelmValues("../..")
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, file := range []string{llmkubeValues, foremanValues} {
-		data, err := os.ReadFile(filepath.Join("../..", file))
-		if err != nil {
-			t.Fatal(err)
-		}
-		var values map[string]any
-		if err := yaml.Unmarshal(data, &values); err != nil {
-			t.Fatal(err)
-		}
-		leaves := flattenLeaves(values, "")
-		if len(leaves) < 50 {
-			t.Fatalf("%s: only %d leaves; the fixture path is wrong", file, len(leaves))
-		}
-		for _, leaf := range leaves {
-			if !strings.Contains(out, "| "+codeSpan(leaf)+" | ") {
-				t.Errorf("%s: no row for %s", file, leaf)
-			}
+	data, err := os.ReadFile(filepath.Join("../..", llmkubeValues))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var values map[string]any
+	if err := yaml.Unmarshal(data, &values); err != nil {
+		t.Fatal(err)
+	}
+	leaves := flattenLeaves(values, "")
+	if len(leaves) < 50 {
+		t.Fatalf("%s: only %d leaves; the fixture path is wrong", llmkubeValues, len(leaves))
+	}
+	for _, leaf := range leaves {
+		if !strings.Contains(out, "| "+codeSpan(leaf)+" | ") {
+			t.Errorf("%s: no row for %s", llmkubeValues, leaf)
 		}
 	}
 }

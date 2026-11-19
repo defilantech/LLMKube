@@ -1,6 +1,6 @@
 ---
 title: Metrics
-description: Every Prometheus metric the LLMKube controller, Foreman operator, router proxy, relay and Metal agent export.
+description: Every Prometheus metric the LLMKube controller, router proxy, relay and Metal agent export.
 ---
 
 # Metrics
@@ -40,20 +40,6 @@ The operator's controller manager registers `ControllerCollectors` from [`intern
 | `llmkube_watch_canary_last_observed_timestamp_seconds` | gauge |  | Unix time of the last watch-canary write observed through the manager's informer. 0 until the first observation. |
 | `llmkube_watch_canary_up` | gauge |  | 1 once a watch-canary write has been observed through the manager's informer; 0 before the first full cycle. |
 | `llmkube_watch_canary_writes_total` | counter | `result` | Total watch-canary Lease writes, by result. |
-
-The same endpoint serves controller-runtime's own families (`controller_runtime_*`, `workqueue_*`, `rest_client_*`, `leader_election_*`, `certwatcher_*`) and the Go runtime and process collectors (`go_*`, `process_*`), which controller-runtime documents.
-
-## Foreman operator
-
-The Foreman operator registers `ForemanCollectors` from [`internal/metrics/metrics.go`](https://github.com/defilantech/LLMKube/blob/main/internal/metrics/metrics.go) in controller-runtime's registry ([`cmd/foreman-operator/main.go`](https://github.com/defilantech/LLMKube/blob/main/cmd/foreman-operator/main.go)).
-
-| Metric | Type | Labels | Description |
-| --- | --- | --- | --- |
-| `foreman_archive_failures_total` | counter | `reason` | Total task-archive bundles that failed to write, by reason. |
-| `foreman_task_completed_total` | counter | `agent`, `kind`, `outcome`, `verdict` | Total number of Foreman tasks reaching a terminal phase, by agent, kind, verdict, and outcome. |
-| `foreman_task_duration_seconds` | histogram | `agent`, `kind`, `verdict` | Wall-clock duration of a Foreman task, from the executor's result.elapsedSec. |
-| `foreman_task_turns` | histogram | `agent`, `kind` | Number of agent-loop turns a Foreman task used, from result.extra.turnCount. |
-| `foreman_workload_completed_total` | counter | `outcome` | Total number of Foreman workloads reaching a terminal phase, by outcome. |
 
 The same endpoint serves controller-runtime's own families (`controller_runtime_*`, `workqueue_*`, `rest_client_*`, `leader_election_*`, `certwatcher_*`) and the Go runtime and process collectors (`go_*`, `process_*`), which controller-runtime documents.
 

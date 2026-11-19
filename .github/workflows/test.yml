@@ -74,7 +74,7 @@ jobs:
 
       # Spec-order pollution only shows under some seeds, so CI runs the
       # envtest suites a second time under a second fixed seed (#1693).
-      # `make test` and the Foreman gate stay single-pass.
+      # `make test` and the agent gate stay single-pass.
       - name: Envtest suites (seed 22)
         shell: bash
         run: |

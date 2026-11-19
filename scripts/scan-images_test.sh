@@ -88,12 +88,12 @@ stage() {
   fi
 }
 
-run "first image's findings do not hide the rest" 1 4 controller
-stage "first image's findings do not hide the rest" 4
-run "a mid-list finding still scans the tail"     1 4 foreman-agent
-stage "a mid-list finding still scans the tail" 4
-run "an all-clean run passes"                     0 4 none
-stage "an all-clean run passes" 4
+run "first image's findings do not hide the rest" 1 2 controller
+stage "first image's findings do not hide the rest" 2
+run "a finding in the last image fails the run"   1 2 router-proxy
+stage "a finding in the last image fails the run" 2
+run "an all-clean run passes"                     0 2 none
+stage "an all-clean run passes" 2
 
 if ((fails)); then
   echo "FAILED: $fails case(s)"; exit 1

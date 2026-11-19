@@ -647,10 +647,9 @@ webhook:
   # ValidatingWebhookConfiguration) AND the operator's --webhook-cert-path flag
   # plus the cert mount. False renders none of them and starts the operator with
   # the webhook server off (cmd/main.go only registers the webhook when the
-  # serving cert is present). Defaults true to match the foreman chart; the
-  # chart self-generates a stable serving cert (no cert-manager dependency), so
-  # an upgrade of an existing install starts serving the webhook without manual
-  # cert setup.
+  # serving cert is present). Defaults true: the chart self-generates a stable
+  # serving cert (no cert-manager dependency), so an upgrade of an existing
+  # install starts serving the webhook without manual cert setup.
   enabled: true
 
   # failurePolicy controls what happens when the webhook is unreachable.

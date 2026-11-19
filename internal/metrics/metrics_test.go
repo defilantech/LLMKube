@@ -60,9 +60,9 @@ func TestMetricsRegistered(t *testing.T) {
 
 // Every binary that imports this package and serves controller-runtime's
 // registry would export what an import registered there (#2294). Each binary
-// registers its own list; cmd and cmd/foreman-operator test theirs.
+// registers its own list; cmd tests the controller's.
 func TestImportRegistersNothingInControllerRuntime(t *testing.T) {
-	for _, c := range slices.Concat(ControllerCollectors, ForemanCollectors, RouterCollectors) {
+	for _, c := range slices.Concat(ControllerCollectors, RouterCollectors) {
 		if ctrlmetrics.Registry.Unregister(c) {
 			t.Errorf("collector %T was registered in controller-runtime's registry on import", c)
 		}
@@ -76,7 +76,7 @@ func TestImportRegistersNothingInControllerRuntime(t *testing.T) {
 func TestRouterRegistryHoldsNoControllerCollector(t *testing.T) {
 	served := describedNames(t, RouterRegistry)
 	shared := describedNames(t, ModelPoolResident)
-	for name := range describedNames(t, slices.Concat(ControllerCollectors, ForemanCollectors)...) {
+	for name := range describedNames(t, ControllerCollectors...) {
 		if served[name] && !shared[name] {
 			t.Errorf("RouterRegistry holds %s, which only an operator binary sets", name)
 		}
@@ -353,90 +353,6 @@ func TestGPUQuotaLabels(t *testing.T) {
 	}
 	if labels["namespace"] != "my-ns" {
 		t.Errorf("namespace label = %q, want %q", labels["namespace"], "my-ns")
-	}
-}
-
-func TestRecordTaskOutcomeCounter(t *testing.T) {
-	// The completed counter is unconditional: every terminal task emits it,
-	// keyed by the bounded label set (agent, kind, verdict, outcome).
-	RecordTaskOutcome("coder", "issue-fix", "GO", "MODEL-DECIDED", 42.0, 17)
-
-	var m dto.Metric
-	obs := ForemanTaskCompletedTotal.WithLabelValues("coder", "issue-fix", "GO", "MODEL-DECIDED")
-	if err := obs.Write(&m); err != nil {
-		t.Fatalf("failed to write metric: %v", err)
-	}
-	if got := m.GetCounter().GetValue(); got < 1 {
-		t.Errorf("expected completed counter >= 1, got %f", got)
-	}
-}
-
-func TestRecordTaskOutcomeDuration(t *testing.T) {
-	// A positive elapsedSec must land in the duration histogram.
-	RecordTaskOutcome("coder", "issue-fix", "NO-GO", "ALREADY-RESOLVED", 88.0, 0)
-	m := getHistogramMetric(t, ForemanTaskDurationSeconds, []string{"coder", "issue-fix", "NO-GO"}, 1.0)
-	if m.GetHistogram().GetSampleCount() == 0 {
-		t.Error("expected duration sample count > 0 after a positive observation")
-	}
-}
-
-func TestRecordTaskOutcomeSkipsZeroDurationAndTurns(t *testing.T) {
-	// A cascade-skip / pre-report terminal task has no elapsedSec or turns:
-	// the histograms must NOT observe zero, or the distribution skews low.
-	RecordTaskOutcome("verifier", "verify", "GATE-PASS", "", 0, 0)
-
-	// Read the series directly without observing (getHistogramMetric would
-	// observe its own value and inflate the count).
-	durObs, err := ForemanTaskDurationSeconds.GetMetricWithLabelValues("verifier", "verify", "GATE-PASS")
-	if err != nil {
-		t.Fatalf("failed to get duration metric: %v", err)
-	}
-	var dm dto.Metric
-	if err := durObs.(prometheus.Metric).Write(&dm); err != nil {
-		t.Fatalf("failed to write duration metric: %v", err)
-	}
-	if got := dm.GetHistogram().GetSampleCount(); got != 0 {
-		t.Errorf("zero elapsedSec must not observe duration, got %d samples", got)
-	}
-
-	turnsObs, err := ForemanTaskTurns.GetMetricWithLabelValues("verifier", "verify")
-	if err != nil {
-		t.Fatalf("failed to get turns metric: %v", err)
-	}
-	var tm dto.Metric
-	if err := turnsObs.(prometheus.Metric).Write(&tm); err != nil {
-		t.Fatalf("failed to write turns metric: %v", err)
-	}
-	if got := tm.GetHistogram().GetSampleCount(); got != 0 {
-		t.Errorf("zero turns must not observe the turns histogram, got %d samples", got)
-	}
-}
-
-func TestRecordTaskOutcomeTurns(t *testing.T) {
-	// A positive turn count must land in the turns histogram.
-	RecordTaskOutcome("coder", "issue-fix", "GO", "", 12.0, 9)
-	m := getHistogramMetric(t, ForemanTaskTurns, []string{"coder", "issue-fix"}, 3.0)
-	if m.GetHistogram().GetSampleCount() == 0 {
-		t.Error("expected turns sample count > 0 after a positive observation")
-	}
-}
-
-func TestRecordWorkloadOutcome(t *testing.T) {
-	RecordWorkloadOutcome("completed")
-	RecordWorkloadOutcome("failed")
-
-	var m dto.Metric
-	if err := ForemanWorkloadCompletedTotal.WithLabelValues("completed").Write(&m); err != nil {
-		t.Fatalf("failed to write completed metric: %v", err)
-	}
-	if got := m.GetCounter().GetValue(); got < 1 {
-		t.Errorf("expected completed workload counter >= 1, got %f", got)
-	}
-	if err := ForemanWorkloadCompletedTotal.WithLabelValues("failed").Write(&m); err != nil {
-		t.Fatalf("failed to write failed metric: %v", err)
-	}
-	if got := m.GetCounter().GetValue(); got < 1 {
-		t.Errorf("expected failed workload counter >= 1, got %f", got)
 	}
 }
 

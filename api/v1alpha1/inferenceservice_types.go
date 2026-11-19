@@ -2220,7 +2220,7 @@ type SGLangConfig struct {
 	EnablePrefixCaching *bool `json:"enablePrefixCaching,omitempty"`
 
 	// Agentic glue
-	// ToolCallParser selects the tool-call extraction format. For foreman
+	// ToolCallParser selects the tool-call extraction format. For agentic
 	// tool-loop workloads. Maps to SGLang --tool-call-parser flag.
 	//
 	// glm and glm45 both select the GLM-4.5/4.7 MoE detector; SGLang
