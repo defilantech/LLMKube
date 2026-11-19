@@ -15,8 +15,8 @@ runtime.
 > **Status.** The daily driver. This ring is where my agentic work runs: coding
 > runs of the kind I would otherwise hand to a hosted coding assistant,
 > research against my MCP servers, and system design. I drive it through
-> `opencode`, and Foreman's coding fleet runs its work against the same
-> endpoint. Vision and tools are on, two sequences, a 524,288-token context with
+> `opencode`, and [Meitheal](https://github.com/defilantech/meitheal)'s coding
+> fleet runs its work against the same endpoint. Vision and tools are on, two sequences, a 524,288-token context with
 > the KV cache pinned at 4.2 GiB per rank, a pool of **1,057,457 tokens** (2.02
 > full-length requests). Measured 2026-09-20 on runtime candidate `24b44f42`:
 > cold prefill **2,209 / 2,262 / 1,740 tok/s** at 10K / 40K / 450K prompt tokens
@@ -214,7 +214,7 @@ The serving arguments that are load-bearing:
 
 - `--served-model-name DeepSeek-V4.1-Flash-EXL3`, with the `deepseek_v41`
   reasoning and tool parsers and `--enable-auto-tool-choice`. The endpoint
-  speaks OpenAI function calling, which is what Foreman's agent loop requires.
+  speaks OpenAI function calling, which is what Meitheal's agent loop requires.
   The parsers now have a typed form (`vllmConfig.toolCallParser` and
   `vllmConfig.reasoningParser`, the first of which passes
   `--enable-auto-tool-choice` itself); this build kept them in `extraArgs`,

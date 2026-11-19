@@ -8,7 +8,8 @@ description: A 330B hybrid MoE served across two GB10 boxes as one InferenceServ
 This build serves GLM-5.3-Flash across two NVIDIA DGX Spark boxes as a single
 `InferenceService` using `spec.multiNode`. It is the lab's local coding
 endpoint: an opencode plan, build and review workflow runs against it, and so
-does the Foreman agent that opens pull requests.
+does the [Meitheal](https://github.com/defilantech/meitheal) agent that opens
+pull requests.
 
 The model is a 330B hybrid MoE, 45 layers of KDA plus DeepSeek sparse
 attention, 288 experts with 8 active, one MTP layer and a vision tower. At FP8
@@ -246,7 +247,7 @@ falsification steps. The review agent runs as a separate primary session with
 no access to the plan, because a reviewer that inherits the author's framing
 finds nothing. All three run on this ring.
 
-**Foreman**, which takes a GitHub issue, runs a coder agent against the
+**Meitheal**, which takes a GitHub issue, runs a coder agent against the
 repository, gates the result, has a reviewer agent inspect it, and opens a pull
 request. The coder runs on this ring; the gate and the reviewer run elsewhere.
 

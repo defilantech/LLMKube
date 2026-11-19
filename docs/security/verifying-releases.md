@@ -53,8 +53,8 @@ any repository the owner has, `--signer-workflow` requires the release
 workflow to have signed it, and `--source-ref` requires that workflow to have
 run on `main`.
 
-The same applies to llmkube-foreman-operator, llmkube-foreman-agent, and
-llmkube-router-proxy. Verify a `.tar.gz` release archive the same way:
+The same applies to llmkube-router-proxy. Verify a `.tar.gz` release archive
+the same way:
 
     gh attestation verify LLMKube_<version>_linux_amd64.tar.gz \
       --repo defilantech/LLMKube \
@@ -67,10 +67,9 @@ it.
 
 ## Verify the macOS binaries
 
-The darwin builds of `llmkube`, `llmkube-metal-agent` and `foreman-agent` are
-code-signed with the bundle identifiers `dev.llmkube.cli`,
-`dev.llmkube.metal-agent` and `dev.llmkube.foreman-agent`; the two agents embed
-an Info.plist. A release built with the project's signing secrets is signed
+The darwin builds of `llmkube` and `llmkube-metal-agent` are code-signed with
+the bundle identifiers `dev.llmkube.cli` and `dev.llmkube.metal-agent`; the
+agent embeds an Info.plist. A release built with the project's signing secrets is signed
 with a Developer ID certificate and notarized by Apple:
 
     codesign -dv --verbose=4 llmkube-metal-agent
