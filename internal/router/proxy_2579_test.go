@@ -38,6 +38,10 @@ type reviveBackend struct {
 	mu  sync.Mutex
 	ln  net.Listener
 	srv *http.Server
+	// served closes when the Serve goroutine returns, so drain can wait for
+	// the listener to be closed instead of returning while Serve may still be
+	// accepting.
+	served chan struct{}
 }
 
 func newReviveBackend(t *testing.T) *reviveBackend {
@@ -61,31 +65,40 @@ func (r *reviveBackend) start() error {
 	if err != nil {
 		return fmt.Errorf("bind member address %s: %w", r.addr, err)
 	}
+	served := make(chan struct{})
 	srv := &http.Server{ReadHeaderTimeout: 5 * time.Second, Handler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		r.calls.Add(1)
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = io.WriteString(w, `{"choices":[{"message":{"content":"hi"}}]}`)
 	})}
 	r.mu.Lock()
-	r.ln, r.srv = ln, srv
+	r.ln, r.srv, r.served = ln, srv, served
 	r.mu.Unlock()
-	go func() { _ = srv.Serve(ln) }()
+	go func() {
+		defer close(served)
+		_ = srv.Serve(ln)
+	}()
 	return nil
 }
 
 // drain closes the listener, so a dispatch to the member is refused the way it
-// is while the controller's drain tears the pod down.
+// is while the controller's drain tears the pod down. It waits for the Serve
+// goroutine to return: http.Server.Close can return before Serve has closed the
+// listener, and a request landing in that window is accepted and then reset
+// instead of refused.
 func (r *reviveBackend) drain() {
 	r.mu.Lock()
-	ln, srv := r.ln, r.srv
-	r.ln, r.srv = nil, nil
+	ln, srv, served := r.ln, r.srv, r.served
+	r.ln, r.srv, r.served = nil, nil, nil
 	r.mu.Unlock()
 	if srv != nil {
 		_ = srv.Close()
-		return
 	}
 	if ln != nil {
 		_ = ln.Close()
+	}
+	if served != nil {
+		<-served
 	}
 }
 
