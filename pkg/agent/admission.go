@@ -71,8 +71,9 @@ type admissionBudget struct {
 // A Model's memoryBudget or memoryFraction may lower this host's limit for
 // itself but not raise it, unless the agent allows overrides (#2080). Errors
 // are the admission failure reasons, worded as checkMemoryAdmission words them.
-// publishHostBudget publishes the host-budget gauge, which only an admission
-// does.
+// publishHostBudget publishes the host-budget gauge before the Model's own
+// budget is resolved, so a refusal for an unresolvable Model budget still
+// reports this host's limit.
 func (a *MetalAgent) resolveAdmissionBudget(
 	ctx context.Context,
 	isvc *inferencev1alpha1.InferenceService,

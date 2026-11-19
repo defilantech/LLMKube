@@ -131,6 +131,9 @@ func TestAdoptedEngine_ReestimateCountsTowardCumulativeAdmission(t *testing.T) {
 	if got := testutil.ToFloat64(memoryEstimatedBytes.WithLabelValues("phi", "default")); got != float64(p.AdmittedBytes) {
 		t.Errorf("memoryEstimatedBytes = %v, want the re-estimated charge %d", got, p.AdmittedBytes)
 	}
+	if got := testutil.ToFloat64(memoryCommittedBytes); got != float64(p.AdmittedBytes) {
+		t.Errorf("memoryCommittedBytes = %v, want the re-estimated charge %d", got, p.AdmittedBytes)
+	}
 	// The record stays the seed the next agent adopts; only the in-memory
 	// charge is refreshed.
 	if rec := readRecord(t, a.engineRecords.Dir(), "phi"); rec["admittedBytes"] != float64(adoptedSeedBytes) {
@@ -194,6 +197,10 @@ func TestAdoptedEngine_OverBudgetKeepsServingAndIsReported(t *testing.T) {
 	}
 	if events := drainEvents(rec); len(events) != 0 {
 		t.Fatalf("a second reconcile reported the charge again: %q", events)
+	}
+	if status, _ := schedulingStatus(t, a, "phi"); status != EventReasonInsufficientMemory {
+		t.Errorf("the report did not survive a second reconcile: SchedulingStatus = %q, want %q",
+			status, EventReasonInsufficientMemory)
 	}
 
 	// A Model budget above the host's is clamped to it, so a 49 GiB model
@@ -307,6 +314,30 @@ func TestAdoptedEngine_SpawnedEngineIsNotReestimated(t *testing.T) {
 		t.Errorf("events = %q, want none for a spawned engine", events)
 	}
 	onlyProbes(t, *sent, "a spawned engine")
+}
+
+// A Model budget above the host's is clamped on the re-estimate path as it is
+// on a fresh admission, and the clamp notice is the only report while the
+// engine fits.
+func TestAdoptedEngine_ClampedBudgetNoticeOnAFittingReestimate(t *testing.T) {
+	model := sizedModel("33.0 GiB")
+	model.Spec.Hardware = &inferencev1alpha1.HardwareSpec{MemoryBudget: "100Gi"}
+	phi := cumulativeISVC("phi")
+	a, rec, sent := adoptAdmissionAgent(t, model, phi)
+	adoptEngineRecord(t, a, phi)
+
+	if err := a.ensureProcess(context.Background(), phi); err != nil {
+		t.Fatalf("ensureProcess on an adopted engine: %v", err)
+	}
+	wantReestimatedCharge(t, a.processes["default/phi"].AdmittedBytes)
+	events := drainEvents(rec)
+	if len(events) != 1 || !strings.HasPrefix(events[0], corev1.EventTypeWarning+" "+EventReasonMemoryBudgetClamped) {
+		t.Fatalf("events = %q, want exactly one Warning %s", events, EventReasonMemoryBudgetClamped)
+	}
+	if status, msg := schedulingStatus(t, a, "phi"); status != "" || msg != "" {
+		t.Errorf("SchedulingStatus = %q / %q, want no report for an engine that fits", status, msg)
+	}
+	onlyProbes(t, *sent, "an adopted engine under a clamped Model budget")
 }
 
 // The re-estimate must charge exactly what a fresh admission of the same
