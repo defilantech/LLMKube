@@ -141,9 +141,10 @@ boot:
         vm.watermark_scale_factor: "200"
 ```
 
-Either field adds one init container, `multinode-memory-prep`, as the last
-init container of every member pod: it runs after the member's weights are
-staged and right before its runtime starts. It writes the sysctls first, then
+Either field adds one init container, `multinode-memory-prep`, after the
+init containers that stage the weights of every member pod: it runs after the
+member's weights are staged and right before its runtime starts (only the
+guard sidecar of the next section, when set, is placed after it). It writes the sysctls first, then
 syncs and drops the page cache, and prints each value before and after:
 
 ```bash
@@ -193,11 +194,16 @@ fields keep MemFree in check for as long as the member runs:
 Either field adds a sidecar, `multinode-memory-guard`, to every member pod:
 a native sidecar (an init container with `restartPolicy: Always`) placed after
 the prep, so it starts once the weights are staged and runs beside the
-runtime. Every 2 seconds it reads `/proc/meminfo`:
+runtime. Native sidecars need Kubernetes 1.29 or newer; on an older cluster,
+or with the `SidecarContainers` feature gate off, the guard is an ordinary
+init container that never finishes and the members stay in `Init`. Every
+2 seconds it reads `/proc/meminfo`:
 
 - **Flush.** When MemFree is under `flushBelowMemFree`, more than 512 MiB is
   page cache, and the last drop was at least 5 seconds ago, it syncs and drops
-  the page cache.
+  the page cache. Page cache here is `Cached` minus `Shmem`: `Cached` also
+  counts tmpfs and shared memory (a memory-backed `emptyDir`, `/dev/shm`),
+  which a drop cannot free.
 - **Guard.** When MemFree stays under `suspendBelowMemFree` for 10 seconds,
   it drops once more. If MemFree is still under, it writes the reason to its
   termination message and exits 42. The operator sees that exit on a group
@@ -220,6 +226,30 @@ watermarks on a member node (`grep -E 'min|low|high' /proc/zoneinfo`, in
 4 KiB pages) and leave a few GiB above `high`. The floor may be higher than
 `flushBelowMemFree`: the guard drops the page cache itself before it decides,
 so a dip that page cache explains (a model load) does not suspend the group.
+With the floors that way round, that drop is the one you will see in the log:
+whenever MemFree has been under the suspend floor for about 10 seconds the
+guard drops the cache, and `flushBelowMemFree` only adds an immediate drop
+further down.
+
+**The guard is armed during the weight load.** The group counts as formed once
+every member's runtime container is running, which is before the runtime has
+loaded its weights. From then on a guard exit suspends the group, so a load
+that leaves MemFree under the floor even after a drop is suspended, not
+retried. On the three-Spark ring the load dips under an 8 GiB floor three to
+five times per member (about 35 GiB of page cache from reading the weights);
+each time the guard's drop brings MemFree back above 30 GiB and nothing is
+suspended. An exit from before the group formed is ignored.
+
+**With GitOps, a guard suspend can be undone at once.** The guard stops the
+group by writing `spec.suspend: true`. A GitOps tool that self-heals and has
+`suspend: false` (or no `suspend`) for this service in Git writes it straight
+back: the group loads again, can trip again, and none of that counts against
+the recreate bound, because a suspend is not a failure. Either leave
+`spec.suspend` out of what the tool manages for this service (Argo CD
+`ignoreDifferences` on `/spec/suspend`, or drop the field from the manifest
+under Flux's server-side apply), or alert on the
+`MultiNodeMemoryGuardSuspended` event and on
+`llmkube_multinode_guard_suspends_total` so a loop is noticed.
 
 Every drop is one log line with MemFree and Cached before and after:
 
@@ -230,10 +260,27 @@ kubectl logs <service>-mn-1 -c multinode-memory-guard
 The same rules as the prep apply: the sidecar is privileged and root, uses the
 operator's `--init-container-image` (it needs `sh`, `awk`, `date`, `sleep` and
 `sync`), its drops are node-wide, and changing either field recreates the
-group. A guard exit before the group has formed (still loading) is not acted
-on. Set `flushBelowMemFree` alone for a flusher that never suspends. Per-member
-MemFree is not exported by the operator; `node_memory_MemFree_bytes` from
-node-exporter has it.
+group. Set `flushBelowMemFree` alone for a flusher that never suspends; leave
+a field out to turn that half off (the API server rejects `"0"` and anything
+under `1Mi`). A suspend floor above what the node can ever have free suspends
+the group shortly after every start. Per-member MemFree is not exported by the
+operator; `node_memory_MemFree_bytes` from node-exporter has it.
+
+**A guard restart shows on the pod.** The guard is the one container of a
+member whose restart does not recreate the group, so `RESTARTS` on a member
+can be above 0 with the guard set. While the kubelet restarts it the pod is
+not Ready, because a pod is Ready only when its sidecars are: on rank 0 that
+takes the head out of the Service for those seconds. The head's 30 minute
+deadline is then counted from the guard's exit, not from the runtime's start,
+so one restart does not recreate a group that has served for hours, and a
+guard that never comes back still does.
+
+**Who can exec into a member is root on its node.** The prep is a privileged
+container that runs for seconds. The guard is a privileged root container with
+a shell that runs for as long as the pod does, so `pods/exec` on a member pod
+of a group with the guard is root on that node. Grant `pods/exec` in a
+namespace that runs such groups accordingly; see
+[Multi-tenancy](https://github.com/defilantech/LLMKube/blob/main/docs/operations/multi-tenancy.md#inferenceservice-rights-and-pod-security).
 
 ## Failure semantics
 
@@ -255,8 +302,9 @@ earlier, and reports `AutoscalingReady=False` with reason
 ### Bounded recreates
 
 A recreate replaces every member pod, so the kubelet never gets to put a
-crashing container into `CrashLoopBackOff`, and the member pods always show
-`RESTARTS 0`. The operator keeps the count instead, in
+crashing container into `CrashLoopBackOff`, and the member pods show
+`RESTARTS 0` (the memory guard sidecar aside, see "Node memory while
+serving"). The operator keeps the count instead, in
 `status.multiNode.recreates`, and bounds it:
 
 - A member failure (a runtime restart, a failed pod, an init container loop,
