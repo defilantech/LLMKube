@@ -61,7 +61,7 @@ func (r *reviveBackend) start() error {
 	if err != nil {
 		return fmt.Errorf("bind member address %s: %w", r.addr, err)
 	}
-	srv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	srv := &http.Server{ReadHeaderTimeout: 5 * time.Second, Handler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		r.calls.Add(1)
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = io.WriteString(w, `{"choices":[{"message":{"content":"hi"}}]}`)
@@ -172,7 +172,7 @@ func issue2579Body(t *testing.T) *strings.Reader {
 // that it is resident with a resync interval long enough that the request below
 // is inside the window by construction, then drains it the way the controller
 // does when it reclaims the slot for the pool's default (judge).
-func issue2579Drained(t *testing.T) (*reviveBackend, *fakeMemberController, *revivingMemberController, *Activator) {
+func issue2579Drained(t *testing.T) (*reviveBackend, *revivingMemberController, *Activator) {
 	t.Helper()
 	rb := newReviveBackend(t)
 	if err := rb.start(); err != nil {
@@ -199,7 +199,7 @@ func issue2579Drained(t *testing.T) (*reviveBackend, *fakeMemberController, *rev
 
 	rb.drain()
 	fake.setPhase("coder", "")
-	return rb, fake, rev, act
+	return rb, rev, act
 }
 
 // TestIssue2579DrainedResidentHeldThenServed is the reproduction: a request for
@@ -215,7 +215,7 @@ func TestIssue2579DrainedResidentHeldThenServed(t *testing.T) {
 		{"fallback configured", true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			rb, _, rev, act := issue2579Drained(t)
+			rb, rev, act := issue2579Drained(t)
 			judge := newFakeBackend(t)
 
 			cfg := issue2579Config(tc.fallback, rb.url(), judge.URL(), 10*time.Minute)
@@ -278,7 +278,7 @@ func TestIssue2579DrainedResidentHeldThenServed(t *testing.T) {
 // that never comes back ends the hold at swapBudget with 503 + Retry-After, not
 // a 502 and not an unbounded wait.
 func TestIssue2579DrainedResidentHoldBoundedBySwapBudget(t *testing.T) {
-	rb, _, rev, act := issue2579Drained(t)
+	rb, rev, act := issue2579Drained(t)
 	judge := newFakeBackend(t)
 
 	cfg := issue2579Config(false, rb.url(), judge.URL(), 150*time.Millisecond)
@@ -393,7 +393,7 @@ func TestIssue2579ParityWrittenRequestNotRetried(t *testing.T) {
 // documented contract: a request for a drained member falls through to the warm
 // member and nothing is held or activated.
 func TestIssue2579ParityIfIdleNeverHolds(t *testing.T) {
-	rb, _, rev, act := issue2579Drained(t)
+	rb, rev, act := issue2579Drained(t)
 	judge := newFakeBackend(t)
 
 	cfg := issue2579Config(true, rb.url(), judge.URL(), 5*time.Second)

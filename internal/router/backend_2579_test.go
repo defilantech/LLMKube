@@ -82,12 +82,13 @@ func TestDispatchMarksRequestNotSentOnlyBeforeAnyByte(t *testing.T) {
 	})
 
 	t.Run("unset credential env", func(t *testing.T) {
-		t.Setenv("LLMKUBE_2579_UNSET_CREDENTIAL", "")
+		const unsetEnv = "LLMKUBE_2579_UNSET_CREDENTIAL"
+		t.Setenv(unsetEnv, "")
 		err := dispatch(t, Backend{
 			Name:           "cloud",
 			Tier:           "cloud",
 			Address:        "http://127.0.0.1:1",
-			CredentialsEnv: "LLMKUBE_2579_UNSET_CREDENTIAL",
+			CredentialsEnv: unsetEnv,
 		})
 		if errors.Is(err, ErrRequestNotSent) {
 			t.Fatalf("err = %v marked ErrRequestNotSent for a request the transport never sent", err)
