@@ -170,7 +170,7 @@ merged with the operator's own entries where both exist:
 
 - `image`, `command` and `args`
 - `env`, including `valueFrom.secretKeyRef`
-- `nodeSelector`, `tolerations`, `affinity` and `runtimeClassName`
+- `nodeSelector`, `tolerations`, `affinity`, `runtimeClassName` and `schedulerName`
 - `extraVolumes` and `extraVolumeMounts`
 - `securityContext` (the inference container) and `podSecurityContext`
 

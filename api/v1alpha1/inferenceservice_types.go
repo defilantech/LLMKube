@@ -654,6 +654,22 @@ type InferenceServiceSpec struct {
 	// +optional
 	RuntimeClassName *string `json:"runtimeClassName,omitempty"`
 
+	// SchedulerName names the scheduler that places the inference Pods, in the
+	// same form as a Pod's spec.schedulerName (for example "kai-scheduler");
+	// unset leaves the default scheduler in charge. The value must be a
+	// DNS-1123 subdomain, which is what the API server requires of a Pod's
+	// schedulerName.
+	//
+	// It is set on the serving Pod template, so spec.multiNode member Pods
+	// carry it too; each member is pinned to its node with spec.nodeName,
+	// which bypasses the scheduler. The model prefetch and file-listing Jobs,
+	// the ModelRouter proxy and the metal relay Deployment stay on the default
+	// scheduler, and a Metal service's inference process runs outside any Pod.
+	// +kubebuilder:validation:MaxLength=253
+	// +kubebuilder:validation:Pattern=`^$|^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$`
+	// +optional
+	SchedulerName string `json:"schedulerName,omitempty"`
+
 	// ContextSize sets the context window size for the llama.cpp server (-c flag).
 	// Larger values allow processing longer inputs but require more memory.
 	// If not specified, llama.cpp uses its default (typically 512 or 2048).

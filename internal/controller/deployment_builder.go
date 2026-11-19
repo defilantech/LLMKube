@@ -690,6 +690,7 @@ func (r *InferenceServiceReconciler) constructDeploymentForCache(
 					Volumes:            storageConfig.volumes,
 					PriorityClassName:  r.resolvePriorityClassName(isvc),
 					RuntimeClassName:   isvc.Spec.RuntimeClassName,
+					SchedulerName:      isvc.Spec.SchedulerName,
 					ImagePullSecrets:   isvc.Spec.ImagePullSecrets,
 					EnableServiceLinks: resolveEnableServiceLinks(backend),
 					ResourceClaims:     modelResourceClaims(model),

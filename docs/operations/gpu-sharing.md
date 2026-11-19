@@ -758,6 +758,59 @@ toleration in `spec.tolerations` (the operator's automatic GPU
 toleration covers only the device resource taint, not custom pool
 taints).
 
+## Running under KAI Scheduler
+
+`gpuSharing` decides how a service consumes its GPU; a scheduler decides who
+gets a GPU when demand exceeds what the cluster has. On a cluster that shares
+a GPU fleet between teams with
+[KAI Scheduler](https://github.com/kai-scheduler/KAI-Scheduler), KAI's queues
+do that fair sharing. KAI's documented opt-in is the queue label plus the
+`schedulerName` Pod field, and an InferenceService exposes both:
+
+```yaml
+apiVersion: inference.llmkube.dev/v1alpha1
+kind: InferenceService
+metadata:
+  name: coder
+  namespace: team-a
+spec:
+  modelRef: qwen-coder
+  schedulerName: kai-scheduler
+  podLabels:
+    kai.scheduler/queue: team-a
+  resources:
+    gpu: 1
+```
+
+`spec.schedulerName` is validated when the InferenceService is admitted: a
+value that is not a DNS-1123 subdomain is rejected on the InferenceService
+instead of failing later on the Deployment. Unset, the default scheduler
+places the Pods, as before.
+
+The field reaches the serving Pods and nothing else:
+
+- The model download and cache-prep init containers run inside the serving
+  Pod, so they are placed with it.
+- The model prefetch and file-listing Jobs, the ModelRouter proxy and the
+  metal relay Deployment stay on the default scheduler. They are CPU work, and
+  a queue sized for GPUs should not hold them back.
+- A Metal service's inference process runs on the agent, outside any Pod.
+- `spec.multiNode` member Pods carry the field, because they are specialised
+  from the same Pod template, but each member is pinned to its node with
+  `spec.nodeName`, which bypasses the scheduler. Gang scheduling of a member
+  group is not implemented.
+
+### KAI queues and GPUQuota
+
+GPUQuota admission does not defer to KAI. Only the
+`kueue.x-k8s.io/queue-name` label skips it (see
+[GPUQuota and Kueue](../kueue-integration.md#gpuquota-and-kueue));
+`spec.schedulerName` does not. With the GPUQuota webhook enabled
+(`multitenancy.enabled`), a service in a namespace with an applicable GPUQuota
+is admitted against that quota whatever its scheduler, so a GPUQuota can deny
+it even when its KAI queue has room. If you size queues in KAI for GPU quota,
+do not also scope a GPUQuota to the same namespaces.
+
 ## AMD APU (unified-memory iGPU) note
 
 AMD Strix APUs with integrated GPUs (Vulkan/ROCm) share a single device
