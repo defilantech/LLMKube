@@ -54,7 +54,21 @@ The new API group means new CRDs, so Meitheal installs beside an existing
 Foreman release instead of upgrading it. The `foreman` chart templates its six
 CRDs without `helm.sh/resource-policy: keep`, so `helm uninstall` of that
 release deletes the CRDs and every Agent, AgenticTask, AgentRelease, FleetNode,
-ModelProfile and Workload with them. Move in this order:
+ModelProfile and Workload with them. The full guide, with every command and
+the edge cases, is in Meitheal's docs:
+[Migrating from Foreman](https://github.com/defilantech/meitheal/blob/main/docs/migrating-from-foreman.md).
+In short, find your release first, since the commands below assume the
+release `foreman` in namespace `foreman-system`:
+
+```sh
+helm list -A | grep foreman
+```
+
+The steps below need foreman chart 0.9.1 or later, the first version that
+templates its CRDs behind `crds.install`. On an older chart, setting
+`crds.install=false` changes nothing, so upgrade the release to a current
+foreman chart (0.10.19 is the last one) the way you normally upgrade it, then
+start here. Move in this order:
 
 1. Annotate the six `foreman.llmkube.dev` CRDs with
    `helm.sh/resource-policy: keep`, then take them out of the release.
@@ -73,6 +87,17 @@ ModelProfile and Workload with them. Move in this order:
      --namespace foreman-system --version "$FOREMAN_CHART_VERSION" \
      --reuse-values --set crds.install=false
    ```
+
+   Check both of these before going on. The release must no longer hold the
+   CRDs, and the CRDs must still exist:
+
+   ```sh
+   helm get manifest foreman --namespace foreman-system | grep -c 'kind: CustomResourceDefinition'   # expect 0
+   kubectl get crd | grep -c foreman.llmkube.dev                                                    # expect 6
+   ```
+
+   If the first command prints anything but 0, stop: the chart did not drop the
+   CRDs, and uninstalling the release would delete them.
 
 2. Install the `meitheal` chart as a new release, following the
    [Meitheal README](https://github.com/defilantech/meitheal#install).
