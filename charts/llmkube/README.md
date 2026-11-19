@@ -1,15 +1,17 @@
 # LLMKube Helm Chart
 
-A Helm chart for deploying LLMKube - a Kubernetes operator for GPU-accelerated LLM inference.
+A Helm chart for deploying LLMKube, the Kubernetes operator for self-hosted LLM inference.
 
 ## Introduction
 
-LLMKube is a Kubernetes operator that makes it easy to deploy, manage, and scale GPU-accelerated LLM inference services. Built for air-gapped environments, edge computing, and production workloads with first-class GPU support.
+LLMKube runs models across NVIDIA, Apple Silicon, and AMD from one spec. You declare a `Model` and an `InferenceService`, and the operator downloads and caches the weights, schedules the runtime (llama.cpp, vLLM, SGLang and others) on the right hardware, and exposes an OpenAI-compatible endpoint. Apple Silicon Macs join the cluster through the metal-agent and serve models as native processes with full Metal GPU access. A `ModelRouter` puts one endpoint in front of local models and external providers.
+
+It is built for platform teams running on-prem, mixed-hardware, or air-gapped inference. Documentation: [llmkube.com/docs](https://llmkube.com/docs).
 
 ## Prerequisites
 
-- Kubernetes 1.11.3+
-- Helm 3.0+
+- Kubernetes 1.27+
+- Helm 3.8+ for the OCI install (3.0+ for the Helm repository install)
 - (Optional) Prometheus Operator for metrics and alerts
 - (Optional) NVIDIA GPU Operator for GPU support
 
