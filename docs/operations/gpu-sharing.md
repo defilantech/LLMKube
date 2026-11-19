@@ -784,8 +784,8 @@ spec:
 
 `spec.schedulerName` is validated when the InferenceService is admitted: a
 value that is not a DNS-1123 subdomain is rejected on the InferenceService
-instead of failing later on the Deployment. Unset, the default scheduler
-places the Pods, as before.
+instead of leaving the serving Pods unschedulable. Unset, the default
+scheduler places the Pods, as before.
 
 The field reaches the serving Pods and nothing else:
 

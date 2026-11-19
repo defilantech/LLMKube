@@ -656,9 +656,10 @@ type InferenceServiceSpec struct {
 
 	// SchedulerName names the scheduler that places the inference Pods, in the
 	// same form as a Pod's spec.schedulerName (for example "kai-scheduler");
-	// unset leaves the default scheduler in charge. The value must be a
-	// DNS-1123 subdomain, which is what the API server requires of a Pod's
-	// schedulerName.
+	// unset leaves the default scheduler in charge. A non-empty value must be a
+	// DNS-1123 subdomain, which is stricter than the API server's own rule for
+	// a Pod: it accepts any string there and leaves a Pod whose scheduler does
+	// not exist Pending, so the check fails on the InferenceService instead.
 	//
 	// It is set on the serving Pod template, so spec.multiNode member Pods
 	// carry it too; each member is pinned to its node with spec.nodeName,
