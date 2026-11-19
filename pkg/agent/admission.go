@@ -71,11 +71,14 @@ type admissionBudget struct {
 // A Model's memoryBudget or memoryFraction may lower this host's limit for
 // itself but not raise it, unless the agent allows overrides (#2080). Errors
 // are the admission failure reasons, worded as checkMemoryAdmission words them.
+// publishHostBudget publishes the host-budget gauge, which only an admission
+// does.
 func (a *MetalAgent) resolveAdmissionBudget(
 	ctx context.Context,
 	isvc *inferencev1alpha1.InferenceService,
 	model *inferencev1alpha1.Model,
 	estimate MemoryEstimate,
+	publishHostBudget bool,
 ) (*admissionBudget, error) {
 	// This host's budget, the limit its owner set with --memory-fraction. Every
 	// admitted model shares it, and a Model budget may not exceed it. An
@@ -96,6 +99,9 @@ func (a *MetalAgent) resolveAdmissionBudget(
 	}
 	serviceBudget := uint64(float64(total) * a.memoryFraction)
 	hostBudget := uint64(float64(hostTotal) * a.memoryFraction)
+	if publishHostBudget {
+		memoryBudgetBytes.Set(float64(hostBudget))
+	}
 
 	resolved, resolveErr := ResolveMemoryBudget(model.Spec.Hardware, a.memoryFraction)
 	if resolveErr != nil {
@@ -233,7 +239,7 @@ func (a *MetalAgent) reestimateAdoptedCharge(
 		return
 	}
 
-	budget, budgetErr := a.resolveAdmissionBudget(ctx, isvc, model, estimate)
+	budget, budgetErr := a.resolveAdmissionBudget(ctx, isvc, model, estimate, false)
 	if budgetErr != nil {
 		a.logger.Warnw("adopted engine's re-estimated charge cannot be checked against its budget",
 			"key", key, "error", budgetErr)

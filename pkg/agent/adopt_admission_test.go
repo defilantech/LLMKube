@@ -21,6 +21,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
@@ -126,6 +127,9 @@ func TestAdoptedEngine_ReestimateCountsTowardCumulativeAdmission(t *testing.T) {
 	if got, _ := a.committedMemoryLocked("", false); got != p.AdmittedBytes {
 		t.Errorf("committed memory = %s, want the adopted engine's re-estimated charge %s",
 			formatMemory(got), formatMemory(p.AdmittedBytes))
+	}
+	if got := testutil.ToFloat64(memoryEstimatedBytes.WithLabelValues("phi", "default")); got != float64(p.AdmittedBytes) {
+		t.Errorf("memoryEstimatedBytes = %v, want the re-estimated charge %d", got, p.AdmittedBytes)
 	}
 	// The record stays the seed the next agent adopts; only the in-memory
 	// charge is refreshed.
@@ -272,6 +276,39 @@ func TestAdoptedEngine_FittingReestimateIsNotReported(t *testing.T) {
 	onlyProbes(t, *sent, "an adopted engine that fits")
 }
 
+// A process this agent started is never re-estimated, whatever the Model's
+// budget says about its charge: the defect is adoption, and a spawned engine
+// keeps the charge its own admission gave it.
+func TestAdoptedEngine_SpawnedEngineIsNotReestimated(t *testing.T) {
+	model := sizedModel("33.0 GiB")
+	model.Spec.Hardware = &inferencev1alpha1.HardwareSpec{MemoryBudget: "12Gi"}
+	phi := cumulativeISVC("phi")
+	a, rec, sent := adoptAdmissionAgent(t, model, phi)
+	a.processes["default/phi"] = &ManagedProcess{
+		Name: "phi", Namespace: "default", PID: 4242, Port: 18080, Runtime: runtimeLlamaServer,
+		SpecHash: computeSpecHash(phi), AdmittedBytes: adoptedSeedBytes, Healthy: true,
+	}
+
+	if err := a.ensureProcess(context.Background(), phi); err != nil {
+		t.Fatalf("ensureProcess on a spawned engine: %v", err)
+	}
+	p := a.processes["default/phi"]
+	if p == nil {
+		t.Fatal("the spawned engine left the process table")
+	}
+	if p.AdmittedBytes != adoptedSeedBytes {
+		t.Errorf("AdmittedBytes = %d, want the spawned engine's own charge %d unchanged",
+			p.AdmittedBytes, adoptedSeedBytes)
+	}
+	if status, msg := schedulingStatus(t, a, "phi"); status != "" || msg != "" {
+		t.Errorf("SchedulingStatus = %q / %q, want no report for a spawned engine", status, msg)
+	}
+	if events := drainEvents(rec); len(events) != 0 {
+		t.Errorf("events = %q, want none for a spawned engine", events)
+	}
+	onlyProbes(t, *sent, "a spawned engine")
+}
+
 // The re-estimate must charge exactly what a fresh admission of the same
 // InferenceService and Model computes, inputs included: a re-estimate that used
 // the default context size or f16 KV would land on a different figure.
@@ -349,6 +386,25 @@ func TestAdoptedEngine_UnresolvableBudgetStillCharges(t *testing.T) {
 	}
 	if events := drainEvents(rec); len(events) != 0 {
 		t.Errorf("events = %q, want none without a budget", events)
+	}
+}
+
+// An admission refused because the Model's own budget cannot be resolved still
+// publishes the host budget: the gauge reports this host's limit, not the
+// outcome of the check (#2535 review).
+func TestAdmission_PublishesHostBudgetWhenTheModelBudgetDoesNotResolve(t *testing.T) {
+	model := sizedModel("33.0 GiB")
+	model.Spec.Hardware = &inferencev1alpha1.HardwareSpec{MemoryBudget: "0"}
+	isvc := cumulativeISVC("phi")
+	a, _ := newCumulativeAgent(t, MetalAgentConfig{}, isvc)
+	memoryBudgetBytes.Set(0)
+
+	if err := a.checkMemoryAdmission(context.Background(), isvc, model, 2048, "", ""); err == nil {
+		t.Fatal("a Model budget that does not resolve was admitted")
+	}
+	if got := testutil.ToFloat64(memoryBudgetBytes); got != float64(cumulativeBudget) {
+		t.Errorf("memoryBudgetBytes = %v, want the host budget %d published before the resolution failed",
+			got, uint64(cumulativeBudget))
 	}
 }
 
