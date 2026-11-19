@@ -1488,3 +1488,49 @@ func TestQuotaWebhookWarnsMultiNodeAutoscaling(t *testing.T) {
 		})
 	}
 }
+
+// spec.schedulerName is not a GPUQuota deferral: the Kueue label is the only
+// one, so a service placed by a secondary scheduler such as KAI is still
+// admitted against an applicable quota.
+func TestQuotaWebhookGatesSchedulerNamedService(t *testing.T) {
+	ctx := context.Background()
+	scheme := runtime.NewScheme()
+	if err := inferencev1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatalf("add scheme: %v", err)
+	}
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatalf("add core1: %v", err)
+	}
+
+	ns := corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "default"}}
+	quota := inferencev1alpha1.GPUQuota{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-quota"},
+		Spec: inferencev1alpha1.GPUQuotaSpec{
+			NamespaceRef: "default",
+			// Zero means no GPUs allowed, so the request below must be denied
+			// whatever scheduler places the pod.
+			GPUCount: 0,
+		},
+	}
+	isvc := inferencev1alpha1.InferenceService{
+		ObjectMeta: metav1.ObjectMeta{Name: "kai-scheduled-svc", Namespace: "default"},
+		Spec: inferencev1alpha1.InferenceServiceSpec{
+			SchedulerName: "kai-scheduler",
+			Resources:     &inferencev1alpha1.InferenceResourceRequirements{GPU: 1},
+		},
+	}
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(&quota, &ns).
+		Build()
+
+	v := &InferenceServiceQuotaValidator{Client: fakeClient}
+	_, err := v.ValidateCreate(ctx, &isvc)
+	if err == nil {
+		t.Fatal("expected denial (0 GPU quota, 1 requested), got nil: schedulerName must not defer GPUQuota")
+	}
+	if !strContains(err.Error(), "would exceed gpuCount") {
+		t.Fatalf("expected reason to mention gpuCount, got: %v", err)
+	}
+}
