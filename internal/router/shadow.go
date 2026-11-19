@@ -251,7 +251,7 @@ func (d *Dispatcher) Mirror(
 	endpoint := d.roundRobin(backend, d.liveEndpoints(backend))
 	url := joinURL(dispatchTarget(backend, endpoint), path)
 	outboundBody := applyModelOverride(requestBody, backend.outboundModel())
-	reqCancel, req, _, err := d.newUpstreamRequest(ctx, backend, method, url, headers, outboundBody)
+	reqCancel, req, _, err := d.newUpstreamRequest(ctx, backend, method, url, headers, outboundBody, new(atomic.Bool))
 	if err != nil {
 		return nil, err
 	}

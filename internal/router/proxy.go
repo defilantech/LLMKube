@@ -915,6 +915,12 @@ func (p *Proxy) dispatchOrder(dec *MatchResult) []string {
 // catches one that goes silent). The deadline is applied per attempt, not
 // once for the whole loop, so a slow primary that timed out does NOT eat the
 // fallback's budget.
+//
+// Per-backend retry: a pooled backend whose connection attempt failed before
+// the first request byte was written (a member the controller drained inside
+// the resident-resync window, a Pod that is gone) has the request held for that
+// member as a cold request is held, bounded by swapBudget, and dispatched once
+// more. A failure after any part of the request was written is never retried.
 func (p *Proxy) dispatchWithFallback(
 	ctx context.Context,
 	dec *MatchResult,
@@ -960,85 +966,22 @@ func (p *Proxy) dispatchWithFallback(
 			continue
 		}
 
-		// ModelPool activation: make this member resident (scale it up, drain
-		// the incumbent) before dispatch. The swap hold has its own budget
-		// (pool.SwapBudget), decoupled from the dispatch/response-header timeout
-		// so a large cold model load can take minutes without loosening the
-		// per-request generation cap. The swap runs under the activator's
-		// baseCtx, so cancelling holdCtx once Acquire returns never aborts an
-		// in-progress load. The dispatch clock (attemptCtx below) starts only
-		// after the member is resident, so the swap wait never eats the
-		// generation budget.
-		var poolRelease func()
-		if b.Pool != nil && p.activator != nil {
-			holdCtx, holdCancel := context.WithTimeout(ctx,
-				resolveSwapBudget(b.Pool, p.disp.ResponseHeaderTimeout()))
-			rel, aerr := p.activator.AcquireWithMode(holdCtx, b.Pool, dec.PoolActivation)
-			holdCancel()
-			if aerr != nil {
-				p.refreshBackendHealth(name)
-				lastErr = aerr
-				if !errors.Is(aerr, ErrIncumbentBusy) {
-					allIncumbentBusy = false
-				}
-				continue
-			}
-			poolRelease = rel
-		}
-
-		attemptCtx, cancel := context.WithCancel(ctx)
-		var headerTimedOut atomic.Bool
-		headerTimer := time.AfterFunc(resolveDispatchTimeout(dec, b, p.disp.ResponseHeaderTimeout()), func() {
-			headerTimedOut.Store(true)
-			cancel()
-		})
-		_, span := tracer.Start(attemptCtx, "backend.request",
-			oteltrace.WithAttributes(
-				otelattribute.String("routing.backend.selected", b.Name),
-				otelattribute.String("routing.backend.provider", b.Provider),
-				otelattribute.String("routing.backend.tier", b.Tier),
-				otelattribute.Int("routing.fallback.depth", i),
-			),
-		)
-		resp, err := p.disp.Dispatch(attemptCtx, b, http.MethodPost, path, headers, body)
-		// Headers arrived (or the attempt failed): the header deadline no
-		// longer applies. If the timer fired anyway, the attempt context is
-		// already cancelled and the response is unusable.
-		if !headerTimer.Stop() && headerTimedOut.Load() {
-			if err == nil {
-				_ = resp.Body.Close()
-				resp = nil
-			}
-			err = fmt.Errorf("%w: waiting for response headers from %s", context.DeadlineExceeded, name)
-		}
+		resp, err, release, cancel := p.attemptBackend(ctx, tracer, dec, b, headers, body, path, i)
 		if err != nil {
-			if b.Pool != nil && p.activator != nil && ctx.Err() == nil {
-				// A connection-level failure to a pooled backend almost always
-				// means its pod is gone (an out-of-band residency change the
-				// activator did not drive). Force the next Acquire to re-verify
-				// residency so the pool self-heals instead of serving stale 502s
-				// until the periodic resync or a proxy restart. A client
-				// cancellation says nothing about the pod.
-				p.activator.InvalidateResident(b.Pool)
-			}
-			if poolRelease != nil {
-				poolRelease()
-			}
-			span.End()
-			cancel()
 			p.refreshBackendHealth(name)
 			lastErr = err
-			allIncumbentBusy = false
+			if !errors.Is(err, ErrIncumbentBusy) {
+				allIncumbentBusy = false
+			}
 			continue
 		}
 		if resp.StatusCode >= 500 {
 			// Drain and close so the connection is reusable.
 			_, _ = io.Copy(io.Discard, resp.Body)
 			_ = resp.Body.Close()
-			if poolRelease != nil {
-				poolRelease()
+			if release != nil {
+				release()
 			}
-			span.End()
 			cancel()
 			p.refreshBackendHealth(name)
 			if resp.StatusCode == http.StatusNotImplemented {
@@ -1051,17 +994,16 @@ func (p *Proxy) dispatchWithFallback(
 		}
 		// Successful response: wrap the body so its Close also
 		// cancels the per-attempt context and releases the pool slot.
-		// The caller's existing `defer resp.Body.Close()` is enough — no
+		// The caller's existing `defer resp.Body.Close()` is enough: no
 		// separate cancel plumbing needed, and streaming dispatches keep
 		// the deadline (and the pool residency in-flight count) alive
 		// until the client finishes reading.
 		resp.Body = &cancelOnClose{ReadCloser: resp.Body, cancel: func() {
-			if poolRelease != nil {
-				poolRelease()
+			if release != nil {
+				release()
 			}
 			cancel()
 		}}
-		span.End()
 		return b, resp, nil
 	}
 	if lastErr == nil {
@@ -1073,6 +1015,115 @@ func (p *Proxy) dispatchWithFallback(
 		return last, nil, ErrIncumbentBusy
 	}
 	return last, nil, lastErr
+}
+
+// attemptBackend runs one backend turn: it holds the request until a pooled
+// member is resident, dispatches under the per-attempt header deadline, and
+// returns the response with the release/cancel plumbing its caller must run
+// when done. Only a pooled member under the default activation whose first
+// attempt failed before a request byte was written is retried; the retry
+// re-holds the member exactly as a cold member is held, and the deadline shared
+// with the retry keeps the whole wait inside swapBudget.
+func (p *Proxy) attemptBackend(
+	ctx context.Context,
+	tracer oteltrace.Tracer,
+	dec *MatchResult,
+	b *Backend,
+	headers http.Header,
+	body []byte,
+	path string,
+	depth int,
+) (*http.Response, error, func(), context.CancelFunc) {
+	pooled := b.Pool != nil && p.activator != nil
+	var release func()
+	var holdDeadline time.Time
+	if pooled {
+		holdDeadline = time.Now().Add(resolveSwapBudget(b.Pool, p.disp.ResponseHeaderTimeout()))
+	}
+	// The swap hold has its own budget (pool.SwapBudget), decoupled from the
+	// dispatch/response-header timeout so a large cold model load can take
+	// minutes without loosening the per-request generation cap. The swap runs
+	// under the activator's baseCtx, so cancelling holdCtx once Acquire returns
+	// never aborts an in-progress load. The dispatch clock below starts only
+	// after the member is resident, so the swap wait never eats the generation
+	// budget.
+	hold := func() error {
+		if !pooled {
+			return nil
+		}
+		holdCtx, holdCancel := context.WithDeadline(ctx, holdDeadline)
+		defer holdCancel()
+		rel, aerr := p.activator.AcquireWithMode(holdCtx, b.Pool, dec.PoolActivation)
+		if aerr != nil {
+			return aerr
+		}
+		release = rel
+		return nil
+	}
+	if aerr := hold(); aerr != nil {
+		return nil, aerr, nil, nil
+	}
+
+	for attempt := 0; ; attempt++ {
+		attemptCtx, attemptCancel := context.WithCancel(ctx)
+		var headerTimedOut atomic.Bool
+		headerTimer := time.AfterFunc(resolveDispatchTimeout(dec, b, p.disp.ResponseHeaderTimeout()), func() {
+			headerTimedOut.Store(true)
+			attemptCancel()
+		})
+		_, span := tracer.Start(attemptCtx, "backend.request",
+			oteltrace.WithAttributes(
+				otelattribute.String("routing.backend.selected", b.Name),
+				otelattribute.String("routing.backend.provider", b.Provider),
+				otelattribute.String("routing.backend.tier", b.Tier),
+				otelattribute.Int("routing.fallback.depth", depth),
+			),
+		)
+		resp, derr := p.disp.Dispatch(attemptCtx, b, http.MethodPost, path, headers, body)
+		// Headers arrived (or the attempt failed): the header deadline no
+		// longer applies. If the timer fired anyway, the attempt context is
+		// already cancelled and the response is unusable.
+		if !headerTimer.Stop() && headerTimedOut.Load() {
+			if derr == nil {
+				_ = resp.Body.Close()
+				resp = nil
+			}
+			derr = fmt.Errorf("%w: waiting for response headers from %s", context.DeadlineExceeded, b.Name)
+		}
+		span.End()
+		if derr == nil {
+			return resp, nil, release, attemptCancel
+		}
+		attemptCancel()
+		if release != nil {
+			release()
+			release = nil
+		}
+		if b.Pool != nil && p.activator != nil && ctx.Err() == nil {
+			// A connection-level failure to a pooled backend almost always
+			// means its pod is gone (an out-of-band residency change the
+			// activator did not drive). Force the next Acquire to re-verify
+			// residency so the pool self-heals instead of serving stale 502s
+			// until the periodic resync or a proxy restart. A client
+			// cancellation says nothing about the pod.
+			p.activator.InvalidateResident(b.Pool)
+		}
+		if attempt > 0 || !pooled || dec.PoolActivation == PoolActivationIfIdle ||
+			!errors.Is(derr, ErrRequestNotSent) || ctx.Err() != nil {
+			return nil, derr, nil, nil
+		}
+		// The member was drained under the cached belief (the resync window),
+		// so hold the request for it rather than failing it through.
+		p.logger.Info("model pool member refused a dispatch before any request byte; holding the request for it again",
+			"router", p.routerName, "namespace", b.Pool.Namespace, "pool", b.Pool.Name, "member", b.Pool.Member)
+		// The refused dial quarantined the backend; clear it so a request
+		// arriving while this one is held reaches the hold too instead of
+		// being skipped as unhealthy.
+		p.disp.clearQuarantine(b.Name)
+		if aerr := hold(); aerr != nil {
+			return nil, aerr, nil, nil
+		}
+	}
 }
 
 // cancelOnClose pairs a response body with the cancel func of the

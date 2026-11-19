@@ -586,6 +586,32 @@ func (d *Dispatcher) markHealthy(name, endpoint string) {
 	d.clearPollDown(name, endpoint, h, "request")
 }
 
+// clearQuarantine lifts the backend-level quarantine a dispatch set. The proxy
+// uses it on the retry path: the pre-write failure there is a drained member,
+// and the requests that arrive while that retry holds must reach the same hold
+// instead of being skipped as unhealthy. A re-dispatch that fails again
+// re-quarantines the backend through Dispatch.
+func (d *Dispatcher) clearQuarantine(name string) {
+	d.markHealthy(name, "")
+}
+
+// ErrRequestNotSent marks a dispatch that failed before the first byte of the
+// request reached the upstream. The upstream cannot have begun work on a
+// request it never received, so a caller may dispatch the same request again;
+// a dispatch that wrote the request line and headers never carries this
+// sentinel, because those bytes must not be sent twice.
+var ErrRequestNotSent = errors.New("request not sent")
+
+// requestNotSentError carries ErrRequestNotSent without changing the cause's
+// message, which a client's error body and the audit line are built from.
+type requestNotSentError struct{ cause error }
+
+func (e *requestNotSentError) Error() string { return e.cause.Error() }
+
+func (e *requestNotSentError) Unwrap() error { return e.cause }
+
+func (e *requestNotSentError) Is(target error) bool { return target == ErrRequestNotSent }
+
 // Dispatch forwards the request to the named backend and returns the
 // upstream response. Caller is responsible for streaming the body to
 // the inbound client and closing it. On error the response is nil.
@@ -627,7 +653,8 @@ func (d *Dispatcher) Dispatch(
 	// The request runs under its own cancellable context so the stream idle
 	// guard can abort a body that went silent without touching the caller's
 	// context.
-	reqCancel, req, reused, err := d.newUpstreamRequest(ctx, backend, method, url, headers, outboundBody)
+	sent := &atomic.Bool{}
+	reqCancel, req, reused, err := d.newUpstreamRequest(ctx, backend, method, url, headers, outboundBody, sent)
 	if err != nil {
 		release()
 		releasePrefill()
@@ -644,7 +671,7 @@ func (d *Dispatcher) Dispatch(
 		prommetrics.RouterDispatchRetriesTotal.WithLabelValues(d.routerName, backend.Name, "stale_connection").Inc()
 		reqCancel()
 		var rerr error
-		reqCancel, req, _, rerr = d.newUpstreamRequest(ctx, backend, method, url, headers, outboundBody)
+		reqCancel, req, _, rerr = d.newUpstreamRequest(ctx, backend, method, url, headers, outboundBody, sent)
 		if rerr != nil {
 			release()
 			releasePrefill()
@@ -672,7 +699,14 @@ func (d *Dispatcher) Dispatch(
 		reqCancel()
 		release()
 		releasePrefill()
-		return nil, fmt.Errorf("upstream request: %w", err)
+		werr := fmt.Errorf("upstream request: %w", err)
+		if !sent.Load() {
+			// Nothing of the request reached the upstream, so a caller may
+			// dispatch it again. Pre-dispatch errors return before this
+			// point: the upstream was never contacted at all.
+			return nil, &requestNotSentError{cause: werr}
+		}
+		return nil, werr
 	}
 	switch {
 	case resp.StatusCode == http.StatusNotImplemented:
@@ -960,17 +994,21 @@ func (s *sentOnceBody) Close() error {
 // newUpstreamRequest builds one outbound request under its own cancellable
 // context, so the stream idle guard can abort a body that went silent without
 // touching the caller's context. reused reports, once the request has been
-// sent, whether it went out on a pooled keep-alive connection.
+// sent, whether it went out on a pooled keep-alive connection. sent is set by
+// the WroteHeaders hook, the first trace callback that runs once the request
+// line and headers are on the connection.
 func (d *Dispatcher) newUpstreamRequest(
 	ctx context.Context,
 	backend *Backend,
 	method, url string,
 	headers http.Header,
 	outboundBody []byte,
+	sent *atomic.Bool,
 ) (context.CancelFunc, *http.Request, *atomic.Bool, error) {
 	reused := &atomic.Bool{}
 	reqCtx, reqCancel := context.WithCancel(httptrace.WithClientTrace(ctx, &httptrace.ClientTrace{
-		GotConn: func(info httptrace.GotConnInfo) { reused.Store(info.Reused) },
+		GotConn:      func(info httptrace.GotConnInfo) { reused.Store(info.Reused) },
+		WroteHeaders: func() { sent.Store(true) },
 	}))
 	req, err := http.NewRequestWithContext(reqCtx, method, url, newSentOnceBody(outboundBody)) //nolint:gosec // G704: url is the configured backend address or a pod from the controller-managed endpoint set; the session header is only hashed onto the ring
 	if err != nil {
