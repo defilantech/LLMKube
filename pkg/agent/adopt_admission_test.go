@@ -65,7 +65,7 @@ func adoptAdmissionAgent(
 
 // adoptEngineRecord writes and adopts the engine record of default/<name>, as
 // the previous agent process left it.
-func adoptEngineRecord(t *testing.T, a *MetalAgent, specHash string, admitted uint64) {
+func adoptEngineRecord(t *testing.T, a *MetalAgent, isvc *inferencev1alpha1.InferenceService) {
 	t.Helper()
 	if err := a.engineRecords.WriteProvisional("default", "phi", runtimeLlamaServer, SpawnedProcess{
 		PID: 4242, PGID: 4242, Port: 18080, Executable: "/bin/engine", BindHost: engineBindHost,
@@ -74,7 +74,7 @@ func adoptEngineRecord(t *testing.T, a *MetalAgent, specHash string, admitted ui
 	}
 	writeRunning(t, a, &ManagedProcess{
 		Name: "phi", Namespace: "default", PID: 4242, Port: 18080, Runtime: runtimeLlamaServer,
-		SpecHash: specHash, AdmittedBytes: admitted, ModelPath: "/models/phi.gguf",
+		SpecHash: computeSpecHash(isvc), AdmittedBytes: adoptedSeedBytes, ModelPath: "/models/phi.gguf",
 	})
 	if adopted := a.adoptEngines(context.Background()); !adopted["default/phi"] {
 		t.Fatal("engine phi was not adopted")
@@ -109,7 +109,7 @@ func TestAdoptedEngine_ReestimateCountsTowardCumulativeAdmission(t *testing.T) {
 	model := sizedModel("33.0 GiB")
 	phi := cumulativeISVC("phi")
 	a, _, _ := adoptAdmissionAgent(t, model, phi)
-	adoptEngineRecord(t, a, computeSpecHash(phi), adoptedSeedBytes)
+	adoptEngineRecord(t, a, phi)
 
 	if err := a.ensureProcess(context.Background(), phi); err != nil {
 		t.Fatalf("ensureProcess on an adopted engine: %v", err)
@@ -158,7 +158,7 @@ func TestAdoptedEngine_OverBudgetKeepsServingAndIsReported(t *testing.T) {
 	phi := cumulativeISVC("phi")
 	phi.Spec.ContextSize = ptrInt32(131072)
 	a, rec, sent := adoptAdmissionAgent(t, model, phi)
-	adoptEngineRecord(t, a, computeSpecHash(phi), adoptedSeedBytes)
+	adoptEngineRecord(t, a, phi)
 
 	if err := a.ensureProcess(context.Background(), phi); err != nil {
 		t.Fatalf("the re-estimate failed an adopted engine that must keep serving: %v", err)
@@ -200,7 +200,7 @@ func TestAdoptedEngine_OverBudgetKeepsServingAndIsReported(t *testing.T) {
 		clamped.Spec.Hardware = &inferencev1alpha1.HardwareSpec{MemoryBudget: "100Gi"}
 		phi := cumulativeISVC("phi")
 		a, rec, _ := adoptAdmissionAgent(t, clamped, phi)
-		adoptEngineRecord(t, a, computeSpecHash(phi), adoptedSeedBytes)
+		adoptEngineRecord(t, a, phi)
 
 		if err := a.ensureProcess(context.Background(), phi); err != nil {
 			t.Fatalf("the re-estimate failed an adopted engine that must keep serving: %v", err)
@@ -230,7 +230,7 @@ func TestAdoptedEngine_RetriesAfterTheModelAppears(t *testing.T) {
 	model := sizedModel("33.0 GiB")
 	phi := cumulativeISVC("phi")
 	a, rec, _ := adoptAdmissionAgent(t, nil, phi)
-	adoptEngineRecord(t, a, computeSpecHash(phi), adoptedSeedBytes)
+	adoptEngineRecord(t, a, phi)
 
 	if err := a.ensureProcess(context.Background(), phi); err != nil {
 		t.Fatalf("a missing Model failed the reconcile: %v", err)
@@ -257,7 +257,7 @@ func TestAdoptedEngine_FittingReestimateIsNotReported(t *testing.T) {
 	model := sizedModel("33.0 GiB")
 	phi := cumulativeISVC("phi")
 	a, rec, sent := adoptAdmissionAgent(t, model, phi)
-	adoptEngineRecord(t, a, computeSpecHash(phi), adoptedSeedBytes)
+	adoptEngineRecord(t, a, phi)
 
 	if err := a.ensureProcess(context.Background(), phi); err != nil {
 		t.Fatalf("ensureProcess on an adopted engine: %v", err)
@@ -295,7 +295,7 @@ func TestAdoptedEngine_ReestimateMatchesFreshAdmission(t *testing.T) {
 	want := freshAgent.reservedMemory["default/phi"].bytes
 
 	a, _, _ := adoptAdmissionAgent(t, model, phi)
-	adoptEngineRecord(t, a, computeSpecHash(phi), adoptedSeedBytes)
+	adoptEngineRecord(t, a, phi)
 	if err := a.ensureProcess(context.Background(), phi); err != nil {
 		t.Fatalf("ensureProcess on an adopted engine: %v", err)
 	}
@@ -322,7 +322,7 @@ func TestAdoptedEngine_DefaultContextSizeMatchesFreshAdmission(t *testing.T) {
 	want := freshAgent.reservedMemory["default/phi"].bytes
 
 	a, _, _ := adoptAdmissionAgent(t, model, phi)
-	adoptEngineRecord(t, a, computeSpecHash(phi), adoptedSeedBytes)
+	adoptEngineRecord(t, a, phi)
 	if err := a.ensureProcess(context.Background(), phi); err != nil {
 		t.Fatalf("ensureProcess on an adopted engine: %v", err)
 	}
@@ -338,7 +338,7 @@ func TestAdoptedEngine_UnresolvableBudgetStillCharges(t *testing.T) {
 	model.Spec.Hardware = &inferencev1alpha1.HardwareSpec{MemoryBudget: "0"}
 	phi := cumulativeISVC("phi")
 	a, rec, _ := adoptAdmissionAgent(t, model, phi)
-	adoptEngineRecord(t, a, computeSpecHash(phi), adoptedSeedBytes)
+	adoptEngineRecord(t, a, phi)
 
 	if err := a.ensureProcess(context.Background(), phi); err != nil {
 		t.Fatalf("an unresolvable budget failed the reconcile: %v", err)
@@ -366,7 +366,7 @@ func TestAdoptedEngine_UnreadableModelKeepsRecordedCharge(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			phi := cumulativeISVC("phi")
 			a, rec, _ := adoptAdmissionAgent(t, tc.model, phi)
-			adoptEngineRecord(t, a, computeSpecHash(phi), adoptedSeedBytes)
+			adoptEngineRecord(t, a, phi)
 
 			if err := a.ensureProcess(context.Background(), phi); err != nil {
 				t.Fatalf("an unreadable Model failed the reconcile: %v", err)
