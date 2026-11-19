@@ -389,6 +389,69 @@ func TestIssue2579ParityWrittenRequestNotRetried(t *testing.T) {
 	}
 }
 
+// refusedURL reserves a loopback address and releases it, so a dispatch to it
+// is refused at the connection the way a downed pod's is.
+func refusedURL(t *testing.T) string {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("reserve address: %v", err)
+	}
+	addr := ln.Addr().String()
+	if err := ln.Close(); err != nil {
+		t.Fatalf("release address: %v", err)
+	}
+	return "http://" + addr
+}
+
+// TestIssue2579ParityUnretriedErrorMessageUnchanged pins that a backend the
+// retry cannot serve keeps the 502 body it answered before the retry existed:
+// the same string the audit line carries.
+func TestIssue2579ParityUnretriedErrorMessageUnchanged(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		pool bool
+	}{
+		{"non-pooled backend", false},
+		{"pool without an activator", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			b := Backend{Name: "coder", Tier: "local", Address: refusedURL(t)}
+			if tc.pool {
+				b.InferenceService = "coder"
+				b.Pool = issue2579Pool("coder")
+			}
+			cfg := &Config{
+				Backends:     []Backend{b},
+				DefaultRoute: "coder",
+				Policy:       Policy{Classification: ClassificationPolicy{Mode: "header-only"}},
+			}
+			if err := cfg.Validate(); err != nil {
+				t.Fatalf("config: %v", err)
+			}
+			proxy := NewProxy(cfg, slog.Default())
+			mux := http.NewServeMux()
+			proxy.Mount(mux)
+
+			req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", issue2579Body(t))
+			req.Header.Set("Content-Type", "application/json")
+			rec := httptest.NewRecorder()
+			mux.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusBadGateway {
+				t.Fatalf("status = %d, want 502", rec.Code)
+			}
+			body := rec.Body.String()
+			if strings.Contains(body, "request not sent") {
+				t.Fatalf("502 body = %q, want the pre-retry wording without the retry's sentinel", body)
+			}
+			if !strings.Contains(body, "all backends failed: upstream request: ") {
+				t.Fatalf("502 body = %q, want the cause unchanged", body)
+			}
+		})
+	}
+}
+
 // TestIssue2579ParityIfIdleNeverHolds pins that an IfIdle rule keeps its
 // documented contract: a request for a drained member falls through to the warm
 // member and nothing is held or activated.

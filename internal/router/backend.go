@@ -593,6 +593,16 @@ func (d *Dispatcher) markHealthy(name, endpoint string) {
 // sentinel, because those bytes must not be sent twice.
 var ErrRequestNotSent = errors.New("request not sent")
 
+// requestNotSentError carries ErrRequestNotSent without changing the cause's
+// message, which a client's error body and the audit line are built from.
+type requestNotSentError struct{ cause error }
+
+func (e *requestNotSentError) Error() string { return e.cause.Error() }
+
+func (e *requestNotSentError) Unwrap() error { return e.cause }
+
+func (e *requestNotSentError) Is(target error) bool { return target == ErrRequestNotSent }
+
 // Dispatch forwards the request to the named backend and returns the
 // upstream response. Caller is responsible for streaming the body to
 // the inbound client and closing it. On error the response is nil.
@@ -685,7 +695,7 @@ func (d *Dispatcher) Dispatch(
 			// Nothing of the request reached the upstream, so a caller may
 			// dispatch it again. Pre-dispatch errors return before this
 			// point: the upstream was never contacted at all.
-			return nil, fmt.Errorf("%w: %w", ErrRequestNotSent, werr)
+			return nil, &requestNotSentError{cause: werr}
 		}
 		return nil, werr
 	}
