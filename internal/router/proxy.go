@@ -1116,6 +1116,10 @@ func (p *Proxy) attemptBackend(
 		// so hold the request for it rather than failing it through.
 		p.logger.Info("model pool member refused a dispatch before any request byte; holding the request for it again",
 			"router", p.routerName, "namespace", b.Pool.Namespace, "pool", b.Pool.Name, "member", b.Pool.Member)
+		// The refused dial quarantined the backend; clear it so a request
+		// arriving while this one is held reaches the hold too instead of
+		// being skipped as unhealthy.
+		p.disp.clearQuarantine(b.Name)
 		if aerr := hold(); aerr != nil {
 			return nil, aerr, nil, nil
 		}

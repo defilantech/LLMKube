@@ -586,6 +586,15 @@ func (d *Dispatcher) markHealthy(name, endpoint string) {
 	d.clearPollDown(name, endpoint, h, "request")
 }
 
+// clearQuarantine lifts the backend-level quarantine a dispatch set. The proxy
+// uses it on the retry path: the pre-write failure there is a drained member,
+// and the requests that arrive while that retry holds must reach the same hold
+// instead of being skipped as unhealthy. A re-dispatch that fails again
+// re-quarantines the backend through Dispatch.
+func (d *Dispatcher) clearQuarantine(name string) {
+	d.markHealthy(name, "")
+}
+
 // ErrRequestNotSent marks a dispatch that failed before the first byte of the
 // request reached the upstream. The upstream cannot have begun work on a
 // request it never received, so a caller may dispatch the same request again;
