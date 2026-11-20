@@ -562,6 +562,17 @@ var (
 		[]string{"namespace", "pool", "from", "to"},
 	)
 
+	// MultiNodeGuardSuspendsTotal counts the multiNode groups the operator
+	// suspended because a member's memory guard saw MemFree stay under
+	// spec.multiNode.memory.suspendBelowMemFree.
+	MultiNodeGuardSuspendsTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "llmkube_multinode_guard_suspends_total",
+			Help: "Total number of multiNode groups suspended by the memory guard (spec.multiNode.memory.suspendBelowMemFree).",
+		},
+		[]string{"inferenceservice", "namespace"},
+	)
+
 	// ModelPoolSwapDuration measures how long a swap takes from the router's
 	// commit (incumbent drain start) to the target reporting Ready.
 	ModelPoolSwapDuration = prometheus.NewHistogramVec(
@@ -765,6 +776,7 @@ var ControllerCollectors = []prometheus.Collector{
 	ReconcileDuration,
 	ModelPoolResident,
 	ModelPoolReclaimsTotal,
+	MultiNodeGuardSuspendsTotal,
 	WatchCanaryLastObservedTimestamp,
 	WatchCanaryUp,
 	WatchCanaryWritesTotal,

@@ -330,6 +330,227 @@ var _ = Describe("multiNode group reconcile", func() {
 		}
 	})
 
+	It("runs the memory guard beside every member and suspends a formed group once when it trips", func() {
+		recorder := events.NewFakeRecorder(16)
+		reconciler.Recorder = recorder
+
+		var isvc inferencev1alpha1.InferenceService
+		Expect(k8sClient.Get(ctx, key, &isvc)).To(Succeed())
+		isvc.Spec.MultiNode.Memory = &inferencev1alpha1.MultiNodeMemory{FlushBelowMemFree: "4Gi", SuspendBelowMemFree: "1536Mi"}
+		Expect(k8sClient.Update(ctx, &isvc)).To(Succeed())
+		reconcileOnce()
+		pods := memberPods()
+		Expect(pods).To(HaveLen(2))
+		for _, p := range pods {
+			last := p.Spec.InitContainers[len(p.Spec.InitContainers)-1]
+			Expect(last.Name).To(Equal(multiNodeMemoryGuardContainer), "%s: the guard is the last init container", p.Name)
+			Expect(last.RestartPolicy).To(HaveValue(Equal(corev1.ContainerRestartPolicyAlways)))
+		}
+
+		// The group forms with the guards running beside the runtimes. A
+		// running sidecar must not read as staging.
+		guardRunning := func(p *corev1.Pod, last *corev1.ContainerStateTerminated) {
+			ics := make([]corev1.ContainerStatus, 0, len(p.Spec.InitContainers))
+			for _, c := range p.Spec.InitContainers {
+				if c.Name == multiNodeMemoryGuardContainer {
+					cs := corev1.ContainerStatus{Name: c.Name, State: corev1.ContainerState{Running: &corev1.ContainerStateRunning{StartedAt: metav1.Now()}}}
+					if last != nil {
+						cs.RestartCount = 1
+						cs.LastTerminationState.Terminated = last
+					}
+					ics = append(ics, cs)
+					continue
+				}
+				ics = append(ics, corev1.ContainerStatus{Name: c.Name, State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{ExitCode: 0, FinishedAt: metav1.Now()}}})
+			}
+			p.Status.InitContainerStatuses = ics
+		}
+		for _, name := range []string{"mn-ring-mn-0", "mn-ring-mn-1"} {
+			var p corev1.Pod
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: ns}, &p)).To(Succeed())
+			p.Status.Phase = corev1.PodRunning
+			guardRunning(&p, nil)
+			p.Status.ContainerStatuses = []corev1.ContainerStatus{{
+				Name: "vllm", Ready: name == "mn-ring-mn-0",
+				State: corev1.ContainerState{Running: &corev1.ContainerStateRunning{StartedAt: metav1.Now()}},
+			}}
+			if name == "mn-ring-mn-0" {
+				p.Status.Conditions = []corev1.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionTrue}}
+			}
+			Expect(k8sClient.Status().Update(ctx, &p)).To(Succeed())
+		}
+		reconcileOnce()
+		Expect(k8sClient.Get(ctx, key, &isvc)).To(Succeed())
+		formed := meta.FindStatusCondition(isvc.Status.Conditions, ConditionMultiNodeFormed)
+		Expect(formed).NotTo(BeNil())
+		Expect(formed.Status).To(Equal(metav1.ConditionTrue), "running guards must not hold formation")
+		Expect(isvc.Spec.Suspend).To(BeFalse())
+		Expect(memberPods()).To(HaveLen(2))
+
+		// mn-1's guard exits 42 after formation and the kubelet restarts it.
+		var worker corev1.Pod
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "mn-ring-mn-1", Namespace: ns}, &worker)).To(Succeed())
+		guardRunning(&worker, &corev1.ContainerStateTerminated{
+			ExitCode: multiNodeMemoryGuardExitCode, Reason: "Error",
+			FinishedAt: metav1.NewTime(time.Now().Add(2 * time.Second)),
+			Message:    "MemFree 900 MiB stayed under 1536 MiB for 10s after a page cache drop",
+		})
+		Expect(k8sClient.Status().Update(ctx, &worker)).To(Succeed())
+
+		reconcileOnce()
+		Expect(k8sClient.Get(ctx, key, &isvc)).To(Succeed())
+		Expect(isvc.Spec.Suspend).To(BeTrue(), "the guard's exit suspends the group")
+		Expect(recorder.Events).To(Receive(And(
+			ContainSubstring("MultiNodeMemoryGuardSuspended"),
+			ContainSubstring("mn-ring-mn-1"),
+			ContainSubstring("MemFree 900 MiB stayed under 1536 MiB"),
+		)))
+
+		// The next reconcile tears the group down the usual suspend way, and
+		// raises no second suspend event.
+		reconcileOnce()
+		finishTerminating()
+		Eventually(memberPods).Should(BeEmpty())
+		Expect(k8sClient.Get(ctx, key, &isvc)).To(Succeed())
+		Expect(isvc.Status.Phase).To(Equal(PhaseSuspended))
+		Expect(recorder.Events).NotTo(Receive(ContainSubstring("MultiNodeMemoryGuardSuspended")))
+	})
+
+	// A guard exit on rank 0 leaves the head pod not Ready, because a pod is
+	// Ready only when its sidecars are. On a group that has served longer
+	// than the startup budget that reads as HeadNotReady, so the guard has to
+	// be asked first or the group is recreated as a failure and the trip is
+	// lost.
+	It("suspends, not recreates, when the guard trips on rank 0 of a group that has served past the startup budget", func() {
+		recorder := events.NewFakeRecorder(16)
+		reconciler.Recorder = recorder
+
+		var isvc inferencev1alpha1.InferenceService
+		Expect(k8sClient.Get(ctx, key, &isvc)).To(Succeed())
+		isvc.Spec.MultiNode.Memory = &inferencev1alpha1.MultiNodeMemory{SuspendBelowMemFree: "8Gi"}
+		Expect(k8sClient.Update(ctx, &isvc)).To(Succeed())
+		reconcileOnce()
+		Expect(memberPods()).To(HaveLen(2))
+
+		// The runtimes started long ago: the group is well past its budget.
+		longAgo := metav1.NewTime(time.Now().Add(-multiNodeStartupBudget - time.Hour))
+		setStatus := func(name string, ready bool, guard corev1.ContainerStatus) {
+			GinkgoHelper()
+			var p corev1.Pod
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: ns}, &p)).To(Succeed())
+			p.Status.Phase = corev1.PodRunning
+			ics := make([]corev1.ContainerStatus, 0, len(p.Spec.InitContainers))
+			for _, c := range p.Spec.InitContainers {
+				if c.Name == multiNodeMemoryGuardContainer {
+					guard.Name = c.Name
+					ics = append(ics, guard)
+					continue
+				}
+				ics = append(ics, corev1.ContainerStatus{Name: c.Name, State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{ExitCode: 0, FinishedAt: longAgo}}})
+			}
+			p.Status.InitContainerStatuses = ics
+			p.Status.ContainerStatuses = []corev1.ContainerStatus{{
+				Name: "vllm", Ready: ready,
+				State: corev1.ContainerState{Running: &corev1.ContainerStateRunning{StartedAt: longAgo}},
+			}}
+			status := corev1.ConditionFalse
+			if ready {
+				status = corev1.ConditionTrue
+			}
+			p.Status.Conditions = []corev1.PodCondition{{Type: corev1.PodReady, Status: status}}
+			Expect(k8sClient.Status().Update(ctx, &p)).To(Succeed())
+		}
+		running := corev1.ContainerStatus{State: corev1.ContainerState{Running: &corev1.ContainerStateRunning{StartedAt: longAgo}}}
+		setStatus("mn-ring-mn-0", true, running)
+		setStatus("mn-ring-mn-1", true, running)
+		reconcileOnce()
+		Expect(k8sClient.Get(ctx, key, &isvc)).To(Succeed())
+		formed := meta.FindStatusCondition(isvc.Status.Conditions, ConditionMultiNodeFormed)
+		Expect(formed).NotTo(BeNil())
+		Expect(formed.Status).To(Equal(metav1.ConditionTrue))
+
+		// The head's guard exits 42 and is waiting to be restarted: the
+		// sidecar is not ready, so neither is the head pod. The node is
+		// starved, so the runtime has stopped answering its probe as well.
+		setStatus("mn-ring-mn-0", false, corev1.ContainerStatus{
+			RestartCount: 1,
+			State:        corev1.ContainerState{Waiting: &corev1.ContainerStateWaiting{Reason: "CrashLoopBackOff"}},
+			LastTerminationState: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{
+				ExitCode: multiNodeMemoryGuardExitCode, Reason: "Error",
+				FinishedAt: metav1.NewTime(time.Now().Add(2 * time.Second)),
+				Message:    "MemFree 6416 MiB stayed under 8192 MiB for 10s after a page cache drop",
+			}},
+		})
+
+		reconcileOnce()
+		Expect(k8sClient.Get(ctx, key, &isvc)).To(Succeed())
+		Expect(isvc.Spec.Suspend).To(BeTrue(), "a trip on rank 0 suspends the group")
+		Expect(multiNodeRecreates(&isvc)).To(BeNil(), "the trip is not counted as a failed group")
+		Expect(memberPods()).To(HaveLen(2), "the members are deleted by the suspend, not by a recreate")
+		for _, p := range memberPods() {
+			Expect(p.DeletionTimestamp).To(BeNil(), "%s must not be torn down before the suspend is seen", p.Name)
+		}
+		Expect(recorder.Events).To(Receive(And(
+			ContainSubstring("MultiNodeMemoryGuardSuspended"),
+			ContainSubstring("mn-ring-mn-0"),
+			ContainSubstring("MemFree 6416 MiB stayed under 8192 MiB"),
+		)))
+
+		reconcileOnce()
+		finishTerminating()
+		Eventually(memberPods).Should(BeEmpty())
+		Expect(k8sClient.Get(ctx, key, &isvc)).To(Succeed())
+		Expect(isvc.Status.Phase).To(Equal(PhaseSuspended))
+		Expect(multiNodeRecreates(&isvc)).To(BeNil())
+		Expect(meta.FindStatusCondition(isvc.Status.Conditions, ConditionMultiNodeFormed)).To(BeNil(),
+			"the suspend clears formation, so the guard is armed again on the next members")
+		Expect(recorder.Events).NotTo(Receive(ContainSubstring("MultiNodeMemoryGuardSuspended")))
+
+		// Resume: new members, a new formation, and the old exit is gone
+		// with the old pods, so nothing suspends the group again.
+		Expect(k8sClient.Get(ctx, key, &isvc)).To(Succeed())
+		isvc.Spec.Suspend = false
+		Expect(k8sClient.Update(ctx, &isvc)).To(Succeed())
+		reconcileOnce()
+		Expect(memberPods()).To(HaveLen(2), "unsuspending starts the group again")
+		setStatus("mn-ring-mn-0", true, running)
+		setStatus("mn-ring-mn-1", true, running)
+		reconcileOnce()
+		reconcileOnce()
+		Expect(k8sClient.Get(ctx, key, &isvc)).To(Succeed())
+		Expect(isvc.Spec.Suspend).To(BeFalse(), "a resumed group with healthy guards is not suspended again")
+		formed = meta.FindStatusCondition(isvc.Status.Conditions, ConditionMultiNodeFormed)
+		Expect(formed).NotTo(BeNil())
+		Expect(formed.Status).To(Equal(metav1.ConditionTrue))
+		Expect(memberPods()).To(HaveLen(2))
+		Expect(recorder.Events).NotTo(Receive(ContainSubstring("MultiNodeMemoryGuardSuspended")))
+	})
+
+	It("refuses memory guard floors that are not quantities of at least 1Mi at admission", func() {
+		for _, bad := range []string{"0", "512Ki", "-4Gi", "1e", "1.2.3", "four", "0.5Mi"} {
+			for _, field := range []string{"flushBelowMemFree", "suspendBelowMemFree"} {
+				var isvc inferencev1alpha1.InferenceService
+				Expect(k8sClient.Get(ctx, key, &isvc)).To(Succeed())
+				mem := &inferencev1alpha1.MultiNodeMemory{}
+				if field == "flushBelowMemFree" {
+					mem.FlushBelowMemFree = bad
+				} else {
+					mem.SuspendBelowMemFree = bad
+				}
+				isvc.Spec.MultiNode.Memory = mem
+				err := k8sClient.Update(ctx, &isvc)
+				Expect(apierrors.IsInvalid(err)).To(BeTrue(), "%s %q must be rejected, got %v", field, bad, err)
+				Expect(err.Error()).To(ContainSubstring(field))
+			}
+		}
+		for _, good := range []string{"1Mi", "1536Mi", "4Gi", "8Gi", "4096Mi", "8589934592"} {
+			var isvc inferencev1alpha1.InferenceService
+			Expect(k8sClient.Get(ctx, key, &isvc)).To(Succeed())
+			isvc.Spec.MultiNode.Memory = &inferencev1alpha1.MultiNodeMemory{FlushBelowMemFree: good, SuspendBelowMemFree: good}
+			Expect(k8sClient.Update(ctx, &isvc)).To(Succeed(), "%q must be accepted", good)
+		}
+	})
+
 	It("refuses memory sysctls that are not vm.* integers at admission", func() {
 		for _, tc := range []struct {
 			bad  map[string]inferencev1alpha1.MultiNodeSysctlValue

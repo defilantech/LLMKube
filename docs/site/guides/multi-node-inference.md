@@ -141,9 +141,10 @@ boot:
         vm.watermark_scale_factor: "200"
 ```
 
-Either field adds one init container, `multinode-memory-prep`, as the last
-init container of every member pod: it runs after the member's weights are
-staged and right before its runtime starts. It writes the sysctls first, then
+Either field adds one init container, `multinode-memory-prep`, after the
+init containers that stage the weights of every member pod: it runs after the
+member's weights are staged and right before its runtime starts (only the
+guard sidecar of the next section, when set, is placed after it). It writes the sysctls first, then
 syncs and drops the page cache, and prints each value before and after:
 
 ```bash
@@ -174,9 +175,112 @@ What to know before turning it on:
 - **Changing the block recreates the group**, like any other member change.
   Adding it to a serving group is a restart; a group without the block is
   untouched by an operator upgrade.
-- **It covers boot, not serving.** A page cache that regrows under load still
-  needs a serving-phase flusher; `config/samples/gb10-memory-guard.yaml` is
-  the one the three-Spark ring runs.
+- **It covers boot, not serving.** A page cache that regrows under load is
+  what the next section's guard is for.
+
+## Node memory while serving
+
+The page cache can regrow after boot: a runtime that reads rows from weights
+on disk (DeepSeek-V4.1's Engram tables) refills it while it serves. Two more
+fields keep MemFree in check for as long as the member runs:
+
+```yaml
+  multiNode:
+    memory:
+      flushBelowMemFree: 4Gi       # drop the page cache when MemFree falls below this
+      suspendBelowMemFree: 8Gi     # suspend the group once if MemFree stays below this
+```
+
+Either field adds a sidecar, `multinode-memory-guard`, to every member pod:
+a native sidecar (an init container with `restartPolicy: Always`) placed after
+the prep, so it starts once the weights are staged and runs beside the
+runtime. Native sidecars need Kubernetes 1.29 or newer; on an older cluster,
+or with the `SidecarContainers` feature gate off, the guard is an ordinary
+init container that never finishes and the members stay in `Init`. Every
+2 seconds it reads `/proc/meminfo`:
+
+- **Flush.** When MemFree is under `flushBelowMemFree`, more than 512 MiB is
+  page cache, and the last drop was at least 5 seconds ago, it syncs and drops
+  the page cache. Page cache here is `Cached` minus `Shmem`: `Cached` also
+  counts tmpfs and shared memory (a memory-backed `emptyDir`, `/dev/shm`),
+  which a drop cannot free.
+- **Guard.** When MemFree stays under `suspendBelowMemFree` for 10 seconds,
+  it drops once more. If MemFree is still under, it writes the reason to its
+  termination message and exits 42. The operator sees that exit on a group
+  that has formed, sets `spec.suspend: true` on the InferenceService, records a
+  `MultiNodeMemoryGuardSuspended` Warning event with the member, the node and
+  the measured MemFree, and counts it in
+  `llmkube_multinode_guard_suspends_total`. The group is then deleted the usual
+  suspend way. Set `spec.suspend` back to `false` to start it again; the guard
+  is armed again on the new members.
+
+**Set the suspend floor above the kernel's high watermark.** The kernel
+starts reclaiming at its watermarks, not at zero, and a node that is near the
+high watermark with nothing left to reclaim (no page cache, no swap) stalls:
+on a DGX Spark with `vm.min_free_kbytes: "1048576"` and
+`vm.watermark_scale_factor: "200"` the watermarks are about 1, 3.5 and 6 GiB,
+and a node squeezed to 6.4 GiB MemFree stopped answering its kubelet. The
+guard's loop stalls with the node, so a floor at or under the high watermark
+fires late: in that test it took about 3 minutes, not 10 seconds. Read the
+watermarks on a member node (`grep -E 'min|low|high' /proc/zoneinfo`, in
+4 KiB pages) and leave a few GiB above `high`. The floor may be higher than
+`flushBelowMemFree`: the guard drops the page cache itself before it decides,
+so a dip that page cache explains (a model load) does not suspend the group.
+With the floors that way round, that drop is the one you will see in the log:
+whenever MemFree has been under the suspend floor for about 10 seconds the
+guard drops the cache, and `flushBelowMemFree` only adds an immediate drop
+further down.
+
+**The guard is armed during the weight load.** The group counts as formed once
+every member's runtime container is running, which is before the runtime has
+loaded its weights. From then on a guard exit suspends the group, so a load
+that leaves MemFree under the floor even after a drop is suspended, not
+retried. On the three-Spark ring the load dips under an 8 GiB floor three to
+five times per member (about 35 GiB of page cache from reading the weights);
+each time the guard's drop brings MemFree back above 30 GiB and nothing is
+suspended. An exit from before the group formed is ignored.
+
+**With GitOps, a guard suspend can be undone at once.** The guard stops the
+group by writing `spec.suspend: true`. A GitOps tool that self-heals and has
+`suspend: false` (or no `suspend`) for this service in Git writes it straight
+back: the group loads again, can trip again, and none of that counts against
+the recreate bound, because a suspend is not a failure. Either leave
+`spec.suspend` out of what the tool manages for this service (Argo CD
+`ignoreDifferences` on `/spec/suspend`, or drop the field from the manifest
+under Flux's server-side apply), or alert on the
+`MultiNodeMemoryGuardSuspended` event and on
+`llmkube_multinode_guard_suspends_total` so a loop is noticed.
+
+Every drop is one log line with MemFree and Cached before and after:
+
+```bash
+kubectl logs <service>-mn-1 -c multinode-memory-guard
+```
+
+The same rules as the prep apply: the sidecar is privileged and root, uses the
+operator's `--init-container-image` (it needs `sh`, `awk`, `date`, `sleep` and
+`sync`), its drops are node-wide, and changing either field recreates the
+group. Set `flushBelowMemFree` alone for a flusher that never suspends; leave
+a field out to turn that half off (the API server rejects `"0"` and anything
+under `1Mi`). A suspend floor above what the node can ever have free suspends
+the group shortly after every start. Per-member MemFree is not exported by the
+operator; `node_memory_MemFree_bytes` from node-exporter has it.
+
+**A guard restart shows on the pod.** The guard is the one container of a
+member whose restart does not recreate the group, so `RESTARTS` on a member
+can be above 0 with the guard set. While the kubelet restarts it the pod is
+not Ready, because a pod is Ready only when its sidecars are: on rank 0 that
+takes the head out of the Service for those seconds. The head's 30 minute
+deadline is then counted from the guard's exit, not from the runtime's start,
+so one restart does not recreate a group that has served for hours, and a
+guard that never comes back still does.
+
+**Who can exec into a member is root on its node.** The prep is a privileged
+container that runs for seconds. The guard is a privileged root container with
+a shell that runs for as long as the pod does, so `pods/exec` on a member pod
+of a group with the guard is root on that node. Grant `pods/exec` in a
+namespace that runs such groups accordingly; see
+[Multi-tenancy](https://github.com/defilantech/LLMKube/blob/main/docs/operations/multi-tenancy.md#inferenceservice-rights-and-pod-security).
 
 ## Failure semantics
 
@@ -198,8 +302,9 @@ earlier, and reports `AutoscalingReady=False` with reason
 ### Bounded recreates
 
 A recreate replaces every member pod, so the kubelet never gets to put a
-crashing container into `CrashLoopBackOff`, and the member pods always show
-`RESTARTS 0`. The operator keeps the count instead, in
+crashing container into `CrashLoopBackOff`, and the member pods show
+`RESTARTS 0` (the memory guard sidecar aside, see "Node memory while
+serving"). The operator keeps the count instead, in
 `status.multiNode.recreates`, and bounds it:
 
 - A member failure (a runtime restart, a failed pod, an init container loop,

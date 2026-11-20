@@ -33,6 +33,7 @@ The operator's controller manager registers `ControllerCollectors` from [`intern
 | `llmkube_model_status` | gauge | `model`, `namespace`, `phase` | Current phase of models. Value is always 1; use the phase label for filtering. |
 | `llmkube_modelpool_reclaims_total` | counter | `from`, `namespace`, `pool`, `to` | Total number of ModelPool slot reclaims to spec.default after the resident member went idle. |
 | `llmkube_modelpool_resident` | gauge | `member`, `namespace`, `pool` | Which member owns a ModelPool's shared GPU slot (1=resident, 0=not). |
+| `llmkube_multinode_guard_suspends_total` | counter | `inferenceservice`, `namespace` | Total number of multiNode groups suspended by the memory guard (spec.multiNode.memory.suspendBelowMemFree). |
 | `llmkube_reconcile_duration_seconds` | histogram | `controller` | Duration of reconciliation cycles. |
 | `llmkube_reconcile_total` | counter | `controller`, `result` | Total number of reconciliation cycles. |
 | `llmkube_unreconciled_generation_objects` | gauge | `kind` | Objects whose spec change has gone unreconciled for longer than the configured threshold, by kind. |
