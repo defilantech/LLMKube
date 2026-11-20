@@ -43,9 +43,30 @@ the agent cannot size a model at all, it fails closed with
 memory so the kernel cannot page it out. `--memory-check-mode warn` restores
 the old log-and-start behavior.
 
-How the KV cache is sized, the budget table, and the exact refusal rules are
-in [Memory budgets](/docs/guides/macos-metal#memory-budgets) in the macOS
-guide.
+How the KV cache is sized, the budget table, and what `InsufficientMemory`
+covers are in [Memory budgets](/docs/guides/macos-metal#memory-budgets) in the
+macOS guide.
+
+## An engine that is already serving
+
+`InsufficientMemory` also covers an engine that is already running. When the
+agent starts, it adopts the engines a previous agent process left running, and
+after it starts it re-estimates each adopted engine's charge with the current
+estimate. If that charge does not fit, the InferenceService gets the same
+status and one Warning Event for the report, with a message that starts
+`adopted engine is serving over its memory budget:`. Nothing is stopped: the
+engine keeps serving, the re-estimated bytes are charged against the budget so
+a model started later must fit next to them, and the agent re-checks the report
+on the same backoff, clearing `status.schedulingStatus` and
+`status.schedulingMessage` once the charge fits again: after another model is
+stopped and its charge released, or after the Model's
+`spec.hardware.memoryBudget` or `spec.hardware.memoryFraction` is raised high
+enough for the charge to fit, up to this host's limit. With that prefix in
+`status.schedulingMessage`, free memory or raise the budget, unless the message
+says the budget is `clamped to this host's`: the Model's budget already reaches
+the limit then, so raise the limit itself with `--memory-fraction` or
+`--allow-model-memory-budget-override`; without the prefix, the model was
+refused and starts on its own once it fits.
 
 ## While models run: the watchdog
 

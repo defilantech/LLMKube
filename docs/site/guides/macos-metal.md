@@ -793,6 +793,25 @@ produces one Warning Event, not one per re-check. The budget is shared by
 every model on the Mac: a new model must fit in what running models and
 starts in flight have not already taken.
 
+`InsufficientMemory` has a second meaning. When the agent starts, it adopts
+the engines a previous agent process left running; after it starts it
+re-estimates each adopted engine's charge with the current estimate. If that
+charge does not fit, the InferenceService gets the same status and one Warning
+Event for the report, with a message that starts
+`adopted engine is serving over its memory budget:`. Nothing is stopped: the
+engine keeps serving, the re-estimated bytes are charged against the budget so
+a model started later must fit next to them, and the agent re-checks the report
+on the same backoff, clearing `status.schedulingStatus` and
+`status.schedulingMessage` once the charge fits again, after another model is
+stopped and its charge released, or after the Model's
+`spec.hardware.memoryBudget` or `spec.hardware.memoryFraction` is raised high
+enough for the charge to fit, up to this host's limit; a charge that misses
+even that limit needs a higher `--memory-fraction`, or
+`--allow-model-memory-budget-override` to let a Model budget exceed it, on a
+restarted agent. A refused start is not running and starts on its own once
+memory frees; the serving report is a budget mismatch on a service that still
+answers requests, and clears once the charge fits.
+
 The KV-cache term is sized from the model's GGUF attention shape
 (KV head count and key/value length, i.e. grouped-query attention)
 when the file provides it. The charge can be lower or higher than the
@@ -1039,12 +1058,29 @@ stays there, check the agent log for the service's name:
 Local Network access did not carry over to the new binary. See
 [Local Network access](#local-network-access).
 
-**InferenceService stuck in `InsufficientMemory`**
-The agent's pre-flight estimator says the model won't fit. Either
-shrink the model (use a smaller quantization), reduce the context
-size in the `InferenceService` spec, stop another model on the same Mac,
-or raise `--memory-fraction`. On a dedicated inference machine, `0.9` is
-reasonable.
+**InferenceService in `InsufficientMemory`**
+Read `status.schedulingMessage` first. When it starts with
+`adopted engine is serving over its memory budget:`, the engine is running and
+nothing was stopped: it was adopted from a previous agent process and its
+re-estimated charge does not fit the budget. When the message says the budget is
+already committed to other models, the limit it names is the host's memory
+budget, which a Model budget cannot raise unless the agent runs with
+`--allow-model-memory-budget-override`, so free memory instead: stop another
+model on the Mac to release its charge. When it names a budget the engine
+misses on its own and does not say `clamped to this host's`, raise the Model's
+`spec.hardware.memoryBudget` or `spec.hardware.memoryFraction` up to this
+host's limit. A message that says `clamped to this host's` means the Model's
+budget already reaches the limit, so raising it changes nothing: to raise the
+limit itself, start the agent with a higher `--memory-fraction`, or with
+`--allow-model-memory-budget-override` to let a Model budget exceed it.
+The agent clears the status once the charge fits, on its next re-check (at most
+a minute later) or after a restart that re-estimates the charge. Any other
+`InsufficientMemory` message is a refused start:
+the pre-flight estimator says the model won't fit, so shrink the model (use
+a smaller quantization), reduce the context size in the `InferenceService`
+spec, stop another model on the same Mac, or raise `--memory-fraction`. On a
+dedicated inference machine, `0.9` is reasonable. That refusal is re-checked
+on the same backoff, so the service starts once memory frees up.
 
 **InferenceService stuck in `MemoryCheckFailed`**
 The agent could not size the model at all, so it refused to start
