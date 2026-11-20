@@ -80,7 +80,7 @@ func (f *podMetaFixture) reconcile(labels, annotations map[string]string) *appsv
 	f.t.Helper()
 	f.isvc.Spec.PodLabels = labels
 	f.isvc.Spec.PodAnnotations = annotations
-	if _, _, _, _, err := f.r.reconcileDeployment(context.Background(), f.isvc, resolveEffectiveModelCache(f.isvc, f.model), f.model, nil, 1, true, false); err != nil {
+	if _, _, _, _, err := f.r.reconcileDeployment(context.Background(), f.isvc, resolveEffectiveModelCache(f.isvc, f.model), f.model, nil, 1, true, false, f.r.runtimeCachePlan(f.isvc, f.model, resolveEffectiveModelCache(f.isvc, f.model), resolveBackend(f.isvc))); err != nil {
 		f.t.Fatalf("reconcileDeployment: %v", err)
 	}
 	return f.live()

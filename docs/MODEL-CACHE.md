@@ -462,11 +462,14 @@ With the field set:
   replica change other than to zero waits with the template, and a
   `multiNode` group that loses a member is recreated only once the
   prefetch finishes.
-- Once staged, the serving pods only consume the cache: the claim is
-  mounted read-only, there is no `model-cache-prep` or `model-downloader`
-  init container, and a `model-verify` init container checks the files the
-  Job recorded on the entry are present (and hashes a single file against
-  `spec.sha256` when one is pinned). If a file is missing the pod fails with
+- Once staged, the serving pods only consume the cache: the weights are
+  mounted read-only at `/models`, there is no `model-cache-prep` or
+  `model-downloader` init container, and a `model-verify` init container checks
+  the files the Job recorded on the entry are present (and hashes a single file
+  against `spec.sha256` when one is pinned). `spec.modelCache.runtimeCache.enabled`
+  adds a second, writable mount of the same claim at `/runtime-cache` where
+  the runtime cache is applied; the `/models` mount stays read-only. If a file
+  is missing the pod fails with
   `PrefetchedFilesMissing` (surfaced on the `ModelTransferHealthy`
   condition) rather than downloading on the serving node. The prefetch sets
   no Hub-offline variable: set `spec.hubOffline: true` when the runtime
@@ -476,7 +479,11 @@ With the field set:
   in the operator's group (`--default-fsgroup`), whatever the requesting
   service's `podSecurityContext` says, and its prep hands the cache root to
   that group. Because the serving pods mount the claim read-only, the kubelet
-  does not apply their own `fsGroup` to it. So a pod that reads a prefetched
+  does not apply their own `fsGroup` to it, except where the runtime cache is
+  applied: that mounts the claim writable, so the operator sets
+  `fsGroupChangePolicy: OnRootMismatch` instead (see `fsGroupChangePolicy`
+  below). A declined runtime cache leaves the claim read-only and sets no
+  policy. So a pod that reads a prefetched
   cache also runs in the Job's group: unless that group is already the pod's
   `fsGroup`, its `runAsGroup` or one of its `supplementalGroups`, the operator
   adds it to the pod's `supplementalGroups`. That covers a
@@ -942,6 +949,89 @@ Behavior:
   `spec.resources.ephemeralStorage`); both are rejected at admission, as is a
   value that is not a positive Kubernetes quantity.
 
+### Persistent Runtime Compile Caches
+
+After the weights load, a vLLM or SGLang start spends minutes compiling and
+autotuning kernels, and writes the result inside the container, so every new
+pod repeats the work. Set `spec.modelCache.runtimeCache.enabled` to keep those
+caches on the model cache claim:
+
+```yaml
+spec:
+  modelCache:
+    runtimeCache:
+      enabled: true
+```
+
+- Where the runtime cache is applied, the pod mounts
+  `_runtime-cache/<namespace>/<name>` from the cache claim, read-write, at
+  `/runtime-cache`, beside the read-only `/models` mount. The directory is per
+  InferenceService and is never shared, because the caches hold compiled
+  objects the runtime loads. It counts against the claim's size alongside the
+  weights; the operator never deletes it, `llmkube cache clear` leaves it
+  alone, reporting it as not a cache key directory, and `llmkube cache list`
+  does not list it as an entry.
+- The caches are relocated with the runtime's own environment variables.
+  vLLM: `VLLM_CACHE_ROOT` (`/runtime-cache/vllm`), `TRITON_CACHE_DIR`
+  (`/runtime-cache/triton`), `TILELANG_CACHE_DIR` (`/runtime-cache/tilelang`),
+  `TORCHINDUCTOR_CACHE_DIR` (`/runtime-cache/torchinductor`) and
+  `FLASHINFER_WORKSPACE_BASE` (`/runtime-cache/flashinfer`; FlashInfer appends
+  `/.cache/flashinfer`, so its files land in
+  `/runtime-cache/flashinfer/.cache/flashinfer`). SGLang: `SGLANG_CACHE_DIR`
+  (`/runtime-cache`), the parent of every third-party cache SGLang routes.
+- One root init container, `runtime-cache-prep`, creates the per-service
+  directory and each declared cache directory and chowns and chmods those
+  paths only, never recursively. It runs under the same security context as
+  `model-cache-prep` (root, ALL capabilities dropped, `CHOWN` and `FOWNER`
+  added, no privilege escalation, read-only root filesystem), plus a
+  `runAsGroup: 0` of its own so the pod's own group cannot leave it unable to
+  create the directory, which is why `--model-cache-prep=never` declines the
+  feature with a
+  `RuntimeCacheNeedsPrepare` warning event. The prep hands the directory to
+  the operator's `fsGroup`, or with `--default-fsgroup=0` to the downloader's
+  uid with group `0`; a pod whose own `podSecurityContext` sets no `fsGroup`
+  is added to that group through `supplementalGroups`, on the pod only, so the
+  serving container can write the directory. With `--default-fsgroup=0`
+  nothing is added, and the directory is writable only for a serving process
+  that runs with group `0`, the convention `model-cache-prep` uses.
+- Your `spec.env` entry for one of those variables wins. A volume you mount in
+  `spec.extraVolumeMounts` exactly at one of the runtimes' default cache paths
+  (`/root/.cache/vllm`, `/root/.triton/cache`, `/root/.tilelang/cache`,
+  `/tmp/torchinductor_root`, `/root/.cache/flashinfer`, `/root/.cache/sglang`)
+  takes that one cache over and leaves the others relocated; one at
+  `/runtime-cache` itself means the operator adds nothing at all. A mount
+  above one of them, such as an emptyDir at `/tmp` or at `/root/.cache`, does
+  not take that cache over.
+- The field applies to vLLM and SGLang only, and only where the pod mounts a
+  writable cache claim. Everywhere else it raises a `RuntimeCacheUnsupported`
+  warning event: a runtime with no persistent compile cache (llama.cpp and TGI
+  need none), a Metal Model, a pre-staged `pvc://` or `oci://` source,
+  `spec.skipModelInit`, caching disabled on the operator, or `persistence:
+  Ephemeral`. A claim that offers no writable access mode (only `ReadOnlyMany`)
+  is declined with `RuntimeCacheClaimReadOnly`, and a prefetched service whose
+  own `podSecurityContext.fsGroup` differs from the operator's group with
+  `RuntimeCacheFSGroupMismatch`: the prefetch writes the claim in the
+  operator's group, and mounting it writable for the runtime cache would make
+  kubelet re-own every staged file on each pod start. Remove that `fsGroup`,
+  or set it to the operator's group; with `--default-fsgroup=0` there is no
+  operator group to set it to, so any `fsGroup` of the service's own is
+  declined. A Model that is not Ready yet and has no cache key is skipped
+  silently. A Ready Model with no cache key is declined with
+  `RuntimeCacheUnsupported`: its source is one the runtime resolves itself (a
+  bare Hugging Face repo id) or a local one, so the pod mounts no cache claim
+  and the caches stay in the container's writable layer, which dies with the
+  pod. Only a service that sets the field itself is
+  warned: a `Model.spec.modelCache.runtimeCache` block reaches every service
+  that references the Model.
+- `persistence: Ephemeral` cannot carry `enabled: true`: the API server rejects
+  the pair, because an emptyDir leaves no claim to keep a cache on.
+- Two replicas of one service share that one directory. On a node-local
+  locking filesystem such as BlobFuse, locks do not exclude across nodes (the
+  downloader documents the same hazard), so two replicas on different nodes
+  can compile the same kernel at once; the caches write to temporary files and
+  rename them into place, which limits the damage. A `ReadWriteOnce` claim
+  limits the cache to a single node's pods in any case.
+
 ## CLI Commands
 
 ### List Cached Models
@@ -1295,9 +1385,9 @@ securityContext:
 
 With `OnRootMismatch`, kubelet skips the walk when the volume root already has the `fsGroup` GID, group `rwx` and the setgid bit, which is the state the first full pass leaves and, under `modelCache.prep: always`, the `model-cache-prep` step (`chown 0:<fsGroup>`, `chmod g+rwX`) keeps. If anything changes the root's group, the next start does the full walk again. On `fsGroupPolicy: None` backends kubelet changes no ownership at all, so the setting has no effect there.
 
-A user-supplied `spec.podSecurityContext` replaces the operator default entirely, so it does not get this setting. If you supply your own context on a large cache, add `fsGroupChangePolicy: OnRootMismatch` next to your `fsGroup`. When the default fsGroup is disabled (`--default-fsgroup=0`, the OpenShift preset), the operator sets neither field.
+A user-supplied `spec.podSecurityContext` replaces the operator default entirely, so it does not get this setting. If you supply your own context on a large cache, add `fsGroupChangePolicy: OnRootMismatch` next to your `fsGroup`. A pod the runtime cache is applied to is the exception: the claim is mounted writable there, so the operator sets `OnRootMismatch` itself when your context has an `fsGroup` and no policy of its own. A runtime cache that is declined leaves the prefetched claim read-only and sets no policy. When the default fsGroup is disabled (`--default-fsgroup=0`, the OpenShift preset), the operator sets neither field.
 
-One consequence of skipping the walk: kubelet no longer re-grants group write on every file at each start, so files keep the modes their writer gave them. That is fine for the operator's own paths, because every downloader runs as the same init-image user and the serving containers mount the cache read-only. If you switch `--init-container-image` to an image with a different UID on a cache that is already populated, a resumed download into a directory the old UID created can fail with `permission denied`; delete that model's cache directory (or fix its ownership once) and let it download again.
+One consequence of skipping the walk: kubelet no longer re-grants group write on every file at each start, so files keep the modes their writer gave them. That is fine for the operator's own paths, because every downloader runs as the same init-image user and the serving containers mount the cache read-only at `/models`. If you switch `--init-container-image` to an image with a different UID on a cache that is already populated, a resumed download into a directory the old UID created can fail with `permission denied`; delete that model's cache directory (or fix its ownership once) and let it download again.
 
 ### Shared-cache group-write multi-tenancy
 

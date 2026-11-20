@@ -48,7 +48,7 @@ func TestConstructDeployment_StartupTimeout(t *testing.T) {
 				StartupTimeout: timeout,
 			},
 		}
-		dep := r.constructDeploymentForCache(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
+		dep := r.deploymentFor(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
 		if len(dep.Spec.Template.Spec.Containers) == 0 {
 			t.Fatalf("%s: no container in the deployment", runtime)
 		}
@@ -107,7 +107,7 @@ func TestConstructDeployment_StartupTimeout(t *testing.T) {
 				},
 			},
 		}
-		c := r.constructDeploymentForCache(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "").Spec.Template.Spec.Containers[0]
+		c := r.deploymentFor(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "").Spec.Template.Spec.Containers[0]
 		if c.StartupProbe.FailureThreshold != 42 {
 			t.Errorf("failureThreshold = %d, want the override's 42", c.StartupProbe.FailureThreshold)
 		}

@@ -127,7 +127,7 @@ func TestServingPrepUsesReconcilerInitContainerUser(t *testing.T) {
 			r := cachePrepTripwireISvcReconciler()
 			r.DefaultFSGroup = 0
 			r.InitContainerUser = tc.initUser
-			inits := r.constructDeploymentForCache(isvc, cachePrepTripwireModel(), resolveEffectiveModelCache(isvc, cachePrepTripwireModel()), draft, 1, "", "").Spec.Template.Spec.InitContainers
+			inits := r.deploymentFor(isvc, cachePrepTripwireModel(), resolveEffectiveModelCache(isvc, cachePrepTripwireModel()), draft, 1, "", "").Spec.Template.Spec.InitContainers
 			if got := prepCommand(t, inits, "model-cache-prep"); got != tc.want {
 				t.Errorf("target prep = %q, want %q", got, tc.want)
 			}

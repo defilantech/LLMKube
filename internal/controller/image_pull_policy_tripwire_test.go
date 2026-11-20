@@ -70,7 +70,7 @@ func imagePullPolicyTripwireReconciler() *InferenceServiceReconciler {
 
 func TestImagePullPolicyUnsetTemplateUnchanged(t *testing.T) {
 	r := imagePullPolicyTripwireReconciler()
-	dep := r.constructDeploymentForCache(imagePullPolicyTripwireISvc(), imagePullPolicyTripwireModel(), resolveEffectiveModelCache(imagePullPolicyTripwireISvc(), imagePullPolicyTripwireModel()), nil, 1, "", "")
+	dep := r.deploymentFor(imagePullPolicyTripwireISvc(), imagePullPolicyTripwireModel(), resolveEffectiveModelCache(imagePullPolicyTripwireISvc(), imagePullPolicyTripwireModel()), nil, 1, "", "")
 
 	data, err := json.Marshal(dep.Spec.Template)
 	if err != nil {

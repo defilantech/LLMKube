@@ -124,7 +124,7 @@ func TestConstructDeployment_DevShm(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			r := &InferenceServiceReconciler{ModelCachePath: "/models", ModelCacheMode: ModelCacheModePerService}
-			pod := r.constructDeploymentForCache(tc.isvc, model, resolveEffectiveModelCache(tc.isvc, model), nil, 1, "", "").Spec.Template.Spec
+			pod := r.deploymentFor(tc.isvc, model, resolveEffectiveModelCache(tc.isvc, model), nil, 1, "", "").Spec.Template.Spec
 			vol, mount := findDevShm(pod)
 			if !tc.wantShm {
 				if mount != nil {
@@ -155,7 +155,7 @@ func TestConstructDeployment_DevShm(t *testing.T) {
 			s.ExtraVolumeMounts = []corev1.VolumeMount{{Name: "shm", MountPath: "/dev/shm"}}
 		})
 		r := &InferenceServiceReconciler{ModelCachePath: "/models", ModelCacheMode: ModelCacheModePerService}
-		pod := r.constructDeploymentForCache(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "").Spec.Template.Spec
+		pod := r.deploymentFor(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "").Spec.Template.Spec
 		mounts := 0
 		for _, m := range pod.Containers[0].VolumeMounts {
 			if m.MountPath == "/dev/shm" {

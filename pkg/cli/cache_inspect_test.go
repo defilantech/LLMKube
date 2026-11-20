@@ -55,30 +55,40 @@ func TestParseDuOutput(t *testing.T) {
 		},
 		{
 			name:  "malformed lines are skipped",
-			input: "not-a-number\t/models/abc123/\n4096\t/models/valid123/\nbadline\n",
+			input: "not-a-number\t/models/notakey/\n4096\t/models/00112233aabbccdd/\nbadline\n",
 			expected: []PVCCacheEntry{
-				{CacheKey: "valid123", SizeBytes: 4096},
+				{CacheKey: "00112233aabbccdd", SizeBytes: 4096},
 			},
 		},
 		{
 			name:  "trailing slashes stripped",
-			input: "1024\t/models/cachekey123/\n",
+			input: "1024\t/models/c0ffee1234567890/\n",
 			expected: []PVCCacheEntry{
-				{CacheKey: "cachekey123", SizeBytes: 1024},
+				{CacheKey: "c0ffee1234567890", SizeBytes: 1024},
 			},
 		},
 		{
 			name:  "no trailing slash",
-			input: "2048\t/models/cachekey456\n",
+			input: "2048\t/models/c0ffee0987654321\n",
 			expected: []PVCCacheEntry{
-				{CacheKey: "cachekey456", SizeBytes: 2048},
+				{CacheKey: "c0ffee0987654321", SizeBytes: 2048},
 			},
 		},
 		{
 			name:  "single entry no newline",
-			input: "512\t/models/mykey",
+			input: "512\t/models/d00dfeed01234567",
 			expected: []PVCCacheEntry{
-				{CacheKey: "mykey", SizeBytes: 512},
+				{CacheKey: "d00dfeed01234567", SizeBytes: 512},
+			},
+		},
+		{
+			// The operator's own _runtime-cache directory (#2117) is not a
+			// cache of any Model: listing it would report an orphan that no
+			// purge may delete.
+			name:  "directories that are not cache keys are not entries",
+			input: "4096\t/models/00112233aabbccdd/\n8192\t/models/_runtime-cache/\n1024\t/models/user-dir/\n",
+			expected: []PVCCacheEntry{
+				{CacheKey: "00112233aabbccdd", SizeBytes: 4096},
 			},
 		},
 	}
