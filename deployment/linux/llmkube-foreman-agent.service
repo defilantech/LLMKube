@@ -19,7 +19,7 @@
 
 [Unit]
 Description=LLMKube Foreman Agent
-Documentation=https://llmkube.io/docs
+Documentation=https://llmkube.com/docs/foreman
 After=network-online.target
 Wants=network-online.target
 

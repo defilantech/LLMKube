@@ -29,19 +29,19 @@ const StopEnginesCommand = "stop-engines"
 // the binary): the agent's kubeconfig, or defaultKubeconfig when it names
 // none, and its namespace, state directory and Ollama port when it sets them.
 func StopEnginesArgs(agentArgs []string, defaultKubeconfig string) []string {
-	args := []string{StopEnginesCommand, "--kubeconfig", flagValue(agentArgs, "kubeconfig", defaultKubeconfig)}
+	args := []string{StopEnginesCommand, "--kubeconfig", FlagValue(agentArgs, "kubeconfig", defaultKubeconfig)}
 	for _, name := range []string{"namespace", "state-dir", "ollama-port"} {
-		if v := flagValue(agentArgs, name, ""); v != "" {
+		if v := FlagValue(agentArgs, name, ""); v != "" {
 			args = append(args, "--"+name, v)
 		}
 	}
 	return args
 }
 
-// flagValue returns the value args give flag name, read the way the agent's
+// FlagValue returns the value args give flag name, read the way the agent's
 // flag package reads it: -name or --name, then =value or the next argument,
 // the last one winning; def when none does.
-func flagValue(args []string, name, def string) string {
+func FlagValue(args []string, name, def string) string {
 	v := def
 	for i := 0; i < len(args); i++ {
 		a, ok := strings.CutPrefix(args[i], "-")

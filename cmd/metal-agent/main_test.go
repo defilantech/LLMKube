@@ -625,6 +625,19 @@ func TestStopEnginesSubcommandParsesItsFlags(t *testing.T) {
 	}
 }
 
+// TestStopEnginesUsageNamesTheHostsStopCommand: the usage says to stop the
+// agent with the service manager llmkube metal join installed it under.
+func TestStopEnginesUsageNamesTheHostsStopCommand(t *testing.T) {
+	for goos, want := range map[string]string{
+		"darwin": "launchctl bootout gui/$(id -u)/com.llmkube.metal-agent",
+		"linux":  "systemctl --user stop llmkube-metal-agent.service",
+	} {
+		if got := stopEnginesUsage(goos); !strings.Contains(got, "Stop the agent first ("+want+")") {
+			t.Errorf("stop-engines usage on %s = %q, want it to name %q", goos, got, want)
+		}
+	}
+}
+
 // TestStopEnginesParsesWhatLeaveSends: llmkube metal leave builds its
 // stop-engines command line with metaljoin.StopEnginesArgs from the agent's
 // LaunchAgent arguments, and dispatches on its first word. This parser must

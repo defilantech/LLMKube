@@ -41,8 +41,8 @@ var addrInUse = &net.OpError{Op: "listen", Net: "tcp", Err: os.NewSyscallError("
 // deletes its Secret only after minting the agent's token.
 func requireJoinStringUnused(t *testing.T, c client.Client, ns string) {
 	t.Helper()
-	if err := c.Get(context.Background(), types.NamespacedName{Namespace: ns, Name: "llmkube-metal-mac-a-join"},
-		&corev1.Secret{}); err != nil {
+	key := types.NamespacedName{Namespace: ns, Name: "llmkube-metal-" + joinTestNode + "-join"}
+	if err := c.Get(context.Background(), key, &corev1.Secret{}); err != nil {
 		t.Errorf("the join string was used up: get join Secret: %v", err)
 	}
 }

@@ -251,13 +251,8 @@ func newLogger(level string) (*zap.Logger, error) {
 }
 
 // defaultLlamaServerPaths is the list of paths to search for llama-server,
-// in order of preference: Apple Silicon Homebrew, Intel Homebrew or a source
-// install, then a Linux distribution package.
-var defaultLlamaServerPaths = []string{
-	"/opt/homebrew/bin/llama-server",
-	"/usr/local/bin/llama-server",
-	"/usr/bin/llama-server",
-}
+// in order of preference.
+var defaultLlamaServerPaths = metaljoin.LlamaServerPaths
 
 // statFunc is the function used to check file existence (overridden in tests).
 var statFunc = os.Stat
@@ -595,14 +590,10 @@ func checkHostRuntimes(cfg *AgentConfig, goos string) error {
 	if inferencev1alpha1.IsMacOSOnlyRuntime(cfg.Runtime) {
 		refused = append(refused, "--runtime "+cfg.Runtime)
 	}
-	for _, b := range []struct{ flag, runtime, value string }{
-		{"--mlx-server-bin", inferencev1alpha1.RuntimeMLXServer, cfg.MLXServerBin},
-		{"--omlx-bin", inferencev1alpha1.RuntimeOMLX, cfg.OMLXBin},
-		{"--vllm-swift-bin", inferencev1alpha1.RuntimeVLLMSwift, cfg.VLLMSwiftBin},
-		{"--tensorfold-bin", inferencev1alpha1.RuntimeTensorFold, cfg.TensorFoldBin},
-	} {
-		if b.value != "" && b.runtime != cfg.Runtime {
-			refused = append(refused, b.flag+" ("+b.runtime+")")
+	bins := macOSOnlyBinValues(cfg)
+	for _, b := range metaljoin.MacOSOnlyBinFlags {
+		if bins[b.Flag] != "" && b.Runtime != cfg.Runtime {
+			refused = append(refused, "--"+b.Flag+" ("+b.Runtime+")")
 		}
 	}
 	if len(refused) == 0 {
@@ -610,6 +601,17 @@ func checkHostRuntimes(cfg *AgentConfig, goos string) error {
 	}
 	return fmt.Errorf("%s: only on macOS with Apple Silicon; on %s the agent serves --runtime llama-server "+
 		"(llama.cpp) and --runtime ollama", strings.Join(refused, ", "), goos)
+}
+
+// macOSOnlyBinValues is the value cfg holds for each flag in
+// metaljoin.MacOSOnlyBinFlags.
+func macOSOnlyBinValues(cfg *AgentConfig) map[string]string {
+	return map[string]string{
+		"mlx-server-bin": cfg.MLXServerBin,
+		"omlx-bin":       cfg.OMLXBin,
+		"vllm-swift-bin": cfg.VLLMSwiftBin,
+		"tensorfold-bin": cfg.TensorFoldBin,
+	}
 }
 
 // resolveRuntimes refuses runtimes this host cannot serve, then resolves the
