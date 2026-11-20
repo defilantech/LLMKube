@@ -83,13 +83,14 @@ func adoptEngineRecord(t *testing.T, a *MetalAgent, isvc *inferencev1alpha1.Infe
 	}
 }
 
-// refreshedISVC reads default/<name> back from the fake client.
-func refreshedISVC(t *testing.T, a *MetalAgent, name string) *inferencev1alpha1.InferenceService {
+// refreshedISVC reads default/phi, the engine every fixture here adopts, back
+// from the fake client.
+func refreshedISVC(t *testing.T, a *MetalAgent) *inferencev1alpha1.InferenceService {
 	t.Helper()
 	got := &inferencev1alpha1.InferenceService{}
-	key := types.NamespacedName{Namespace: "default", Name: name}
+	key := types.NamespacedName{Namespace: "default", Name: "phi"}
 	if err := a.config.K8sClient.Get(context.Background(), key, got); err != nil {
-		t.Fatalf("get InferenceService %s: %v", name, err)
+		t.Fatalf("get InferenceService phi: %v", err)
 	}
 	return got
 }
@@ -148,7 +149,7 @@ func adoptedReconcileAt(t *testing.T, a *MetalAgent, clk *fakeClock) {
 	if !a.watcher.takeRequeue("default/phi") {
 		t.Fatal("no re-check is due for default/phi")
 	}
-	if err := a.ensureProcess(context.Background(), refreshedISVC(t, a, "phi")); err != nil {
+	if err := a.ensureProcess(context.Background(), refreshedISVC(t, a)); err != nil {
 		t.Fatalf("ensureProcess: %v", err)
 	}
 }
@@ -320,7 +321,7 @@ func TestAdoptedEngine_OverBudgetKeepsServingAndIsReported(t *testing.T) {
 		t.Fatalf("events = %q, want exactly one Warning %s", events, EventReasonInsufficientMemory)
 	}
 
-	if err := a.ensureProcess(context.Background(), refreshedISVC(t, a, "phi")); err != nil {
+	if err := a.ensureProcess(context.Background(), refreshedISVC(t, a)); err != nil {
 		t.Fatalf("second reconcile: %v", err)
 	}
 	if events := drainEvents(rec); len(events) != 0 {
@@ -384,7 +385,7 @@ func TestAdoptedEngine_RetriesAfterTheModelAppears(t *testing.T) {
 	if err := a.config.K8sClient.Create(context.Background(), model); err != nil {
 		t.Fatal(err)
 	}
-	if err := a.ensureProcess(context.Background(), refreshedISVC(t, a, "phi")); err != nil {
+	if err := a.ensureProcess(context.Background(), refreshedISVC(t, a)); err != nil {
 		t.Fatalf("reconcile with the Model present: %v", err)
 	}
 	wantReestimatedCharge(t, a.processes["default/phi"].AdmittedBytes)
@@ -423,7 +424,7 @@ func TestAdoptedEngine_FittingReestimateClearsEarlierReport(t *testing.T) {
 	a, _, _ := adoptAdmissionAgent(t, model, phi)
 	adoptEngineRecord(t, a, phi)
 
-	if err := a.ensureProcess(context.Background(), refreshedISVC(t, a, "phi")); err != nil {
+	if err := a.ensureProcess(context.Background(), refreshedISVC(t, a)); err != nil {
 		t.Fatal(err)
 	}
 	wantReestimatedCharge(t, a.processes["default/phi"].AdmittedBytes)
@@ -444,7 +445,7 @@ func TestAdoptedEngine_FittingReestimateLeavesAnotherStatusAlone(t *testing.T) {
 	a, _, _ := adoptAdmissionAgent(t, model, phi)
 	adoptEngineRecord(t, a, phi)
 
-	if err := a.ensureProcess(context.Background(), refreshedISVC(t, a, "phi")); err != nil {
+	if err := a.ensureProcess(context.Background(), refreshedISVC(t, a)); err != nil {
 		t.Fatal(err)
 	}
 	if status, got := schedulingStatus(t, a, "phi"); status != EventReasonInsufficientMemory || got != msg {
