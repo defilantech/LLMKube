@@ -220,12 +220,12 @@ spec:
       flushBelowMemFree: 4Gi
       suspendBelowMemFree: 8Gi
     members:
-      - node: ahazidgx1
-        fabric: {address: 192.168.1.28, socketInterface: enP7s7, ibHCA: "rocep1s0f0,rocep1s0f1,roceP2p1s0f0,roceP2p1s0f1"}
+      - node: spark-1
+        fabric: {address: 192.168.1.11, socketInterface: enP7s7, ibHCA: "rocep1s0f0,rocep1s0f1,roceP2p1s0f0,roceP2p1s0f1"}
         modelCache: {claimName: dsv41-dgx1}
-      - node: ahazidgx2
-        fabric: {address: 192.168.1.86,  socketInterface: enP7s7, ibHCA: "rocep1s0f0,rocep1s0f1,roceP2p1s0f0,roceP2p1s0f1"}
+      - node: spark-2
+        fabric: {address: 192.168.1.12, socketInterface: enP7s7, ibHCA: "rocep1s0f0,rocep1s0f1,roceP2p1s0f0,roceP2p1s0f1"}
         modelCache: {claimName: dsv41-dgx2}
-      - node: ahazidgx3
-        fabric: {address: 192.168.1.220, socketInterface: enP7s7, ibHCA: "rocep1s0f0,rocep1s0f1,roceP2p1s0f0,roceP2p1s0f1"}
+      - node: spark-3
+        fabric: {address: 192.168.1.13, socketInterface: enP7s7, ibHCA: "rocep1s0f0,rocep1s0f1,roceP2p1s0f0,roceP2p1s0f1"}
         modelCache: {claimName: dsv41-dgx3}

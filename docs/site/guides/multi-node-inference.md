@@ -40,10 +40,10 @@ spec:
     rdmaResource: rdma/rdma_shared_device_a
     ibGIDIndex: 3
     members:
-      - node: ahazidgx3
+      - node: spark-3
         fabric: {address: 10.10.4.1, socketInterface: enp1s0f0np0, ibHCA: rocep1s0f0}
         modelCache: {claimName: dsv4-vision-dgx3}
-      - node: ahazidgx1
+      - node: spark-1
         fabric: {address: 10.10.4.2, socketInterface: enp1s0f1np1, ibHCA: rocep1s0f1}
         modelCache: {claimName: dsv4-vision-dgx1}
 ```
@@ -355,8 +355,8 @@ status:
     size: 2
     readyMembers: 2
     members:
-      - {rank: 0, node: ahazidgx3, pod: dsv4-vision-ring-mn-0, phase: Running, ready: true}
-      - {rank: 1, node: ahazidgx1, pod: dsv4-vision-ring-mn-1, phase: Running}
+      - {rank: 0, node: spark-3, pod: dsv4-vision-ring-mn-0, phase: Running, ready: true}
+      - {rank: 1, node: spark-1, pod: dsv4-vision-ring-mn-1, phase: Running}
   conditions:
     - type: MultiNodeGroupReady
       status: "True"

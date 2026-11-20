@@ -54,8 +54,8 @@ chassis.
 
 ## Hardware
 
-Three of the lab's DGX Sparks, `ahazidgx1` as rank 0, `ahazidgx2` and
-`ahazidgx3` as the workers.
+Three of the lab's DGX Sparks, `spark-1` as rank 0, `spark-2` and
+`spark-3` as the workers.
 
 | Property | Value |
 | --- | --- |
@@ -80,9 +80,9 @@ next, which gives three legs and no switch.
 
 | Plane | Address | Ethernet device | RDMA devices |
 | --- | --- | --- | --- |
-| Bootstrap (rank 0) | `192.168.1.28` | `enP7s7` | (none) |
-| Bootstrap (rank 1) | `192.168.1.86` | `enP7s7` | (none) |
-| Bootstrap (rank 2) | `192.168.1.220` | `enP7s7` | (none) |
+| Bootstrap (rank 0) | `192.168.1.11` | `enP7s7` | (none) |
+| Bootstrap (rank 1) | `192.168.1.12` | `enP7s7` | (none) |
+| Bootstrap (rank 2) | `192.168.1.13` | `enP7s7` | (none) |
 | Data | per-leg `/30`s | (leg NICs) | `rocep1s0f0`, `rocep1s0f1`, `roceP2p1s0f0`, `roceP2p1s0f1` |
 
 Two details about this table are the whole reason the section exists, and both
@@ -191,8 +191,8 @@ spec:
     rdmaResource: rdma/rdma_shared_device_a
     ibGIDIndex: 3
     members:
-      - node: ahazidgx1
-        fabric: {address: 192.168.1.28, socketInterface: enP7s7, ibHCA: "rocep1s0f0,rocep1s0f1,roceP2p1s0f0,roceP2p1s0f1"}
+      - node: spark-1
+        fabric: {address: 192.168.1.11, socketInterface: enP7s7, ibHCA: "rocep1s0f0,rocep1s0f1,roceP2p1s0f0,roceP2p1s0f1"}
         modelCache: {claimName: dsv41-dgx1}
       # rank 1 and rank 2 follow with their own management IP and claim
 ```
@@ -232,9 +232,12 @@ The serving arguments that are load-bearing:
   the pin, vLLM skips profiling entirely and ignores `gpuMemoryUtilization`
   (its own log says so), which removes the safety net: caches must be dropped on
   every member before every boot and kept in check while serving, which is what
-  `config/samples/gb10-memory-guard.yaml` does (a DaemonSet on the ring nodes:
-  pre-boot drop, load-time and serving flushers, and a one-shot suspend at a
-  MemFree floor; it also sets `vm.min_free_kbytes` and `watermark_scale_factor`).
+  the ring sample's `spec.multiNode.memory` does: a pre-boot drop and the two vm
+  sysctls (`vm.min_free_kbytes`, `vm.watermark_scale_factor`) on every member,
+  and a guard sidecar that flushes the cache and suspends the group at a MemFree
+  floor (see [Node memory while serving](../guides/multi-node-inference#node-memory-while-serving)).
+  `config/samples/gb10-memory-guard.yaml` is the older DaemonSet form of the same
+  job, for an operator without the serving guard; run one or the other, never both.
   Do not raise the pin past about 4.2 GiB on three Sparks.
 - `--default-chat-template-kwargs '{"thinking": false}'`. Thinking off, with the
   reasoning parser still wired.
@@ -398,8 +401,7 @@ exits with a message that reads like a memory-sizing problem. Drop the page
 cache on each member before creating the `InferenceService`
 (`config/samples/jobs/drop-page-cache.yaml`). With the KV cache pinned there is
 no profiler left to catch a dirty cache, so the drop is mandatory before every
-boot; `config/samples/gb10-memory-guard.yaml` performs it whenever the group
-enters `Creating`. Note this is the exact opposite of
+boot; the ring sample's `spec.multiNode.memory` does it on every member. Note this is the exact opposite of
 what the one-Spark ExLlamaV3 build needs, which aliases that same page cache;
 do not copy a cleanup step between the two.
 
@@ -429,8 +431,10 @@ build the dict form replaces `text_config` wholesale.
 5. Stage all 54 files to every member, keeping the relative layout identical.
 6. Apply `config/samples/jobs/dsv41-tp3-config.yaml` on each member, then
    `config/samples/jobs/drop-page-cache.yaml`, with swap already off.
-7. Apply `config/samples/gb10-memory-guard.yaml` once; it drops caches on every
-   later boot and keeps MemFree above 4 GiB while serving.
+7. Do not apply `config/samples/gb10-memory-guard.yaml`: the ring sample's
+   `spec.multiNode.memory` drops caches before every boot and runs the memory
+   guard on every member while it serves, and the two together put two guards on
+   every node.
 8. Apply the `Model`, then the `InferenceService`, then `dsv41-keepwarm.yaml`
    (the first request after a long idle otherwise runs in a hidden GB10 slow
    state, about 1.5x slower for its whole length).

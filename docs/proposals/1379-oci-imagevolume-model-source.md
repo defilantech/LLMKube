@@ -89,7 +89,7 @@ was run on the LLMKube homelab:
 ```yaml
 spec:
   nodeSelector:
-    kubernetes.io/hostname: ahazidgx1
+    kubernetes.io/hostname: spark-1
   volumes:
     - name: model
       image:
@@ -106,7 +106,7 @@ spec:
 
 Node and result:
 
-- Node `ahazidgx1`: kubelet `v1.36.2`, `containerd://2.2.3`, `arm64`, Ubuntu 24.04.4 LTS.
+- Node `spark-1`: kubelet `v1.36.2`, `containerd://2.2.3`, `arm64`, Ubuntu 24.04.4 LTS.
 - Mount probe: `ls -l /mnt/model/bin/busybox` returned
   `-rwxr-xr-x 405 root root 1119816 May 18 2023 /mnt/model/bin/busybox`.
 - Read-only probe: `touch /mnt/model/probe-write` returned
