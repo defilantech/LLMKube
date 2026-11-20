@@ -18,8 +18,11 @@
 #     servguard. SUSPEND_ON_FLOOR=0 disarms it. The Role is scoped to that one object by resourceNames.
 # All of this is now available from the operator, as spec.multiNode.memory on the InferenceService: the sysctls and
 # the pre-boot drop (dropPageCacheBeforeBoot, sysctls) and the serving-phase flusher and suspend guard
-# (flushBelowMemFree, suspendBelowMemFree), with no DaemonSet or Role. This sample remains for clusters that run an
-# older operator, and for its load-time drop (Cached > 40 GiB while the ring loads), which the operator does not do.
+# (flushBelowMemFree, suspendBelowMemFree), with no DaemonSet or Role. The operator's guard is armed through the
+# weight load too, and drops the cache on MemFree rather than on Cached. This sample remains for clusters where that
+# guard cannot run: an older operator, or Kubernetes older than 1.29 or with the SidecarContainers feature gate off
+# (the guard is a native sidecar; without one the members stay in Init). Never run it beside flushBelowMemFree or
+# suspendBelowMemFree, which puts two guards on every node.
 # Audit: kubectl logs ds/gb10-memory-guard --all-containers --prefix. Every action is one line with before/after MiB.
 # Usage: kubectl apply -f gb10-memory-guard.yaml   (once; it survives ring restarts)
 apiVersion: v1

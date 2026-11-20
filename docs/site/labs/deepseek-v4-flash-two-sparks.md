@@ -34,7 +34,7 @@ Three findings drove the final configuration, and each is measured below:
 
 ## Hardware
 
-Two of the lab's three DGX Sparks, `ahazidgx3` as rank 0 and `ahazidgx1` as
+Two of the lab's three DGX Sparks, `spark-3` as rank 0 and `spark-1` as
 rank 1.
 
 | Property | Value |
@@ -60,8 +60,8 @@ node to port 1 of the next.
 
 | Leg | Node | Address | Ethernet device | RDMA device |
 | --- | --- | --- | --- | --- |
-| dgx3 to dgx1 | `ahazidgx3` | `10.10.4.1` | `enp1s0f0np0` | `rocep1s0f0` |
-| dgx3 to dgx1 | `ahazidgx1` | `10.10.4.2` | `enp1s0f1np1` | `rocep1s0f1` |
+| spark-3 to spark-1 | `spark-3` | `10.10.4.1` | `enp1s0f0np0` | `rocep1s0f0` |
+| spark-3 to spark-1 | `spark-1` | `10.10.4.2` | `enp1s0f1np1` | `rocep1s0f1` |
 
 Two details that are easy to get wrong:
 
@@ -194,10 +194,10 @@ spec:
     rdmaResource: rdma/rdma_shared_device_a
     ibGIDIndex: 3
     members:
-      - node: ahazidgx3
+      - node: spark-3
         fabric: {address: 10.10.4.1, socketInterface: enp1s0f0np0, ibHCA: rocep1s0f0}
         modelCache: {claimName: dsv4-vision-dgx3}
-      - node: ahazidgx1
+      - node: spark-1
         fabric: {address: 10.10.4.2, socketInterface: enp1s0f1np1, ibHCA: rocep1s0f1}
         modelCache: {claimName: dsv4-vision-dgx1}
 ```

@@ -31,12 +31,12 @@ import (
 )
 
 func TestDetectUnbindableVolume(t *testing.T) {
-	// Verbatim from a pod blocked by defilantech/LLMKube#1509: the microk8s
-	// hostpath provisioner's helper could not schedule onto a GPU-tainted node,
-	// so it never stamped the PV, and the PV was published with a node affinity
-	// matching no node.
+	// From a pod blocked by defilantech/LLMKube#1509, with the node name replaced
+	// by a placeholder: the microk8s hostpath provisioner's helper could not
+	// schedule onto a GPU-tainted node, so it never stamped the PV, and the PV
+	// was published with a node affinity matching no node.
 	const realMessage = `running PreBind plugin "VolumeBinding": binding volumes: ` +
-		`pv "pvc-7d8e47dd-1b2c-4a3e-9f10-2c3d4e5f6a7b" node affinity doesn't match node "ahazidgx2": no matching NodeSelectorTerms`
+		`pv "pvc-7d8e47dd-1b2c-4a3e-9f10-2c3d4e5f6a7b" node affinity doesn't match node "spark-2": no matching NodeSelectorTerms`
 
 	t.Run("detects the PreBind volume affinity failure", func(t *testing.T) {
 		pv, node, ok := detectUnbindableVolume(realMessage)
@@ -46,8 +46,8 @@ func TestDetectUnbindableVolume(t *testing.T) {
 		if pv != "pvc-7d8e47dd-1b2c-4a3e-9f10-2c3d4e5f6a7b" {
 			t.Fatalf("detectUnbindableVolume() pv = %q, want the pvc- name", pv)
 		}
-		if node != "ahazidgx2" {
-			t.Fatalf("detectUnbindableVolume() node = %q, want %q", node, "ahazidgx2")
+		if node != "spark-2" {
+			t.Fatalf("detectUnbindableVolume() node = %q, want %q", node, "spark-2")
 		}
 	})
 
@@ -87,12 +87,12 @@ func TestDetectUnbindableVolume(t *testing.T) {
 }
 
 func TestUnbindableVolumeMessage(t *testing.T) {
-	msg := unbindableVolumeMessage("pvc-123", "ahazidgx2", "spark-cache")
+	msg := unbindableVolumeMessage("pvc-123", "spark-2", "spark-cache")
 
 	// The whole point of the change is that the operator says something the
 	// scheduler's own text does not: that this is a provisioning failure, and
 	// which claim it belongs to. Assert on that, not on exact prose.
-	for _, want := range []string{"pvc-123", "ahazidgx2", "spark-cache"} {
+	for _, want := range []string{"pvc-123", "spark-2", "spark-cache"} {
 		if !strings.Contains(msg, want) {
 			t.Fatalf("unbindableVolumeMessage() = %q, want it to mention %q", msg, want)
 		}
@@ -144,7 +144,7 @@ func TestGetPodSchedulingInfoReportsUnbindableModelCache(t *testing.T) {
 				Status: corev1.ConditionFalse,
 				Reason: "SchedulerError",
 				Message: `running PreBind plugin "VolumeBinding": binding volumes: ` +
-					`pv "pvc-7d8e47dd" node affinity doesn't match node "ahazidgx2": no matching NodeSelectorTerms`,
+					`pv "pvc-7d8e47dd" node affinity doesn't match node "spark-2": no matching NodeSelectorTerms`,
 			}},
 		},
 	}
@@ -218,7 +218,7 @@ func TestDeterminePhaseSurfacesUnbindableModelCache(t *testing.T) {
 				Status: corev1.ConditionFalse,
 				Reason: "SchedulerError",
 				Message: `running PreBind plugin "VolumeBinding": binding volumes: ` +
-					`pv "pvc-7d8e47dd" node affinity doesn't match node "ahazidgx2": no matching NodeSelectorTerms`,
+					`pv "pvc-7d8e47dd" node affinity doesn't match node "spark-2": no matching NodeSelectorTerms`,
 			}},
 		},
 	}
@@ -277,7 +277,7 @@ func TestUnsatisfiableNodeAffinity(t *testing.T) {
 
 	t.Run("a real hostname is satisfiable", func(t *testing.T) {
 		pv := unstampedPV()
-		pv.Spec.NodeAffinity.Required.NodeSelectorTerms[0].MatchExpressions[0].Values = []string{"ahazidgx1"}
+		pv.Spec.NodeAffinity.Required.NodeSelectorTerms[0].MatchExpressions[0].Values = []string{"spark-1"}
 		if unsatisfiableNodeAffinity(pv) {
 			t.Fatalf("unsatisfiableNodeAffinity() = true, want false for a real hostname")
 		}
@@ -336,7 +336,7 @@ func TestGenuinelyPinnedVolumeIsNotReclassified(t *testing.T) {
 		},
 	}
 	pinned := unstampedPV()
-	pinned.Spec.NodeAffinity.Required.NodeSelectorTerms[0].MatchExpressions[0].Values = []string{"ahazidgx2"}
+	pinned.Spec.NodeAffinity.Required.NodeSelectorTerms[0].MatchExpressions[0].Values = []string{"spark-2"}
 
 	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(isvc, pod, unstampedClaim(), pinned).Build()
 	r := &InferenceServiceReconciler{Client: c, Scheme: scheme}

@@ -98,13 +98,13 @@ multiNode:
   rdmaResource: rdma/rdma_shared_device_a
   ibGIDIndex: 3
   members:
-    - node: ahazidgx2
+    - node: spark-2
       fabric:
         address: 10.10.2.1
         socketInterface: enp1s0f0np0
         ibHCA: rocep1s0f0
       modelCache: {claimName: glm53exl3-dgx2}
-    - node: ahazidgx3
+    - node: spark-3
       fabric:
         address: 10.10.2.2
         socketInterface: enp1s0f1np1
