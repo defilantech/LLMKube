@@ -164,9 +164,18 @@ func directoryOrientedRuntime(runtime string) bool {
 // watcher applies), which CEL on the InferenceService cannot see, so this runs
 // in the validating webhook and again at reconcile. A nil Model (not created
 // yet at admission) is undecidable and passes; the reconciler re-checks with
-// the real Model.
+// the real Model. A hailo:// Model is also rejected on any runtime but ollama,
+// whose executor drives hailo-ollama; an empty runtime is left to the agent's
+// --runtime. Such a Model is on the metal path, which the reconciler handles
+// before this check, so only the webhook applies that rule and the agent
+// refuses the rest.
 func validateRuntimePlacement(isvc *inferencev1alpha1.InferenceService, model *inferencev1alpha1.Model) error {
 	runtime := isvc.Spec.Runtime
+	if runtime != "" {
+		if err := inferencev1alpha1.HailoSourceRuntimeError(model, runtime); err != nil {
+			return err
+		}
+	}
 	if !inferencev1alpha1.IsMetalOnlyRuntime(runtime) || model == nil || isMetalModel(model) {
 		return nil
 	}
