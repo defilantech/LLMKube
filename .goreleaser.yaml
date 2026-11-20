@@ -102,55 +102,6 @@ builds:
             - MACHOPLIST=./bin/machoplist
           output: true
 
-  - id: llmkube-foreman-operator
-    main: ./cmd/foreman-operator
-    binary: foreman-operator
-
-    # Linux containers only (the foreman-operator runs in-cluster).
-    goos:
-      - linux
-
-    goarch:
-      - amd64
-      - arm64
-
-    env:
-      - CGO_ENABLED=0
-
-  - id: llmkube-foreman-agent
-    main: ./cmd/foreman-agent
-    binary: foreman-agent
-
-    # Set version information at build time.
-    ldflags:
-      - -s -w
-      - -X main.Version={{.Version}}
-      - -X main.GitCommit={{.FullCommit}}
-      - -X main.BuildDate={{.Date}}
-
-    # linux: the in-cluster foreman-agent Pod (consumed by the docker
-    # images below). darwin: the M5 Max + Mac Studio native agents, shipped
-    # as a release archive so Mac bootstraps and AgentRelease self-update
-    # artifacts can be download-based instead of build-from-source.
-    goos:
-      - linux
-      - darwin
-
-    goarch:
-      - amd64
-      - arm64
-
-    env:
-      - CGO_ENABLED=0
-
-    # Embed the Info.plist and sign (see the llmkube-cli hook above).
-    hooks:
-      post:
-        - cmd: ./hack/macos-sign.sh {{ .Os }} {{ .Path }} {{ .Version }} dev.llmkube.foreman-agent deployment/macos/foreman-agent.Info.plist.tmpl
-          env:
-            - MACHOPLIST=./bin/machoplist
-          output: true
-
   - id: llmkube-router-proxy
     main: ./cmd/router-proxy
     binary: router-proxy
@@ -211,28 +162,6 @@ archives:
       - deployment/macos/*.yaml
       - deployment/macos/sudoers.d/*
 
-  - id: llmkube-foreman-agent
-    ids:
-      - llmkube-foreman-agent
-
-    # Archive name template. Produces darwin (Mac native agents) and linux
-    # (edge nodes) archives; the linux foreman-agent Pod still ships as a
-    # ghcr image via the dockers_v2 section below.
-    name_template: "{{ .ProjectName }}-foreman-agent_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
-
-    # Files to include
-    files:
-      - LICENSE
-      - third_party_licenses/**
-      - README.md
-      # deployment/macos minus the *.Info.plist.tmpl files, which only the
-      # build hook uses (internal/machoplist/release_identity_test.go).
-      - deployment/macos/README.md
-      - deployment/macos/*.plist
-      - deployment/macos/*.yaml
-      - deployment/macos/sudoers.d/*
-      - deployment/linux/*
-
 checksum:
   name_template: "checksums.txt"
   algorithm: sha256
@@ -259,48 +188,6 @@ dockers_v2:
     labels:
       org.opencontainers.image.created: "{{ .Date }}"
       org.opencontainers.image.title: "{{ .ProjectName }}"
-      org.opencontainers.image.revision: "{{ .FullCommit }}"
-      org.opencontainers.image.version: "{{ .Version }}"
-      org.opencontainers.image.source: "{{ .GitURL }}"
-
-  - id: foreman-operator
-    ids:
-      - llmkube-foreman-operator
-    images:
-      - "ghcr.io/defilantech/llmkube-foreman-operator"
-    tags:
-      - "{{ .Version }}"
-    dockerfile: Dockerfile.foreman-operator.goreleaser
-    extra_files:
-      - LICENSE
-      - third_party_licenses
-    platforms:
-      - linux/amd64
-      - linux/arm64
-    labels:
-      org.opencontainers.image.created: "{{ .Date }}"
-      org.opencontainers.image.title: "llmkube-foreman-operator"
-      org.opencontainers.image.revision: "{{ .FullCommit }}"
-      org.opencontainers.image.version: "{{ .Version }}"
-      org.opencontainers.image.source: "{{ .GitURL }}"
-
-  - id: foreman-agent
-    ids:
-      - llmkube-foreman-agent
-    images:
-      - "ghcr.io/defilantech/llmkube-foreman-agent"
-    tags:
-      - "{{ .Version }}"
-    dockerfile: Dockerfile.foreman-agent.goreleaser
-    extra_files:
-      - LICENSE
-      - third_party_licenses
-    platforms:
-      - linux/amd64
-      - linux/arm64
-    labels:
-      org.opencontainers.image.created: "{{ .Date }}"
-      org.opencontainers.image.title: "llmkube-foreman-agent"
       org.opencontainers.image.revision: "{{ .FullCommit }}"
       org.opencontainers.image.version: "{{ .Version }}"
       org.opencontainers.image.source: "{{ .GitURL }}"

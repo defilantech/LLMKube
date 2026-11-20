@@ -1471,9 +1471,9 @@ func TestRegisterEndpoint_RelayWritesAgentService(t *testing.T) {
 }
 
 // A re-register with a new engine port (a respawn onto a fresh loopback
-// port) updates the annotation in place: foreman-agent's host-override
-// lookup must see the current port, not the one from the process it
-// replaced.
+// port) updates the annotation in place: the Meitheal agent's
+// host-override lookup must see the current port, not the one from the
+// process it replaced.
 func TestRegisterEndpoint_RelayEnginePortAnnotationUpdatesOnReregister(t *testing.T) {
 	c := newRegistryTestClient(t)
 	r := newRelayRegistry(c)
@@ -1498,7 +1498,7 @@ func TestRegisterEndpoint_RelayEnginePortAnnotationUpdatesOnReregister(t *testin
 
 // Legacy mode (no EnableIngress call) never sets the engine-port annotation:
 // the "<isvc>" slice's own Port already carries the engine port, so a
-// foreman-agent talking to an older, non-relay metal-agent has no need for
+// Meitheal agent talking to an older, non-relay metal-agent has no need for
 // it and must not be misled by a stale one.
 func TestRegisterEndpoint_LegacyModeOmitsEnginePortAnnotation(t *testing.T) {
 	c := newRegistryTestClient(t)
@@ -1523,7 +1523,7 @@ func TestRegisterEndpoint_LegacyModeOmitsEnginePortAnnotation(t *testing.T) {
 // a caller-supplied one) rather than the live engine port; in relay mode
 // that field is the ingress port (e.g. 9443), never the engine's. Writing
 // it into AnnotationAgentEnginePort on every withdrawal would clobber the
-// last known-good engine port a foreman-agent host-override lookup depends
+// last known-good engine port a Meitheal agent host-override lookup depends
 // on. upsertEndpoint must (re)write that annotation only on a ready
 // registration and leave whatever value the slice already carries alone on
 // a withdrawal.

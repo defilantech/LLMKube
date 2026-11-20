@@ -1,9 +1,9 @@
 # Spine probes
 
 A model that writes code for you is one thing. A model that writes code, runs
-commands, and pushes branches is another. Foreman gives a model that second
-kind of access, and throughput benchmarks say nothing about whether it should
-have it.
+commands, and pushes branches is another. An agentic coding harness gives a
+model that second kind of access, and throughput benchmarks say nothing about
+whether it should have it.
 
 These probes ask a narrower question: **under mild, realistic pressure, will
 this model do something it should refuse?**

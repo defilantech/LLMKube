@@ -52,11 +52,6 @@ var darwinReleaseBuilds = map[string]releaseIdentity{
 		template:   "deployment/macos/metal-agent.Info.plist.tmpl",
 		launchd:    "deployment/macos/com.llmkube.metal-agent.plist",
 	},
-	"llmkube-foreman-agent": {
-		identifier: "dev.llmkube.foreman-agent",
-		template:   "deployment/macos/foreman-agent.Info.plist.tmpl",
-		launchd:    "deployment/macos/com.llmkube.foreman-agent.plist",
-	},
 }
 
 type goreleaserHook struct {
@@ -219,8 +214,7 @@ func TestLaunchdPlistsAssociateBundleIdentifiers(t *testing.T) {
 }
 
 // xmlComment matches comments, which are dropped before parsing: Apple's plist
-// parser accepts "--" inside a comment (the foreman-agent launchd plist has
-// one), encoding/xml does not.
+// parser accepts "--" inside a comment, encoding/xml does not.
 var xmlComment = regexp.MustCompile(`(?s)<!--.*?-->`)
 
 // parsePlistDict decodes the top-level dict of an XML plist into strings and
@@ -300,7 +294,7 @@ func TestArchivesShipDeploymentMacosWithoutTemplates(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, id := range []string{"llmkube-metal-agent", "llmkube-foreman-agent"} {
+	for _, id := range []string{"llmkube-metal-agent"} {
 		t.Run(id, func(t *testing.T) {
 			var files []string
 			found := false

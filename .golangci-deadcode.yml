@@ -2,9 +2,9 @@
 #
 # The main .golangci.yml analyses test files, so a symbol referenced ONLY by
 # its own tests counts as used. That is how eight fully unit-tested rails
-# merged into pkg/foreman/agent without a single production caller: the tests
-# kept `unused` quiet, and every gate passed. This config drops test files
-# from the graph, so a symbol that nothing in production calls is reported.
+# once merged without a single production caller: the tests kept `unused`
+# quiet, and every gate passed. This config drops test files from the graph,
+# so a symbol that nothing in production calls is reported.
 #
 # Run it with `make lint-deadcode`.
 #
@@ -24,16 +24,9 @@ linters:
       # The code exists and does nothing. Delete the entry in the same PR
       # that wires the rail up; that deletion is the proof it is live.
       # Do NOT add entries here. A new file in this list is new dead code.
+      # Empty: its last entries left with the code that moved to
+      # github.com/defilantech/meitheal (#2526).
       # ---------------------------------------------------------------
-      - path: pkg/foreman/agent/mcp_audit\.go # Refs #1331
-        linters: [unused]
-      - path: pkg/foreman/agent/mutation_check\.go # Refs #1555
-        linters: [unused]
-      # Whole file is unreferenced: the proposal-1075 work-class buckets
-      # (classifyFile, classifyFootprint and their tables) landed in #1254
-      # and nothing calls them.
-      - path: pkg/foreman/agent/workclass\.go # Refs #1075
-        linters: [unused]
 
       # ---------------------------------------------------------------
       # REGISTER B: symbols the guard reports that are staged rather than

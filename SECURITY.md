@@ -38,7 +38,6 @@ We take security seriously. If you discover a security vulnerability in LLMKube,
 This security policy applies to:
 - LLMKube controller
 - Metal agent (`llmkube-metal-agent`, macOS)
-- Foreman operator and agents
 - CLI (`llmkube`)
 - Helm charts
 - Container images published to GHCR

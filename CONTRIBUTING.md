@@ -273,8 +273,8 @@ make test
 
 ## AI-Assisted and Agent Contributions
 
-LLMKube is built by people who use AI coding agents heavily: our own Foreman
-harness opens PRs against this project. So we welcome AI-assisted
+LLMKube is built by people who use AI coding agents heavily: the project's
+own agent opens PRs against this project. So we welcome AI-assisted
 contributions. We hold them to one standard, the same one we hold our own
 agent to: human accountability, not where the code came from.
 

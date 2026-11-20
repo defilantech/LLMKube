@@ -101,8 +101,7 @@ type FederationEdgeReconciler struct {
 // NeedLeaderElection makes the edge push leader-election-aware: when the
 // operator runs with --leader-elect=true, only the elected replica pushes,
 // avoiding redundant writes to the datacenter from every replica. A
-// standalone deployment (or leader election disabled) pushes regardless,
-// same as pkg/foreman/audit.Reaper.
+// standalone deployment (or leader election disabled) pushes regardless.
 func (r *FederationEdgeReconciler) NeedLeaderElection() bool { return true }
 
 // +kubebuilder:rbac:groups=inference.llmkube.dev,resources=models,verbs=get;list;watch

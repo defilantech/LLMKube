@@ -540,16 +540,15 @@ jobs:
         run: hack/go-mod-download.sh
 
       - name: Regenerate all codegen
-        run: make generate manifests chart-crds foreman-chart-crds federation-chart-crds
+        run: make generate manifests chart-crds federation-chart-crds
 
       - name: Verify committed codegen is in sync
         run: |
           git diff --exit-code -- \
             'api/**/zz_generated.deepcopy.go' \
             config/crd/bases/ \
-            charts/llmkube/templates/crds/ \
-            charts/foreman/templates/crds/ || \
-            { echo "Committed codegen is stale. Run 'make generate manifests chart-crds foreman-chart-crds' locally and commit the result."; exit 1; }
+            charts/llmkube/templates/crds/ || \
+            { echo "Committed codegen is stale. Run 'make generate manifests chart-crds federation-chart-crds' locally and commit the result."; exit 1; }
 
   rbac-sync-check:
     name: RBAC Sync Check
@@ -848,8 +847,8 @@ jobs:
 
           echo "✅ NOTES.txt validated"
 
-  foreman-chart:
-    name: Foreman Chart Lint + Template
+  chart-unittest:
+    name: Chart Unit Tests
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -859,11 +858,6 @@ jobs:
         uses: azure/setup-helm@2f5e7bc67f1f9972ab16657bb795f36d8f04de0e # v5.1.0
         with:
           version: v3.22.1
-
-      - name: Lint foreman chart
-        run: |
-          helm lint charts/foreman
-          echo "✅ foreman lint passed"
 
       - name: Install helm-unittest
         # Pull the v1.1.1 plugin tarball directly and unpack it into
@@ -902,112 +896,7 @@ jobs:
           echo "✅ helm-unittest installed"
 
       - name: Run chart unit tests
-        # Covers the agents: map multi-fleet (#994) shape plus the legacy
-        # single-agent backward-compat path. Fails CI on any drift in the
-        # expected resource names, suffixes, or per-agent field flow.
         # charts/llmkube/tests had four suites and no runner until #1223.
         run: |
-          helm unittest charts/foreman charts/llmkube
+          helm unittest charts/llmkube
           echo "✅ chart unit tests passed"
-
-      - name: Template foreman with defaults
-        # foreman is a sibling chart to llmkube (no Helm subchart
-        # relationship), so no helm-repo wiring is required to render
-        # it. Anything that would have lived in a subchart belongs to
-        # llmkube's chart and is installed separately.
-        run: |
-          helm template foreman charts/foreman \
-            --namespace foreman-system \
-            > foreman-default.yaml
-
-          for kind in "Deployment" "ClusterRole" "ClusterRoleBinding" "ServiceAccount" "PersistentVolumeClaim" "CustomResourceDefinition"; do
-            if ! grep -q "^kind: ${kind}$" foreman-default.yaml; then
-              echo "❌ foreman default render missing ${kind}"
-              exit 1
-            fi
-          done
-          echo "✅ foreman defaults render every expected kind"
-
-      - name: Template foreman with verifier-node overrides
-        # Smoke-test the canonical "gate node" install: native mode,
-        # worker+verifier roles, a gateCache PVC, and a GitHub token
-        # mounted from a pre-created Secret.
-        run: |
-          helm template foreman charts/foreman \
-            --namespace foreman-system \
-            --set agent.mode=native \
-            --set 'agent.roles={worker,verifier}' \
-            --set agent.githubToken.secretName=foreman-github \
-            > foreman-verifier.yaml
-
-          if ! grep -q -- "--agent-mode=native" foreman-verifier.yaml; then
-            echo "❌ agent mode override did not propagate"
-            exit 1
-          fi
-          if ! grep -q -- "--roles=worker,verifier" foreman-verifier.yaml; then
-            echo "❌ agent roles override did not propagate"
-            exit 1
-          fi
-          if ! grep -q "name: GITHUB_TOKEN" foreman-verifier.yaml; then
-            echo "❌ GitHub token env var missing"
-            exit 1
-          fi
-          echo "✅ verifier-node overrides render correctly"
-
-      - name: Template foreman multi-pool with a --set numeric override
-        # helm unittest cannot catch this class of bug. Its `set:` block
-        # round-trips values through YAML, so every number reaches the
-        # template as a float64. A real `--set k=60` goes through Helm's
-        # strvals parser and arrives as an int64, and agent-deployment.yaml
-        # deep-copies .Values.agent into each pool WITHOUT a YAML round
-        # trip. A template guard that type-checks for float64 alone
-        # therefore passes the whole unit suite and hard-fails the render
-        # for anyone on the agents: map (#1438 review). Only a real
-        # `helm template --set` bites, so run one here.
-        run: |
-          set -euo pipefail
-          helm template foreman charts/foreman \
-            --namespace foreman-system \
-            -f charts/foreman/tests/values-multi.yaml \
-            --set agent.terminationGracePeriodSeconds=45 \
-            --set agent.strategy.type=RollingUpdate \
-            --set agent.strategy.rollingUpdate.maxSurge=1 \
-            > foreman-multi-set.yaml
-
-          if ! grep -q "terminationGracePeriodSeconds: 45" foreman-multi-set.yaml; then
-            echo "❌ --set grace period did not survive the multi-pool merge"
-            exit 1
-          fi
-          if ! grep -q "maxSurge: 1$" foreman-multi-set.yaml; then
-            echo "❌ --set maxSurge did not survive the multi-pool merge"
-            exit 1
-          fi
-          echo "✅ --set numeric overrides survive the multi-pool merge"
-
-      - name: Cache kubeconform schemas
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: .cache/kubeconform
-          key: kubeconform-schemas-v1
-
-      - name: Validate Kubernetes Manifests
-        # See the Template Validation job above: cache fetched schemas and
-        # retry with backoff so a transient raw.githubusercontent.com rate
-        # limit does not hard-fail a render whose templates are valid.
-        run: |
-          mkdir -p "$GITHUB_WORKSPACE/.cache/kubeconform"
-          n=0
-          until [ "$n" -ge 3 ]; do
-            docker run --rm \
-              -v "$GITHUB_WORKSPACE:/github/workspace" \
-              ghcr.io/yannh/kubeconform:v0.7.0 \
-              -summary -output json \
-              -ignore-missing-schemas -skip CustomResourceDefinition \
-              -cache /github/workspace/.cache/kubeconform \
-              /github/workspace/foreman-default.yaml && exit 0
-            n=$((n + 1))
-            echo "::warning::kubeconform schema fetch failed (attempt ${n}/3); backing off"
-            sleep $((n * 20))
-          done
-          echo "::error::kubeconform failed after 3 attempts (schema download)"
-          exit 1

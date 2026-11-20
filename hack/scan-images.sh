@@ -14,12 +14,10 @@ trap 'rm -rf "$SCAN_ROOT"' EXIT
 # id | image | dockerfile | binary | main
 ALL=(
   "controller|ghcr.io/defilantech/llmkube-controller|Dockerfile.goreleaser|manager|./cmd/main.go"
-  "foreman-operator|ghcr.io/defilantech/llmkube-foreman-operator|Dockerfile.foreman-operator.goreleaser|foreman-operator|./cmd/foreman-operator"
-  "foreman-agent|ghcr.io/defilantech/llmkube-foreman-agent|Dockerfile.foreman-agent.goreleaser|foreman-agent|./cmd/foreman-agent"
   "router-proxy|ghcr.io/defilantech/llmkube-router-proxy|Dockerfile.router-proxy.goreleaser|router-proxy|./cmd/router-proxy"
 )
 
-want="${IMAGES:-controller foreman-operator foreman-agent router-proxy}"
+want="${IMAGES:-controller router-proxy}"
 
 # The release Dockerfiles COPY the license files that dockers_v2 stages into
 # the build context (#2564); assemble the same context here.

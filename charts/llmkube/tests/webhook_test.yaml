@@ -17,7 +17,7 @@ templates:
 
 tests:
   # Default ON: the chart self-generates a stable serving cert, so the webhook
-  # is wired by default (matches foreman). webhook.yaml renders four documents:
+  # is wired by default. webhook.yaml renders four documents:
   # cert Secret, webhook Service, and the validating + mutating configurations.
   # cert-manager resources are NOT rendered in this mode.
   - it: should render Secret + Service + both webhook configurations by default

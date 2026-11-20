@@ -12,7 +12,7 @@ This document is the design reference for building and maintaining LLMKube's own
 
 ## 1. Problem and motivation
 
-Today LLMKube builds **zero inference runtime images.** `goreleaser` builds only the project's Go images (`llmkube-controller`, `llmkube-foreman-operator`, `llmkube-foreman-agent`, `llmkube-router-proxy` under `ghcr.io/defilantech/*`). The actual serving runtime is inherited wholesale from upstream floating tags:
+Today LLMKube builds **zero inference runtime images.** `goreleaser` builds only the project's Go images (`llmkube-controller`, `llmkube-router-proxy`, and at the time the agentic pipeline's operator and agent, under `ghcr.io/defilantech/*`). The actual serving runtime is inherited wholesale from upstream floating tags:
 
 - `internal/controller/runtime_llamacpp.go` defaults to `ghcr.io/ggml-org/llama.cpp:server`.
 - CLI/benchmark paths reference `:server-cuda13`, `:server-intel`, `:server-rocm`.

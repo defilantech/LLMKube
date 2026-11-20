@@ -158,7 +158,7 @@ func TestRenderCRDsGroupOrder(t *testing.T) {
 	root := writeCRDs(t, map[string]string{
 		"a.yaml": fixture("aaa.example.com", "Zeta"),
 		"b.yaml": fixture("federation.llmkube.dev", "Fed"),
-		"c.yaml": fixture("foreman.llmkube.dev", "Job"),
+		"c.yaml": fixture("zzz.example.com", "Job"),
 		"d.yaml": fixture("inference.llmkube.dev", "Beta"),
 		"e.yaml": fixture("inference.llmkube.dev", "Alpha"),
 	})
@@ -168,7 +168,7 @@ func TestRenderCRDsGroupOrder(t *testing.T) {
 	}
 	order := []string{
 		"## inference.llmkube.dev", "### Alpha", "### Beta",
-		"## foreman.llmkube.dev", "## federation.llmkube.dev", "## aaa.example.com",
+		"## federation.llmkube.dev", "## aaa.example.com", "## zzz.example.com",
 	}
 	last := -1
 	for _, h := range order {

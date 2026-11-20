@@ -88,7 +88,7 @@ func makefileVar(t *testing.T, makefile, name string) (string, bool) {
 	return strings.TrimSpace(m[1]), true
 }
 
-// TestArchivesShipThirdPartyLicenses pins the generator and the three archive
+// TestArchivesShipThirdPartyLicenses pins the generator and the two archive
 // file lists: a release must carry every linked module's license and NOTICE
 // next to its own LICENSE.
 func TestArchivesShipThirdPartyLicenses(t *testing.T) {
@@ -106,7 +106,7 @@ func TestArchivesShipThirdPartyLicenses(t *testing.T) {
 	for _, a := range cfg.Archives {
 		files[a.ID] = a.Files
 	}
-	for _, id := range []string{"llmkube-cli", "llmkube-metal-agent", "llmkube-foreman-agent"} {
+	for _, id := range []string{"llmkube-cli", "llmkube-metal-agent"} {
 		if !slices.Contains(files[id], "third_party_licenses/**") {
 			t.Errorf("archive %s does not ship third_party_licenses/** (files: %v)", id, files[id])
 		}

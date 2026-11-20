@@ -3,10 +3,9 @@
 # kubebuilder markers of the operator that chart ships (#379, the RBAC analogue
 # of the #367 CRD sync guard).
 #
-# Each operator's ClusterRole is hand-maintained in its own chart:
+# The operator's ClusterRole is hand-maintained in its chart:
 #
-#   internal/controller/**          -> charts/llmkube  (inference operator)
-#   internal/foreman/controller/**  -> charts/foreman   (foreman operator)
+#   internal/controller/**  -> charts/llmkube  (inference operator)
 #
 # A marker that lands in the source but not in that operator's chart silently
 # breaks the in-cluster binary: controller-runtime's cache cannot list the type,
@@ -15,14 +14,15 @@
 #
 # WHY THIS READS MARKERS FROM SOURCE RATHER THAN config/rbac/role.yaml
 #
-# role.yaml is generated with paths="./...", so it is the UNION of both
-# operators' markers with no record of which operator needs which rule. An
-# earlier version of this check compared role.yaml against the union of BOTH
-# charts, which made the two operators cover for each other: charts/foreman
-# grants batch/jobs and pods/log to the foreman AGENT ServiceAccount for
-# run_gate_job, and that satisfied the inference operator's identically-shaped
-# markers. The check reported "covers all 264 rules" while the llmkube
-# controller-manager had neither grant and #1593 was live in a release.
+# role.yaml is generated with paths="./...", so it is the UNION of every
+# marker in the module with no record of which operator needs which rule. This
+# repo used to ship a second operator and chart, and an earlier version of this
+# check compared role.yaml against the union of BOTH charts, which made the
+# two operators cover for each other: the other chart granted batch/jobs and
+# pods/log to its agent ServiceAccount, and that satisfied the inference
+# operator's identically-shaped markers. The check reported "covers all 264
+# rules" while the llmkube controller-manager had neither grant and #1593 was
+# live in a release.
 #
 # Attributing each marker to the tree it came from is what closes that hole.
 # Extra chart rules are fine: each chart must be a SUPERSET of its operator's
@@ -46,12 +46,10 @@ render() {
 # render can exceed the OS env+argv limit (E2BIG) once a chart emits base64
 # cert blobs.
 LLMKUBE_YAML="$(mktemp)"
-FOREMAN_YAML="$(mktemp)"
-trap 'rm -f "$LLMKUBE_YAML" "$FOREMAN_YAML"' EXIT
+trap 'rm -f "$LLMKUBE_YAML"' EXIT
 render "$REPO_ROOT/charts/llmkube" > "$LLMKUBE_YAML"
-render "$REPO_ROOT/charts/foreman" > "$FOREMAN_YAML"
 
-REPO_ROOT="$REPO_ROOT" LLMKUBE_YAML="$LLMKUBE_YAML" FOREMAN_YAML="$FOREMAN_YAML" python3 - <<'PY'
+REPO_ROOT="$REPO_ROOT" LLMKUBE_YAML="$LLMKUBE_YAML" python3 - <<'PY'
 import os, re, sys, yaml
 from pathlib import Path
 
@@ -65,13 +63,6 @@ OPERATORS = [
         "yaml": os.environ["LLMKUBE_YAML"],
         "fix": "charts/llmkube/templates/clusterrole.yaml",
     },
-    {
-        "label": "foreman operator",
-        "src": "internal/foreman/controller",
-        "chart": "charts/foreman",
-        "yaml": os.environ["FOREMAN_YAML"],
-        "fix": "charts/foreman/templates/operator-rbac.yaml",
-    },
 ]
 
 MARKER = re.compile(r'^\s*//\s*\+kubebuilder:rbac:(.+?)\s*$')
@@ -80,9 +71,9 @@ MARKER = re.compile(r'^\s*//\s*\+kubebuilder:rbac:(.+?)\s*$')
 def marker_triples(src_dir):
     """(group, resource, verb) required by the operator rooted at src_dir.
 
-    Only comment-form markers in non-test files. _test.go is excluded because
-    pkg/foreman/agent/rbac_gate_test.go carries real marker syntax as fixture
-    data for the gate that lints markers, and those are not grants anyone needs.
+    Only comment-form markers in non-test files. _test.go is excluded because a
+    test may carry real marker syntax as fixture data, and those are not grants
+    anyone needs.
     """
     out = set()
     for path in sorted((REPO / src_dir).rglob("*.go")):
@@ -166,8 +157,6 @@ for op in OPERATORS:
 
 if failed:
     print("Each chart must be a superset of ITS OWN operator's markers.")
-    print("A grant in the other chart does not count: it belongs to a")
-    print("different ServiceAccount and will not be bound to this operator.")
     sys.exit(1)
 
 print("✅ Each chart covers its own operator's markers (%d rules across %d operators)."

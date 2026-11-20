@@ -267,7 +267,7 @@ Use this as a structured starting point. **Always click through to the upstream 
 
 GPU-only. Choose when:
 
-- Your workload re-sends a large shared prefix every turn (foreman tool loops,
+- Your workload re-sends a large shared prefix every turn (agentic tool loops,
   multi-turn chat with a stable system prompt + tool definitions). SGLang's
   RadixAttention (on by default) serves the shared prefix from a
   tree-structured cache rather than reprocessing it.
@@ -280,7 +280,7 @@ picked automatically by the controller when `model.spec.hardware.gpu.vendor`
 is `amd`.
 
 Defaults to the OpenAI-compatible `/v1` surface, so downstream tooling
-(litellm, the foreman agents) needs no change.
+(litellm, coding agents) needs no change.
 
 **Observability and autoscaling:** the controller emits
 `--enable-metrics` automatically, and the SGLang container port is named
