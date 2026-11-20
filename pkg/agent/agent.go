@@ -532,6 +532,16 @@ type ManagedProcess struct {
 	// its identity before signalling its group.
 	Adopted bool
 
+	// AdmissionReestimated marks an adopted engine whose charge has been
+	// re-estimated from its InferenceService and Model; always false for a
+	// process this agent started (#2535).
+	AdmissionReestimated bool
+
+	// adoptedCharge is the estimate and budget an adopted engine's charge was
+	// re-estimated with, so a report that charge produced can be re-checked
+	// without I/O when other services' charges change (#2535).
+	adoptedCharge *adoptedCharge
+
 	// healthFailures counts this process's consecutive failed health probes.
 	// Guarded by MetalAgent.mu; a replacement process starts again at zero.
 	healthFailures int
@@ -1439,6 +1449,11 @@ func (a *MetalAgent) reconcileProcess(ctx context.Context, isvc *inferencev1alph
 		// running untracked, with its weights still wired (#2077).
 		a.logger.Debugw("inference service already has a process with matching spec",
 			"key", key, "healthy", existing.Healthy)
+		// Charge an adopted engine what admission would charge today, then
+		// clear the report once that charge fits again (#2535).
+		if !a.reestimateAdoptedCharge(ctx, isvc, key, existing) {
+			a.recheckAdoptedChargeReport(ctx, isvc, key, existing)
+		}
 		return nil
 	}
 
@@ -1518,10 +1533,7 @@ func (a *MetalAgent) reconcileProcess(ctx context.Context, isvc *inferencev1alph
 	}
 
 	// Get context size from InferenceService spec, default to 2048
-	contextSize := defaultContextSize
-	if isvc.Spec.ContextSize != nil && *isvc.Spec.ContextSize > 0 {
-		contextSize = int(*isvc.Spec.ContextSize)
-	}
+	contextSize := admissionContextSize(isvc)
 
 	// Resolve KV cache types now (custom > standard) so the memory check and
 	// the executor config see the same values; otherwise the pre-flight check
@@ -2420,6 +2432,11 @@ func (a *MetalAgent) checkMemoryAdmission(
 	contextSize int,
 	cacheTypeK, cacheTypeV string,
 ) error {
+	// An admission must not fit against an adopted engine's recorded charge,
+	// which the current estimate may no longer hold: re-estimate the pending
+	// adopted engines whatever order the watcher delivers them in (#2535). One
+	// whose spec changed is left to the reconcile that replaces it.
+	a.reestimatePendingAdoptedCharges(ctx)
 	estimate, err := a.estimateModelMemory(ctx, model, contextSize, cacheTypeK, cacheTypeV,
 		derefInt32(isvc.Spec.ParallelSlots))
 	if err != nil {
@@ -2432,120 +2449,34 @@ func (a *MetalAgent) checkMemoryAdmission(
 	// admitted model shares it, and a Model budget may not exceed it. An
 	// engine outside the agent's cgroup is measured against the host-wide
 	// budget, every other engine against the cgroup's.
-	hostWide := runsOutsideAgentCgroup(a.resolveRuntime(isvc))
-	provider := a.memoryProvider
-	if hostWide {
-		provider, _ = hostWideProvider(provider)
-	}
-	agentTotal, hostTotal, totalErr := a.memoryTotals()
-	if totalErr != nil {
-		return a.failMemoryCheck(ctx, isvc,
-			fmt.Sprintf("memory budget check failed: failed to get total memory: %v", totalErr))
-	}
-	total := agentTotal
-	if hostWide {
-		total = hostTotal
-	}
-	serviceBudget := uint64(float64(total) * a.memoryFraction)
-	hostBudget := uint64(float64(hostTotal) * a.memoryFraction)
-	memoryBudgetBytes.Set(float64(hostBudget))
-
-	resolved, resolveErr := ResolveMemoryBudget(model.Spec.Hardware, a.memoryFraction)
-	if resolveErr != nil {
-		return a.failMemoryCheck(ctx, isvc, fmt.Sprintf("memory budget resolution failed: %v", resolveErr))
+	b, err := a.resolveAdmissionBudget(ctx, isvc, model, estimate, admissionBudgetOptions{publishHostBudget: true})
+	if err != nil {
+		return a.failMemoryCheck(ctx, isvc, err.Error())
 	}
 	a.logger.Infow("resolved memory budget",
-		"mode", resolved.Mode, "source", resolved.Source)
+		"mode", b.resolved.Mode, "source", b.resolved.Source)
 
-	var budget *MemoryBudget
-	switch resolved.Mode {
-	case BudgetModeAbsolute:
-		budget = CheckMemoryBudgetAbsolute(resolved.Bytes, estimate)
-	default: // BudgetModeFraction
-		var budgetErr error
-		budget, budgetErr = CheckMemoryBudget(provider, estimate, resolved.Fraction)
-		if budgetErr != nil {
-			return a.failMemoryCheck(ctx, isvc, fmt.Sprintf("memory budget check failed: %v", budgetErr))
-		}
-	}
-
-	// A Model's memoryBudget or memoryFraction may lower this host's limit for
-	// itself but not raise it, unless the agent allows overrides (#2080).
-	clamped := false
-	if budget.BudgetBytes > serviceBudget && !a.config.AllowModelMemoryBudgetOverride {
-		a.emitInferenceEvent(ctx, &ManagedProcess{Namespace: isvc.Namespace, Name: isvc.Name},
-			corev1.EventTypeWarning, EventReasonMemoryBudgetClamped,
-			"Model %s budget %s (%s) exceeds this host's budget %s (%s total * %.0f%%); clamped to it. "+
-				"Start the metal-agent with --allow-model-memory-budget-override to allow it",
-			model.Name, formatMemory(budget.BudgetBytes), resolved.Source,
-			formatMemory(serviceBudget), formatMemory(total), a.memoryFraction*100,
-		)
-		budget = CheckMemoryBudgetAbsolute(serviceBudget, estimate)
-		clamped = true
-	}
-
-	if !budget.Fits {
-		var msg string
-		switch {
-		case clamped:
-			msg = fmt.Sprintf("estimated %s required, budget %s (the Model's budget, clamped to this host's: %s total * %.0f%%)",
-				formatMemory(budget.EstimateBytes),
-				formatMemory(budget.BudgetBytes),
-				formatMemory(total),
-				a.memoryFraction*100,
-			)
-		case resolved.Mode == BudgetModeAbsolute:
-			msg = fmt.Sprintf("estimated %s required, budget %s (absolute from CRD)",
-				formatMemory(budget.EstimateBytes),
-				formatMemory(budget.BudgetBytes),
-			)
-		default:
-			msg = fmt.Sprintf("estimated %s required, budget %s (%s total * %.0f%%)",
-				formatMemory(budget.EstimateBytes),
-				formatMemory(budget.BudgetBytes),
-				formatMemory(budget.TotalBytes),
-				resolved.Fraction*100,
-			)
-		}
-		return a.refuseInsufficientMemory(ctx, isvc, msg+kvNotCountedNote(estimate, contextSize), "source", resolved.Source)
-	}
-
-	// The model fits on its own; it must also fit next to every running and
-	// starting process. The check and the reservation share one critical
-	// section, so two services starting at once cannot both claim the same
-	// free budget. A respawn is checked against everything but its own key:
-	// its previous engine is already stopped. An override-raised Model budget
-	// raises the shared limit for this admission too. Every service counts
-	// against the host-wide budget; a service in the agent's cgroup must also
-	// fit next to the other in-cgroup services under the cgroup's budget.
+	// The fit and the reservation share one critical section, so two services
+	// starting at once cannot both claim the same free budget.
 	key := types.NamespacedName{Namespace: isvc.Namespace, Name: isvc.Name}.String()
 	a.mu.Lock()
-	committed, holders := a.committedMemoryLocked(key, false)
-	if msg, ok := memoryRefusal(estimate.TotalBytes, committed, max(hostBudget, budget.BudgetBytes), holders); !ok {
+	fit := a.fitAdmissionLocked(key, b, estimate)
+	if !fit.fits {
 		a.mu.Unlock()
-		return a.refuseInsufficientMemory(ctx, isvc, msg+kvNotCountedNote(estimate, contextSize),
-			"committed", formatMemory(committed))
+		return a.refuseInsufficientMemory(ctx, isvc, fit.message+kvNotCountedNote(estimate, contextSize),
+			fit.logKV...)
 	}
-	if !hostWide {
-		inCgroup, inCgroupHolders := a.committedMemoryLocked(key, true)
-		capacity := max(serviceBudget, budget.BudgetBytes)
-		if msg, ok := memoryRefusal(estimate.TotalBytes, inCgroup, capacity, inCgroupHolders); !ok {
-			a.mu.Unlock()
-			return a.refuseInsufficientMemory(ctx, isvc, msg+kvNotCountedNote(estimate, contextSize),
-				"committed", formatMemory(inCgroup))
-		}
-	}
-	a.reservedMemory[key] = memoryReservation{bytes: estimate.TotalBytes, hostWide: hostWide}
+	a.reservedMemory[key] = memoryReservation{bytes: estimate.TotalBytes, hostWide: b.hostWide}
 	a.updateCommittedMetricLocked()
 	a.mu.Unlock()
 
 	a.logger.Infow("memory check passed",
-		"estimate", formatMemory(budget.EstimateBytes),
+		"estimate", formatMemory(b.budget.EstimateBytes),
 		"kvCache", kvCacheLogValue(estimate),
-		"budget", formatMemory(budget.BudgetBytes),
-		"headroom", formatMemory(budget.HeadroomBytes),
-		"committed", formatMemory(committed),
-		"source", resolved.Source,
+		"budget", formatMemory(b.budget.BudgetBytes),
+		"headroom", formatMemory(b.budget.HeadroomBytes),
+		"committed", formatMemory(fit.committed),
+		"source", b.resolved.Source,
 	)
 
 	// Clear any stale scheduling status from a previous failed check.
