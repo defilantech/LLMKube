@@ -1,0 +1,20 @@
+mkdir -p /home/runner/work/LLMKube/LLMKube/bin
+Downloading sigs.k8s.io/controller-tools/cmd/controller-gen@v0.23.0
+{"Time":"2026-11-03T03:24:23.98941721Z","Action":"start","Package":"github.com/defilantech/llmkube/internal/controller"}
+{"Time":"2026-11-03T03:25:15.024627329Z","Action":"run","Package":"github.com/defilantech/llmkube/internal/controller","Test":"TestMetalNodeLeaseEventReachesItsMetalNode"}
+{"Time":"2026-11-03T03:25:15.024632108Z","Action":"output","Package":"github.com/defilantech/llmkube/internal/controller","Test":"TestMetalNodeLeaseEventReachesItsMetalNode","Output":"=== RUN   TestMetalNodeLeaseEventReachesItsMetalNode\n","OutputType":"frame"}
+{"Time":"2026-11-03T03:25:15.476756687Z","Action":"output","Package":"github.com/defilantech/llmkube/internal/controller","Test":"TestMetalNodeLeaseEventReachesItsMetalNode","Output":"--- PASS: TestMetalNodeLeaseEventReachesItsMetalNode (0.45s)\n","OutputType":"frame"}
+{"Time":"2026-11-03T03:25:15.47804201Z","Action":"pass","Package":"github.com/defilantech/llmkube/internal/controller","Test":"TestMetalNodeLeaseEventReachesItsMetalNode","Elapsed":0.45}
+{"Time":"2026-11-03T03:25:29.519299519Z","Action":"start","Package":"github.com/defilantech/llmkube/pkg/agent/policy"}
+{"Time":"2026-11-03T03:25:29.572954451Z","Action":"output","Package":"github.com/defilantech/llmkube/pkg/agent/policy","Output":"PASS\n","OutputType":"frame"}
+{"Time":"2026-11-03T03:25:29.573427966Z","Action":"output","Package":"github.com/defilantech/llmkube/pkg/agent/policy","Output":"coverage: 96.4% of statements\n"}
+{"Time":"2026-11-03T03:25:29.575300447Z","Action":"output","Package":"github.com/defilantech/llmkube/pkg/agent/policy","Output":"ok  \tgithub.com/defilantech/llmkube/pkg/agent/policy\t0.056s\tcoverage: 96.4% of statements\n"}
+{"Time":"2026-11-03T03:25:29.600102022Z","Action":"pass","Package":"github.com/defilantech/llmkube/pkg/agent/policy","Elapsed":0.081}
+{"Time":"2026-11-03T03:31:42.288062894Z","Action":"run","Package":"github.com/defilantech/llmkube/internal/controller","Test":"TestGenuinelyPinnedVolumeIsNotReclassified"}
+{"Time":"2026-11-03T03:31:42.28806608Z","Action":"output","Package":"github.com/defilantech/llmkube/internal/controller","Test":"TestGenuinelyPinnedVolumeIsNotReclassified","Output":"=== RUN   TestGenuinelyPinnedVolumeIsNotReclassified\n","OutputType":"frame"}
+{"Time":"2026-11-03T03:31:42.289642952Z","Action":"output","Package":"github.com/defilantech/llmkube/internal/controller","Test":"TestGenuinelyPinnedVolumeIsNotReclassified","Output":"--- PASS: TestGenuinelyPinnedVolumeIsNotReclassified (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-11-03T03:31:42.289655956Z","Action":"pass","Package":"github.com/defilantech/llmkube/internal/controller","Test":"TestGenuinelyPinnedVolumeIsNotReclassified","Elapsed":0}
+{"Time":"2026-11-03T03:31:42.289659994Z","Action":"output","Package":"github.com/defilantech/llmkube/internal/controller","Output":"PASS\n","OutputType":"frame"}
+{"Time":"2026-11-03T03:31:42.302365918Z","Action":"output","Package":"github.com/defilantech/llmkube/internal/controller","Output":"coverage: 90.7% of statements\n"}
+{"Time":"2026-11-03T03:31:45.817162034Z","Action":"output","Package":"github.com/defilantech/llmkube/internal/controller","Output":"ok  \tgithub.com/defilantech/llmkube/internal/controller\t441.827s\tcoverage: 90.7% of statements\n"}
+{"Time":"2026-11-03T03:31:46.065818718Z","Action":"pass","Package":"github.com/defilantech/llmkube/internal/controller","Elapsed":442.076}

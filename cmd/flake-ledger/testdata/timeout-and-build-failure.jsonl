@@ -1,0 +1,48 @@
+{"ImportPath":"github.com/defilantech/llmkube/internal/broken [github.com/defilantech/llmkube/internal/broken.test]","Action":"build-output","Output":"# github.com/defilantech/llmkube/internal/broken [github.com/defilantech/llmkube/internal/broken.test]\n"}
+{"ImportPath":"github.com/defilantech/llmkube/internal/broken [github.com/defilantech/llmkube/internal/broken.test]","Action":"build-output","Output":"b/b_test.go:3:28: undefined: undefinedThing\n"}
+{"ImportPath":"github.com/defilantech/llmkube/internal/broken [github.com/defilantech/llmkube/internal/broken.test]","Action":"build-fail"}
+{"Time":"2026-11-03T00:44:10.852741-08:00","Action":"start","Package":"github.com/defilantech/llmkube/internal/slow"}
+{"Time":"2026-11-03T00:44:10.852861-08:00","Action":"start","Package":"github.com/defilantech/llmkube/internal/broken"}
+{"Time":"2026-11-03T00:44:10.852889-08:00","Action":"output","Package":"github.com/defilantech/llmkube/internal/broken","Output":"FAIL\tgithub.com/defilantech/llmkube/internal/broken [build failed]\n","OutputType":"frame"}
+{"Time":"2026-11-03T00:44:10.852905-08:00","Action":"fail","Package":"github.com/defilantech/llmkube/internal/broken","Elapsed":0,"FailedBuild":"github.com/defilantech/llmkube/internal/broken [github.com/defilantech/llmkube/internal/broken.test]"}
+{"Time":"2026-11-03T00:44:10.985257-08:00","Action":"run","Package":"github.com/defilantech/llmkube/internal/slow","Test":"TestQuick"}
+{"Time":"2026-11-03T00:44:10.985322-08:00","Action":"output","Package":"github.com/defilantech/llmkube/internal/slow","Test":"TestQuick","Output":"=== RUN   TestQuick\n","OutputType":"frame"}
+{"Time":"2026-11-03T00:44:10.985359-08:00","Action":"output","Package":"github.com/defilantech/llmkube/internal/slow","Test":"TestQuick","Output":"--- PASS: TestQuick (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-11-03T00:44:10.985365-08:00","Action":"pass","Package":"github.com/defilantech/llmkube/internal/slow","Test":"TestQuick","Elapsed":0}
+{"Time":"2026-11-03T00:44:10.98537-08:00","Action":"run","Package":"github.com/defilantech/llmkube/internal/slow","Test":"TestHang"}
+{"Time":"2026-11-03T00:44:10.985373-08:00","Action":"output","Package":"github.com/defilantech/llmkube/internal/slow","Test":"TestHang","Output":"=== RUN   TestHang\n","OutputType":"frame"}
+{"Time":"2026-11-03T00:44:11.989675-08:00","Action":"output","Package":"github.com/defilantech/llmkube/internal/slow","Test":"TestHang","Output":"panic: test timed out after 1s\n"}
+{"Time":"2026-11-03T00:44:11.989718-08:00","Action":"output","Package":"github.com/defilantech/llmkube/internal/slow","Test":"TestHang","Output":"\trunning tests:\n"}
+{"Time":"2026-11-03T00:44:11.989724-08:00","Action":"output","Package":"github.com/defilantech/llmkube/internal/slow","Test":"TestHang","Output":"\t\tTestHang (1s)\n"}
+{"Time":"2026-11-03T00:44:11.989728-08:00","Action":"output","Package":"github.com/defilantech/llmkube/internal/slow","Test":"TestHang","Output":"\n"}
+{"Time":"2026-11-03T00:44:11.989733-08:00","Action":"output","Package":"github.com/defilantech/llmkube/internal/slow","Test":"TestHang","Output":"goroutine 6 [running]:\n"}
+{"Time":"2026-11-03T00:44:11.989737-08:00","Action":"output","Package":"github.com/defilantech/llmkube/internal/slow","Test":"TestHang","Output":"testing.(*M).startAlarm.func1()\n"}
+{"Time":"2026-11-03T00:44:11.989754-08:00","Action":"output","Package":"github.com/defilantech/llmkube/internal/slow","Test":"TestHang","Output":"\t/opt/hostedtoolcache/go/1.27.1/x64/src/testing/testing.go:2959 +0x2c4\n"}
+{"Time":"2026-11-03T00:44:11.989765-08:00","Action":"output","Package":"github.com/defilantech/llmkube/internal/slow","Test":"TestHang","Output":"created by time.goFunc\n"}
+{"Time":"2026-11-03T00:44:11.989769-08:00","Action":"output","Package":"github.com/defilantech/llmkube/internal/slow","Test":"TestHang","Output":"\t/opt/hostedtoolcache/go/1.27.1/x64/src/time/sleep.go:182 +0x38\n"}
+{"Time":"2026-11-03T00:44:11.989779-08:00","Action":"output","Package":"github.com/defilantech/llmkube/internal/slow","Test":"TestHang","Output":"\n"}
+{"Time":"2026-11-03T00:44:11.989792-08:00","Action":"output","Package":"github.com/defilantech/llmkube/internal/slow","Test":"TestHang","Output":"goroutine 1 [chan receive]:\n"}
+{"Time":"2026-11-03T00:44:11.989795-08:00","Action":"output","Package":"github.com/defilantech/llmkube/internal/slow","Test":"TestHang","Output":"testing.(*T).Run(0x737381fec008, {0x1044b5557?, 0x73738201aa88?}, 0x10461f3e8)\n"}
+{"Time":"2026-11-03T00:44:11.989799-08:00","Action":"output","Package":"github.com/defilantech/llmkube/internal/slow","Test":"TestHang","Output":"\t/opt/hostedtoolcache/go/1.27.1/x64/src/testing/testing.go:2266 +0x3cc\n"}
+{"Time":"2026-11-03T00:44:11.989802-08:00","Action":"output","Package":"github.com/defilantech/llmkube/internal/slow","Test":"TestHang","Output":"testing.runTests.func1(0x737381fec008)\n"}
+{"Time":"2026-11-03T00:44:11.989806-08:00","Action":"output","Package":"github.com/defilantech/llmkube/internal/slow","Test":"TestHang","Output":"\t/opt/hostedtoolcache/go/1.27.1/x64/src/testing/testing.go:2742 +0x38\n"}
+{"Time":"2026-11-03T00:44:11.989809-08:00","Action":"output","Package":"github.com/defilantech/llmkube/internal/slow","Test":"TestHang","Output":"testing.tRunner(0x737381fec008, 0x73738201abb8)\n"}
+{"Time":"2026-11-03T00:44:11.989812-08:00","Action":"output","Package":"github.com/defilantech/llmkube/internal/slow","Test":"TestHang","Output":"\t/opt/hostedtoolcache/go/1.27.1/x64/src/testing/testing.go:2193 +0xc4\n"}
+{"Time":"2026-11-03T00:44:11.989815-08:00","Action":"output","Package":"github.com/defilantech/llmkube/internal/slow","Test":"TestHang","Output":"testing.runTests({0x1044b4a92, 0x2}, {0x1044b4a92, 0x2}, 0x737381f28180, {0x10463a670, 0x2, 0x2}, {0x73738201ac58?, 0x737381fc0180?, ...})\n"}
+{"Time":"2026-11-03T00:44:11.989837-08:00","Action":"output","Package":"github.com/defilantech/llmkube/internal/slow","Test":"TestHang","Output":"\t/opt/hostedtoolcache/go/1.27.1/x64/src/testing/testing.go:2740 +0x400\n"}
+{"Time":"2026-11-03T00:44:11.989839-08:00","Action":"output","Package":"github.com/defilantech/llmkube/internal/slow","Test":"TestHang","Output":"testing.(*M).Run(0x737381fbc280)\n"}
+{"Time":"2026-11-03T00:44:11.989842-08:00","Action":"output","Package":"github.com/defilantech/llmkube/internal/slow","Test":"TestHang","Output":"\t/opt/hostedtoolcache/go/1.27.1/x64/src/testing/testing.go:2600 +0x578\n"}
+{"Time":"2026-11-03T00:44:11.989844-08:00","Action":"output","Package":"github.com/defilantech/llmkube/internal/slow","Test":"TestHang","Output":"main.main()\n"}
+{"Time":"2026-11-03T00:44:11.989846-08:00","Action":"output","Package":"github.com/defilantech/llmkube/internal/slow","Test":"TestHang","Output":"\t_testmain.go:48 +0x80\n"}
+{"Time":"2026-11-03T00:44:11.989848-08:00","Action":"output","Package":"github.com/defilantech/llmkube/internal/slow","Test":"TestHang","Output":"\n"}
+{"Time":"2026-11-03T00:44:11.98985-08:00","Action":"output","Package":"github.com/defilantech/llmkube/internal/slow","Test":"TestHang","Output":"goroutine 5 [sleep]:\n"}
+{"Time":"2026-11-03T00:44:11.989864-08:00","Action":"output","Package":"github.com/defilantech/llmkube/internal/slow","Test":"TestHang","Output":"time.Sleep(0x12a05f200)\n"}
+{"Time":"2026-11-03T00:44:11.989867-08:00","Action":"output","Package":"github.com/defilantech/llmkube/internal/slow","Test":"TestHang","Output":"\t/opt/hostedtoolcache/go/1.27.1/x64/src/runtime/time.go:368 +0x150\n"}
+{"Time":"2026-11-03T00:44:11.989869-08:00","Action":"output","Package":"github.com/defilantech/llmkube/internal/slow","Test":"TestHang","Output":"slow.TestHang(0x737381fec488?)\n"}
+{"Time":"2026-11-03T00:44:11.989871-08:00","Action":"output","Package":"github.com/defilantech/llmkube/internal/slow","Test":"TestHang","Output":"\t/home/runner/work/LLMKube/LLMKube/internal/slow/a_test.go:4 +0x28\n"}
+{"Time":"2026-11-03T00:44:11.989878-08:00","Action":"output","Package":"github.com/defilantech/llmkube/internal/slow","Test":"TestHang","Output":"testing.tRunner(0x737381fec488, 0x10461f3e8)\n"}
+{"Time":"2026-11-03T00:44:11.989884-08:00","Action":"output","Package":"github.com/defilantech/llmkube/internal/slow","Test":"TestHang","Output":"\t/opt/hostedtoolcache/go/1.27.1/x64/src/testing/testing.go:2193 +0xc4\n"}
+{"Time":"2026-11-03T00:44:11.989887-08:00","Action":"output","Package":"github.com/defilantech/llmkube/internal/slow","Test":"TestHang","Output":"created by testing.(*T).Run in goroutine 1\n"}
+{"Time":"2026-11-03T00:44:11.989889-08:00","Action":"output","Package":"github.com/defilantech/llmkube/internal/slow","Test":"TestHang","Output":"\t/opt/hostedtoolcache/go/1.27.1/x64/src/testing/testing.go:2258 +0x3b8\n"}
+{"Time":"2026-11-03T00:44:11.990282-08:00","Action":"output","Package":"github.com/defilantech/llmkube/internal/slow","Output":"FAIL\tgithub.com/defilantech/llmkube/internal/slow\t1.137s\n","OutputType":"frame"}
+{"Time":"2026-11-03T00:44:11.990298-08:00","Action":"fail","Package":"github.com/defilantech/llmkube/internal/slow","Elapsed":1.138}

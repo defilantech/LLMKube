@@ -1,0 +1,52 @@
+﻿2026-10-25T17:33:35.2644360Z Current runner version: '2.338.0'
+2026-10-25T17:33:35.2671717Z ##[group]Runner Image Provisioner
+2026-10-25T17:33:35.2672589Z Hosted Compute Agent
+2026-10-25T17:36:49.0011946Z Running Suite: e2e suite - /home/runner/work/LLMKube/LLMKube/test/e2e
+2026-10-25T17:43:50.7537976Z   running: "kubectl delete pod e2e-curl-1792950222653666382 -n e2e-modelrouter-cluster --ignore-not-found --wait=false"
+2026-10-25T17:43:50.8570059Z   [38;5;9m[FAILED][0m in [It] - /home/runner/work/LLMKube/LLMKube/test/e2e/e2e_test.go:2766 [38;5;243m@ 10/25/26 17:43:50.856[0m
+2026-10-25T17:44:13.4878935Z [38;5;9m• [FAILED] [40.454 seconds][0m
+2026-10-25T17:44:13.4880475Z [0mManager [38;5;243mModelRouter Cluster [38;5;9m[1m[It] should recover from quarantine once the window expires (half-open probe)[0m
+2026-10-25T17:44:13.4882041Z [38;5;243m/home/runner/work/LLMKube/LLMKube/test/e2e/e2e_test.go:1331[0m
+2026-10-25T17:44:13.4882619Z 
+2026-10-25T17:44:13.4883343Z   [38;5;9m[FAILED] curl dispatch failed: curl: (28) Resolving timed out after 5000 milliseconds
+2026-10-25T17:44:13.4884335Z   cat: can't open '/tmp/body': No such file or directory
+2026-10-25T17:44:13.4884773Z 
+2026-10-25T17:44:13.4884952Z   HTTP_STATUS=000
+2026-10-25T17:44:13.4885454Z 
+2026-10-25T17:44:13.4885645Z   Unexpected error:
+2026-10-25T17:44:13.4886170Z       <*errors.errorString | 0xc3d6eafc2d0>: 
+2026-10-25T17:44:13.4887354Z       curl pod e2e-curl-1792950222653666382 got no HTTP response (HTTP_STATUS 000, a failed dial); logs:
+2026-10-25T17:44:13.4888953Z       curl: (28) Resolving timed out after 5000 milliseconds
+2026-10-25T17:44:13.4889689Z       cat: can't open '/tmp/body': No such file or directory
+2026-10-25T17:44:13.4890271Z       
+2026-10-25T17:44:13.4890706Z       HTTP_STATUS=000
+2026-10-25T17:44:13.4891112Z       
+2026-10-25T17:44:13.4891441Z       {
+2026-10-25T17:44:13.4894210Z           s: "curl pod e2e-curl-1792950222653666382 got no HTTP response (HTTP_STATUS 000, a failed dial); logs:\ncurl: (28) Resolving timed out after 5000 milliseconds\ncat: can't open '/tmp/body': No such file or directory\n\nHTTP_STATUS=000\n",
+2026-10-25T17:44:13.4896239Z       }
+2026-10-25T17:44:13.4896688Z   occurred[0m
+2026-10-25T17:44:13.4898031Z   [38;5;9mIn [1m[It][0m[38;5;9m at: [1m/home/runner/work/LLMKube/LLMKube/test/e2e/e2e_test.go:2766[0m [38;5;243m@ 10/25/26 17:43:50.856[0m
+2026-10-25T17:44:13.4899295Z [38;5;243m------------------------------[0m
+2026-10-25T17:44:13.4899944Z [38;5;14mS [SKIPPED] [0.000 seconds][0m
+2026-10-25T17:44:13.4901274Z [0mManager [38;5;243mModelRouter Cluster [38;5;14m[1m[It] should default external provider URL for first-party providers[0m
+2026-10-25T17:44:13.4902941Z [38;5;243m/home/runner/work/LLMKube/LLMKube/test/e2e/e2e_test.go:1366[0m
+2026-10-25T17:44:13.4903520Z 
+2026-10-25T17:44:13.4904254Z   [38;5;14m[SKIPPED] Spec skipped because an earlier spec in an ordered container failed[0m
+2026-10-25T17:44:13.4906730Z   [38;5;14mIn [1m[It][0m[38;5;14m at: [1m/home/runner/work/LLMKube/LLMKube/test/e2e/e2e_test.go:1366[0m [38;5;243m@ 10/25/26 17:44:13.487[0m
+2026-10-25T17:44:13.4908213Z [38;5;243m------------------------------[0m
+2026-10-25T17:44:13.4908827Z [38;5;14mS [SKIPPED] [0.000 seconds][0m
+2026-10-25T17:44:33.1709875Z [38;5;243m------------------------------[0m
+2026-10-25T17:44:33.1710266Z 
+2026-10-25T17:44:33.1710593Z [38;5;9m[1mSummarizing 1 Failure:[0m
+2026-10-25T17:44:33.1712145Z   [38;5;9m[FAIL][0m [0mManager [38;5;243mModelRouter Cluster [38;5;9m[1m[It] should recover from quarantine once the window expires (half-open probe)[0m
+2026-10-25T17:44:33.1713062Z   [38;5;243m/home/runner/work/LLMKube/LLMKube/test/e2e/e2e_test.go:2766[0m
+2026-10-25T17:44:33.1713375Z 
+2026-10-25T17:44:33.1713579Z [38;5;9m[1mRan 30 of 62 Specs in 464.170 seconds[0m
+2026-10-25T17:44:33.1714277Z [38;5;9m[1mFAIL![0m -- [38;5;10m[1m29 Passed[0m | [38;5;9m[1m1 Failed[0m | [38;5;11m[1m0 Pending[0m | [38;5;14m[1m32 Skipped[0m
+2026-10-25T17:44:33.1714813Z --- FAIL: TestE2E (464.17s)
+2026-10-25T17:44:33.1715365Z FAIL
+2026-10-25T17:44:33.1727958Z FAIL	github.com/defilantech/llmkube/test/e2e	464.178s
+2026-10-25T17:44:33.1759685Z FAIL
+2026-10-25T17:44:33.2493598Z make: *** [Makefile:244: test-e2e] Error 1
+2026-10-25T17:44:33.2514274Z ##[error]Process completed with exit code 2.
+2026-10-25T17:44:33.2671328Z Post job cleanup.

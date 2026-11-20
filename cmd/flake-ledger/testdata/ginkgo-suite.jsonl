@@ -1,0 +1,33 @@
+{"Time":"2026-11-03T00:42:59.475783-08:00","Action":"start","Package":"github.com/defilantech/llmkube/internal/demo"}
+{"Time":"2026-11-03T00:42:59.679748-08:00","Action":"run","Package":"github.com/defilantech/llmkube/internal/demo","Test":"TestDemo"}
+{"Time":"2026-11-03T00:42:59.6798-08:00","Action":"output","Package":"github.com/defilantech/llmkube/internal/demo","Test":"TestDemo","Output":"=== RUN   TestDemo\n","OutputType":"frame"}
+{"Time":"2026-11-03T00:42:59.68033-08:00","Action":"output","Package":"github.com/defilantech/llmkube/internal/demo","Test":"TestDemo","Output":"Running Suite: Demo Suite - /home/runner/work/LLMKube/LLMKube/internal/demo\n"}
+{"Time":"2026-11-03T00:42:59.680363-08:00","Action":"output","Package":"github.com/defilantech/llmkube/internal/demo","Test":"TestDemo","Output":"==========================================================================================================================================================\n"}
+{"Time":"2026-11-03T00:42:59.680372-08:00","Action":"output","Package":"github.com/defilantech/llmkube/internal/demo","Test":"TestDemo","Output":"Random Seed: [1m1793695379[0m\n"}
+{"Time":"2026-11-03T00:42:59.680379-08:00","Action":"output","Package":"github.com/defilantech/llmkube/internal/demo","Test":"TestDemo","Output":"\n"}
+{"Time":"2026-11-03T00:42:59.680388-08:00","Action":"output","Package":"github.com/defilantech/llmkube/internal/demo","Test":"TestDemo","Output":"Will run [1m2[0m of [1m2[0m specs\n"}
+{"Time":"2026-11-03T00:42:59.680846-08:00","Action":"output","Package":"github.com/defilantech/llmkube/internal/demo","Test":"TestDemo","Output":"[38;5;10m•[0m\n"}
+{"Time":"2026-11-03T00:42:59.680856-08:00","Action":"output","Package":"github.com/defilantech/llmkube/internal/demo","Test":"TestDemo","Output":"[38;5;243m------------------------------[0m\n"}
+{"Time":"2026-11-03T00:42:59.680871-08:00","Action":"output","Package":"github.com/defilantech/llmkube/internal/demo","Test":"TestDemo","Output":"[38;5;9m• [FAILED] [0.000 seconds][0m\n"}
+{"Time":"2026-11-03T00:42:59.680879-08:00","Action":"output","Package":"github.com/defilantech/llmkube/internal/demo","Test":"TestDemo","Output":"[0mWidget [38;5;243mwhen flaky [38;5;9m[1m[It] reports Ready[0m\n"}
+{"Time":"2026-11-03T00:42:59.680892-08:00","Action":"output","Package":"github.com/defilantech/llmkube/internal/demo","Test":"TestDemo","Output":"[38;5;243m/home/runner/work/LLMKube/LLMKube/internal/demo/suite_test.go:18[0m\n"}
+{"Time":"2026-11-03T00:42:59.68123-08:00","Action":"output","Package":"github.com/defilantech/llmkube/internal/demo","Test":"TestDemo","Output":"\n"}
+{"Time":"2026-11-03T00:42:59.681253-08:00","Action":"output","Package":"github.com/defilantech/llmkube/internal/demo","Test":"TestDemo","Output":"  [38;5;9m[FAILED] widget phase\n"}
+{"Time":"2026-11-03T00:42:59.681261-08:00","Action":"output","Package":"github.com/defilantech/llmkube/internal/demo","Test":"TestDemo","Output":"  Expected\n"}
+{"Time":"2026-11-03T00:42:59.681268-08:00","Action":"output","Package":"github.com/defilantech/llmkube/internal/demo","Test":"TestDemo","Output":"      \u003cstring\u003e: Pending\n"}
+{"Time":"2026-11-03T00:42:59.681337-08:00","Action":"output","Package":"github.com/defilantech/llmkube/internal/demo","Test":"TestDemo","Output":"  to equal\n"}
+{"Time":"2026-11-03T00:42:59.681347-08:00","Action":"output","Package":"github.com/defilantech/llmkube/internal/demo","Test":"TestDemo","Output":"      \u003cstring\u003e: Ready[0m\n"}
+{"Time":"2026-11-03T00:42:59.681355-08:00","Action":"output","Package":"github.com/defilantech/llmkube/internal/demo","Test":"TestDemo","Output":"  [38;5;9mIn [1m[It][0m[38;5;9m at: [1m/home/runner/work/LLMKube/LLMKube/internal/demo/suite_test.go:18[0m [38;5;243m@ 11/03/26 00:42:59.68[0m\n"}
+{"Time":"2026-11-03T00:42:59.68137-08:00","Action":"output","Package":"github.com/defilantech/llmkube/internal/demo","Test":"TestDemo","Output":"[38;5;243m------------------------------[0m\n"}
+{"Time":"2026-11-03T00:42:59.681403-08:00","Action":"output","Package":"github.com/defilantech/llmkube/internal/demo","Test":"TestDemo","Output":"\n"}
+{"Time":"2026-11-03T00:42:59.681412-08:00","Action":"output","Package":"github.com/defilantech/llmkube/internal/demo","Test":"TestDemo","Output":"[38;5;9m[1mSummarizing 1 Failure:[0m\n"}
+{"Time":"2026-11-03T00:42:59.681419-08:00","Action":"output","Package":"github.com/defilantech/llmkube/internal/demo","Test":"TestDemo","Output":"  [38;5;9m[FAIL][0m [0mWidget [38;5;243mwhen flaky [38;5;9m[1m[It] reports Ready[0m\n"}
+{"Time":"2026-11-03T00:42:59.681447-08:00","Action":"output","Package":"github.com/defilantech/llmkube/internal/demo","Test":"TestDemo","Output":"  [38;5;243m/home/runner/work/LLMKube/LLMKube/internal/demo/suite_test.go:18[0m\n"}
+{"Time":"2026-11-03T00:42:59.681453-08:00","Action":"output","Package":"github.com/defilantech/llmkube/internal/demo","Test":"TestDemo","Output":"\n"}
+{"Time":"2026-11-03T00:42:59.681458-08:00","Action":"output","Package":"github.com/defilantech/llmkube/internal/demo","Test":"TestDemo","Output":"[38;5;9m[1mRan 2 of 2 Specs in 0.001 seconds[0m\n"}
+{"Time":"2026-11-03T00:42:59.681465-08:00","Action":"output","Package":"github.com/defilantech/llmkube/internal/demo","Test":"TestDemo","Output":"[38;5;9m[1mFAIL![0m -- [38;5;10m[1m1 Passed[0m | [38;5;9m[1m1 Failed[0m | [38;5;11m[1m0 Pending[0m | [38;5;14m[1m0 Skipped[0m\n"}
+{"Time":"2026-11-03T00:42:59.681482-08:00","Action":"output","Package":"github.com/defilantech/llmkube/internal/demo","Test":"TestDemo","Output":"--- FAIL: TestDemo (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-11-03T00:42:59.681488-08:00","Action":"fail","Package":"github.com/defilantech/llmkube/internal/demo","Test":"TestDemo","Elapsed":0}
+{"Time":"2026-11-03T00:42:59.681497-08:00","Action":"output","Package":"github.com/defilantech/llmkube/internal/demo","Output":"FAIL\n","OutputType":"frame"}
+{"Time":"2026-11-03T00:42:59.682194-08:00","Action":"output","Package":"github.com/defilantech/llmkube/internal/demo","Output":"FAIL\tgithub.com/defilantech/llmkube/internal/demo\t0.206s\n","OutputType":"frame"}
+{"Time":"2026-11-03T00:42:59.682251-08:00","Action":"fail","Package":"github.com/defilantech/llmkube/internal/demo","Elapsed":0.206}

@@ -1,0 +1,37 @@
+{
+ "total_count": 2,
+ "workflow_runs": [
+  {
+   "id": 40215925566,
+   "name": "E2E Tests",
+   "path": ".github/workflows/test-e2e.yml",
+   "event": "pull_request",
+   "head_branch": "fix/quarantine-placement-reason",
+   "head_sha": "2a4b8d804043ae973a79e54be2c376250abb4598",
+   "run_attempt": 3,
+   "status": "completed",
+   "conclusion": "success",
+   "created_at": "2026-10-25T17:19:45Z",
+   "html_url": "https://github.com/defilantech/LLMKube/actions/runs/40215925566",
+   "head_repository": {
+    "full_name": "aditya-rai-5/LLMKube"
+   }
+  },
+  {
+   "id": 40604254204,
+   "name": "E2E Tests",
+   "path": ".github/workflows/test-e2e.yml",
+   "event": "pull_request",
+   "head_branch": "fix/router-request-outcomes-2281",
+   "head_sha": "4c2ec102f21cde5c30b1725693f9b8fe02adb52b",
+   "run_attempt": 2,
+   "status": "completed",
+   "conclusion": "failure",
+   "created_at": "2026-10-27T23:45:12Z",
+   "html_url": "https://github.com/defilantech/LLMKube/actions/runs/40604254204",
+   "head_repository": {
+    "full_name": "Defilan/LLMKube"
+   }
+  }
+ ]
+}
