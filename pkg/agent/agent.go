@@ -2449,7 +2449,7 @@ func (a *MetalAgent) checkMemoryAdmission(
 	// admitted model shares it, and a Model budget may not exceed it. An
 	// engine outside the agent's cgroup is measured against the host-wide
 	// budget, every other engine against the cgroup's.
-	b, err := a.resolveAdmissionBudget(ctx, isvc, model, estimate, true)
+	b, err := a.resolveAdmissionBudget(ctx, isvc, model, estimate, admissionBudgetOptions{publishHostBudget: true})
 	if err != nil {
 		return a.failMemoryCheck(ctx, isvc, err.Error())
 	}

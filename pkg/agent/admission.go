@@ -70,19 +70,27 @@ type admissionBudget struct {
 	clamped       bool
 }
 
+// admissionBudgetOptions tunes what resolving a budget reports. A fresh
+// admission publishes this host's budget; a report's re-check decides again
+// whether the charge fits and must not write an Event of its own (#2535).
+type admissionBudgetOptions struct {
+	publishHostBudget bool
+	quiet             bool
+}
+
 // resolveAdmissionBudget resolves the budget an estimate is measured against.
 // A Model's memoryBudget or memoryFraction may lower this host's limit for
 // itself but not raise it, unless the agent allows overrides (#2080). Errors
 // are the admission failure reasons, worded as checkMemoryAdmission words them.
-// publishHostBudget publishes the host-budget gauge before the Model's own
+// opts.publishHostBudget publishes the host-budget gauge before the Model's own
 // budget is resolved, so a refusal for an unresolvable Model budget still
-// reports this host's limit.
+// reports this host's limit. opts.quiet suppresses the clamp notice.
 func (a *MetalAgent) resolveAdmissionBudget(
 	ctx context.Context,
 	isvc *inferencev1alpha1.InferenceService,
 	model *inferencev1alpha1.Model,
 	estimate MemoryEstimate,
-	publishHostBudget bool,
+	opts admissionBudgetOptions,
 ) (*admissionBudget, error) {
 	// This host's budget, the limit its owner set with --memory-fraction. Every
 	// admitted model shares it, and a Model budget may not exceed it. An
@@ -103,7 +111,7 @@ func (a *MetalAgent) resolveAdmissionBudget(
 	}
 	serviceBudget := uint64(float64(total) * a.memoryFraction)
 	hostBudget := uint64(float64(hostTotal) * a.memoryFraction)
-	if publishHostBudget {
+	if opts.publishHostBudget {
 		memoryBudgetBytes.Set(float64(hostBudget))
 	}
 
@@ -126,13 +134,15 @@ func (a *MetalAgent) resolveAdmissionBudget(
 
 	clamped := false
 	if budget.BudgetBytes > serviceBudget && !a.config.AllowModelMemoryBudgetOverride {
-		a.emitInferenceEvent(ctx, &ManagedProcess{Namespace: isvc.Namespace, Name: isvc.Name},
-			corev1.EventTypeWarning, EventReasonMemoryBudgetClamped,
-			"Model %s budget %s (%s) exceeds this host's budget %s (%s total * %.0f%%); clamped to it. "+
-				"Start the metal-agent with --allow-model-memory-budget-override to allow it",
-			model.Name, formatMemory(budget.BudgetBytes), resolved.Source,
-			formatMemory(serviceBudget), formatMemory(total), a.memoryFraction*100,
-		)
+		if !opts.quiet {
+			a.emitInferenceEvent(ctx, &ManagedProcess{Namespace: isvc.Namespace, Name: isvc.Name},
+				corev1.EventTypeWarning, EventReasonMemoryBudgetClamped,
+				"Model %s budget %s (%s) exceeds this host's budget %s (%s total * %.0f%%); clamped to it. "+
+					"Start the metal-agent with --allow-model-memory-budget-override to allow it",
+				model.Name, formatMemory(budget.BudgetBytes), resolved.Source,
+				formatMemory(serviceBudget), formatMemory(total), a.memoryFraction*100,
+			)
+		}
 		budget = CheckMemoryBudgetAbsolute(serviceBudget, estimate)
 		clamped = true
 	}
@@ -222,10 +232,13 @@ const adoptedChargeReportPrefix = "adopted engine is serving over its memory bud
 
 // adoptedCharge is the estimate and budget an adopted engine's charge was
 // re-estimated with, kept on the process so a report that charge produced can
-// be re-fitted without I/O (#2535).
+// be re-fitted without recomputing the estimate (#2535).
 type adoptedCharge struct {
 	estimate MemoryEstimate
-	budget   *admissionBudget
+	// contextSize is the context size estimate was taken at, so a re-check
+	// can word the report the way the re-estimate did.
+	contextSize int
+	budget      *admissionBudget
 	// backoff is the wait before the next re-check of a report this charge
 	// wrote; it doubles to refusalRecheckMax while the cause holds.
 	backoff time.Duration
@@ -259,7 +272,7 @@ func (a *MetalAgent) reestimateAdoptedCharge(
 		return false
 	}
 
-	budget, budgetErr := a.resolveAdmissionBudget(ctx, isvc, model, estimate, false)
+	budget, budgetErr := a.resolveAdmissionBudget(ctx, isvc, model, estimate, admissionBudgetOptions{})
 	if budgetErr != nil {
 		a.logger.Warnw("adopted engine's re-estimated charge cannot be checked against its budget",
 			"key", key, "error", budgetErr)
@@ -277,7 +290,7 @@ func (a *MetalAgent) reestimateAdoptedCharge(
 	if budget != nil {
 		fit = a.fitAdmissionLocked(key, budget, estimate)
 		p.adoptedCharge = &adoptedCharge{
-			estimate: estimate, budget: budget, backoff: refusalRecheckInitial,
+			estimate: estimate, contextSize: contextSize, budget: budget, backoff: refusalRecheckInitial,
 		}
 	}
 	a.updateCommittedMetricLocked()
@@ -340,13 +353,15 @@ func (a *MetalAgent) reestimatePendingAdoptedCharges(ctx context.Context) {
 	}
 }
 
-// recheckAdoptedChargeReport re-fits an adopted engine's re-estimated charge,
-// without I/O, when a report it wrote may have outlived its cause: the other
-// services' charges are what changed since (#2535). A fit that passes clears
-// the report; one that still fails keeps it and arms the next check on the same
-// backoff a start refusal uses, starting at refusalRecheckInitial and doubling
-// to refusalRecheckMax. The report's own publishRefusal arms the first check;
-// this arms the ones after it.
+// recheckAdoptedChargeReport re-checks an adopted engine's re-estimated charge
+// when a report it wrote may have outlived its cause: another service's charge,
+// or the Model's own budget, may have changed since (#2535). Each check reads
+// the Model and re-resolves the budget the way admission does, keeping the
+// estimate stored at the re-estimate. A check that fits clears the report. One
+// that still fails keeps it, rewrites the message when the numbers changed, and
+// arms the next check on the same backoff a start refusal uses, starting at
+// refusalRecheckInitial and doubling to refusalRecheckMax. The report's own
+// publishRefusal arms the first check; this arms the ones after it.
 func (a *MetalAgent) recheckAdoptedChargeReport(
 	ctx context.Context, isvc *inferencev1alpha1.InferenceService, key string, p *ManagedProcess,
 ) {
@@ -355,21 +370,74 @@ func (a *MetalAgent) recheckAdoptedChargeReport(
 	}
 	a.mu.Lock()
 	charge := p.adoptedCharge
-	// A charge over its own budget cannot clear without a spec change that
-	// respawns the engine, and admission clears the status then.
-	if charge == nil || !charge.budget.budget.Fits {
-		a.mu.Unlock()
+	a.mu.Unlock()
+	if charge == nil {
 		return
+	}
+
+	// A Model that has gone away, or a budget that will not resolve, keeps the
+	// report on the numbers that wrote it and tries again next time.
+	budget, err := a.recheckAdoptedBudget(ctx, isvc, charge.estimate)
+	if err != nil {
+		a.logger.Warnw("keeping an adopted engine's memory report: its budget cannot be re-resolved",
+			"key", key, "error", err)
+	}
+
+	a.mu.Lock()
+	if budget != nil {
+		charge.budget = budget
 	}
 	fit := a.fitAdmissionLocked(key, charge.budget, charge.estimate)
 	charge.backoff = min(2*charge.backoff, refusalRecheckMax)
 	wait := charge.backoff
+	msg := adoptedChargeReportPrefix + fit.message + kvNotCountedNote(charge.estimate, charge.contextSize)
 	a.mu.Unlock()
 
-	if fit.fits && a.clearAdoptedChargeReport(ctx, isvc) {
-		return
+	if fit.fits {
+		if a.clearAdoptedChargeReport(ctx, isvc) {
+			return
+		}
+	} else {
+		a.rewriteAdoptedChargeReport(ctx, isvc, msg)
 	}
 	a.requeueAt(key, a.clock().Add(wait))
+}
+
+// recheckAdoptedBudget reads the Model and resolves the budget it sets today
+// with the function admission uses, so a host-wide or cgroup limit that moved
+// is picked up too. It resolves quietly: the re-check writes no Event.
+func (a *MetalAgent) recheckAdoptedBudget(
+	ctx context.Context, isvc *inferencev1alpha1.InferenceService, estimate MemoryEstimate,
+) (*admissionBudget, error) {
+	model, err := a.fetchModelForReconcile(ctx, isvc)
+	if err != nil {
+		return nil, err
+	}
+	return a.resolveAdmissionBudget(ctx, isvc, model, estimate, admissionBudgetOptions{quiet: true})
+}
+
+// rewriteAdoptedChargeReport updates a standing report's message when a
+// re-check resolved a budget that words it differently, so the status quotes
+// the numbers the Model has now. It emits no Event and leaves any other status
+// alone.
+func (a *MetalAgent) rewriteAdoptedChargeReport(
+	ctx context.Context, isvc *inferencev1alpha1.InferenceService, msg string,
+) {
+	namespaced := types.NamespacedName{Namespace: isvc.Namespace, Name: isvc.Name}
+	fresh := &inferencev1alpha1.InferenceService{}
+	if err := a.config.K8sClient.Get(ctx, namespaced, fresh); err != nil {
+		a.logger.Warnw("failed to fetch InferenceService to update an adopted engine's memory report",
+			"key", namespaced.String(), "error", err)
+		return
+	}
+	if !hasAdoptedChargeReport(fresh) || fresh.Status.SchedulingMessage == msg {
+		return
+	}
+	fresh.Status.SchedulingMessage = msg
+	if err := a.config.K8sClient.Status().Update(ctx, fresh); err != nil {
+		a.logger.Warnw("failed to update an adopted engine's memory report",
+			"key", namespaced.String(), "error", err)
+	}
 }
 
 // hasAdoptedChargeReport reports whether isvc carries the report an adopted

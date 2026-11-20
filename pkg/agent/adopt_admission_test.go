@@ -636,32 +636,168 @@ func TestAdoptedEngine_ReportClearsWhenTheCauseGoesAway(t *testing.T) {
 	if adoptedRecheckQueued(t, a) {
 		t.Error("a re-check was scheduled for a report that was cleared")
 	}
+}
 
-	// A charge over its own budget cannot clear without a respawn, so it is not
-	// re-checked: the report stays and nothing is scheduled after the report's
-	// own first re-check.
-	t.Run("own-budget shortfall is not re-checked", func(t *testing.T) {
-		model := sizedModel("33.0 GiB")
-		model.Spec.Hardware = &inferencev1alpha1.HardwareSpec{MemoryBudget: "12Gi"}
-		phi := cumulativeISVC("phi")
-		a, _, _ := adoptAdmissionAgent(t, model, phi)
-		clk := adoptedReportClock(t, a)
-		adoptEngineRecord(t, a, phi)
+// A Model budget edit moves neither the spec hash nor the engine, so only a
+// re-check that reads the Model again can see it. Raising the budget out of the
+// charge's way must clear the report (#2535 review).
+func TestAdoptedEngine_RaisedModelBudgetClearsTheReport(t *testing.T) {
+	model := sizedModel("33.0 GiB")
+	model.Spec.Hardware = &inferencev1alpha1.HardwareSpec{MemoryBudget: "12Gi"}
+	phi := cumulativeISVC("phi")
+	phi.Spec.ContextSize = ptrInt32(131072)
+	a, rec, _ := adoptAdmissionAgent(t, model, phi)
+	clk := adoptedReportClock(t, a)
+	adoptEngineRecord(t, a, phi)
 
-		if err := a.ensureProcess(context.Background(), phi); err != nil {
-			t.Fatalf("ensureProcess: %v", err)
-		}
-		if status, _ := schedulingStatus(t, a, "phi"); status != EventReasonInsufficientMemory {
-			t.Fatalf("SchedulingStatus = %q, want the over-budget report", status)
-		}
-		adoptedReconcileAt(t, a, clk)
-		if status, _ := schedulingStatus(t, a, "phi"); status != EventReasonInsufficientMemory {
-			t.Errorf("SchedulingStatus = %q, want the report to stand until a respawn", status)
-		}
-		if adoptedRecheckQueued(t, a) {
-			t.Error("an own-budget shortfall was re-checked against memory that cannot change it")
-		}
-	})
+	if err := a.ensureProcess(context.Background(), phi); err != nil {
+		t.Fatalf("ensureProcess: %v", err)
+	}
+	status, msg := schedulingStatus(t, a, "phi")
+	if status != EventReasonInsufficientMemory || !strings.Contains(msg, "budget 12.0 GB") {
+		t.Fatalf("SchedulingStatus = %q / %q, want the own-budget report", status, msg)
+	}
+	if events := drainEvents(rec); len(events) != 1 {
+		t.Fatalf("events = %q, want the report's one Warning", events)
+	}
+	if got := adoptedRecheckIn(t, a, clk); got != refusalRecheckInitial {
+		t.Fatalf("first re-check in %s, want %s", got, refusalRecheckInitial)
+	}
+
+	// The owner raises the Model's budget. Nothing the re-estimate could see
+	// changes, so the re-check has to read the Model.
+	updated := &inferencev1alpha1.Model{}
+	if err := a.config.K8sClient.Get(context.Background(),
+		types.NamespacedName{Namespace: model.Namespace, Name: model.Name}, updated); err != nil {
+		t.Fatal(err)
+	}
+	updated.Spec.Hardware.MemoryBudget = "64Gi"
+	if err := a.config.K8sClient.Update(context.Background(), updated); err != nil {
+		t.Fatalf("%v", err)
+	}
+
+	adoptedReconcileAt(t, a, clk)
+	if status, msg := schedulingStatus(t, a, "phi"); status != "" || msg != "" {
+		t.Fatalf("the Model budget was raised to 64Gi but phi's status still reads %q / %q", status, msg)
+	}
+	if events := drainEvents(rec); len(events) != 0 {
+		t.Errorf("the re-check that cleared the report emitted %q, want no Event", events)
+	}
+	if adoptedRecheckQueued(t, a) {
+		t.Error("a re-check was scheduled for a report that was cleared")
+	}
+}
+
+// An own-budget report is re-checked like a committed-memory one: the Model may
+// have changed, so each check re-reads it, and one that still does not fit
+// keeps the report, writes no Event and backs off (#2535 review).
+func TestAdoptedEngine_OwnBudgetReportKeepsRechecking(t *testing.T) {
+	model := sizedModel("33.0 GiB")
+	model.Spec.Hardware = &inferencev1alpha1.HardwareSpec{MemoryBudget: "12Gi"}
+	phi := cumulativeISVC("phi")
+	a, rec, _ := adoptAdmissionAgent(t, model, phi)
+	clk := adoptedReportClock(t, a)
+	adoptEngineRecord(t, a, phi)
+
+	if err := a.ensureProcess(context.Background(), phi); err != nil {
+		t.Fatalf("ensureProcess: %v", err)
+	}
+	if status, _ := schedulingStatus(t, a, "phi"); status != EventReasonInsufficientMemory {
+		t.Fatalf("SchedulingStatus = %q, want the over-budget report", status)
+	}
+	drainEvents(rec)
+
+	adoptedReconcileAt(t, a, clk)
+	if status, _ := schedulingStatus(t, a, "phi"); status != EventReasonInsufficientMemory {
+		t.Errorf("the re-check cleared a report whose cause still holds: SchedulingStatus = %q", status)
+	}
+	if events := drainEvents(rec); len(events) != 0 {
+		t.Errorf("a re-check reported again: %q", events)
+	}
+	if got := adoptedRecheckIn(t, a, clk); got != 2*refusalRecheckInitial {
+		t.Errorf("second re-check in %s, want %s", got, 2*refusalRecheckInitial)
+	}
+}
+
+// A re-check that cannot read the Model keeps the report and arms the next
+// check, so the edit that would clear it is still picked up later (#2535
+// review).
+func TestAdoptedEngine_ReportKeepsRecheckingWhenTheModelIsUnreadable(t *testing.T) {
+	model := sizedModel("33.0 GiB")
+	model.Spec.Hardware = &inferencev1alpha1.HardwareSpec{MemoryBudget: "12Gi"}
+	phi := cumulativeISVC("phi")
+	a, rec, _ := adoptAdmissionAgent(t, model, phi)
+	clk := adoptedReportClock(t, a)
+	adoptEngineRecord(t, a, phi)
+
+	if err := a.ensureProcess(context.Background(), phi); err != nil {
+		t.Fatalf("ensureProcess: %v", err)
+	}
+	if status, _ := schedulingStatus(t, a, "phi"); status != EventReasonInsufficientMemory {
+		t.Fatalf("SchedulingStatus = %q, want the over-budget report", status)
+	}
+	drainEvents(rec)
+	if err := a.config.K8sClient.Delete(context.Background(), model); err != nil {
+		t.Fatal(err)
+	}
+
+	adoptedReconcileAt(t, a, clk)
+	if status, _ := schedulingStatus(t, a, "phi"); status != EventReasonInsufficientMemory {
+		t.Errorf("an unreadable Model cleared the report: SchedulingStatus = %q", status)
+	}
+	if events := drainEvents(rec); len(events) != 0 {
+		t.Errorf("an unreadable Model produced events: %q", events)
+	}
+	if got := adoptedRecheckIn(t, a, clk); got != 2*refusalRecheckInitial {
+		t.Errorf("next re-check in %s, want %s", got, 2*refusalRecheckInitial)
+	}
+}
+
+// A raised Model budget that clears the charge's own shortfall can still leave
+// no room next to another service's charge: the report stands, but its message
+// must quote the budget the Model has now (#2535 review).
+func TestAdoptedEngine_RaisedModelBudgetStillBlockedByCommittedMemory(t *testing.T) {
+	model := sizedModel("33.0 GiB")
+	model.Spec.Hardware = &inferencev1alpha1.HardwareSpec{MemoryBudget: "12Gi"}
+	phi := cumulativeISVC("phi")
+	a, rec, _ := adoptAdmissionAgent(t, model, phi)
+	clk := adoptedReportClock(t, a)
+	adoptEngineRecord(t, a, phi)
+	a.processes["default/other"] = &ManagedProcess{Name: "other", Namespace: "default", AdmittedBytes: gib(40.1)}
+
+	if err := a.ensureProcess(context.Background(), phi); err != nil {
+		t.Fatalf("ensureProcess: %v", err)
+	}
+	status, msg := schedulingStatus(t, a, "phi")
+	if status != EventReasonInsufficientMemory || !strings.Contains(msg, "budget 12.0 GB") {
+		t.Fatalf("SchedulingStatus = %q / %q, want the own-budget report", status, msg)
+	}
+	drainEvents(rec)
+
+	updated := &inferencev1alpha1.Model{}
+	if err := a.config.K8sClient.Get(context.Background(),
+		types.NamespacedName{Namespace: model.Namespace, Name: model.Name}, updated); err != nil {
+		t.Fatal(err)
+	}
+	updated.Spec.Hardware.MemoryBudget = "48Gi"
+	if err := a.config.K8sClient.Update(context.Background(), updated); err != nil {
+		t.Fatalf("%v", err)
+	}
+
+	adoptedReconcileAt(t, a, clk)
+	status, msg = schedulingStatus(t, a, "phi")
+	if status != EventReasonInsufficientMemory {
+		t.Fatalf("a charge that still does not fit next to default/other cleared the report: SchedulingStatus = %q", status)
+	}
+	if strings.Contains(msg, "budget 12.0 GB") || !strings.Contains(msg, "48.0 GB") {
+		t.Errorf("SchedulingMessage = %q, want the 48.0 GB budget the Model has now", msg)
+	}
+	if events := drainEvents(rec); len(events) != 0 {
+		t.Errorf("the re-check reported again: %q", events)
+	}
+	if got := adoptedRecheckIn(t, a, clk); got != 2*refusalRecheckInitial {
+		t.Errorf("next re-check in %s, want %s", got, 2*refusalRecheckInitial)
+	}
 }
 
 // A process this agent started is never re-estimated, whatever the Model's
