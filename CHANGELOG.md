@@ -5,6 +5,29 @@ All notable changes to LLMKube will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.20](https://github.com/defilantech/LLMKube/compare/v0.10.19...v0.10.20) (2026-11-20)
+
+
+### Features
+
+* add reclaim-down swap policy to release an idle pool's slot ([#2540](https://github.com/defilantech/LLMKube/issues/2540)) ([33111f6](https://github.com/defilantech/LLMKube/commit/33111f6d728f40a26efea425378c8e8577fd7ee7))
+* **api:** add spec.schedulerName to place inference Pods on a named scheduler ([#2588](https://github.com/defilantech/LLMKube/issues/2588)) ([a3492e1](https://github.com/defilantech/LLMKube/commit/a3492e1a09d63e8503cb316fc41239ddc4247a4e))
+* **metal-agent:** serve and size hailo:// Model sources through hailo-ollama ([#2584](https://github.com/defilantech/LLMKube/issues/2584)) ([13a10f5](https://github.com/defilantech/LLMKube/commit/13a10f5673cf59d50e92e89e47029a9d29fefad6))
+* **multinode:** flush the page cache and guard MemFree while members serve ([#2570](https://github.com/defilantech/LLMKube/issues/2570)) ([795924e](https://github.com/defilantech/LLMKube/commit/795924e973f8d66b86ce7483bb36d560f41a43eb))
+* **release:** ship the metal-agent for linux/arm64 and linux/amd64 ([#2582](https://github.com/defilantech/LLMKube/issues/2582)) ([7450243](https://github.com/defilantech/LLMKube/commit/74502436cc4bc833e978da37d1563de4f8a75aab))
+
+
+### Bug Fixes
+
+* **agent:** charge an adopted engine the current estimate and clear its over-budget report ([#2595](https://github.com/defilantech/LLMKube/issues/2595)) ([60201d7](https://github.com/defilantech/LLMKube/commit/60201d74f84baf6e57cfefb1a4bbefc91f3e2ff4))
+* **metal:** apply ropeScaling, priority, evictionProtection and replicas edits on Metal ([#2545](https://github.com/defilantech/LLMKube/issues/2545)) ([20c001e](https://github.com/defilantech/LLMKube/commit/20c001e214a671a869644aab5e8d8911c37b867b))
+* **router:** hold requests for a ModelPool member drained inside the resident-resync window ([#2589](https://github.com/defilantech/LLMKube/issues/2589)) ([956a9f9](https://github.com/defilantech/LLMKube/commit/956a9f992f0a75e471982d7169c4e5b33c30c150))
+
+
+### Documentation
+
+* point the three-Spark ring lab at spec.multiNode.memory and use placeholder host names ([#2598](https://github.com/defilantech/LLMKube/issues/2598)) ([93f843f](https://github.com/defilantech/LLMKube/commit/93f843fbde798930b1987bbe5fcd296ff1e1c763))
+
 ## [0.10.19](https://github.com/defilantech/LLMKube/compare/v0.10.18...v0.10.19) (2026-11-18)
 
 
