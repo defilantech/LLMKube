@@ -137,8 +137,10 @@ type Backend struct {
 
 	// ServedModel is the model identifier the upstream engine actually
 	// serves. Set for vLLM and SGLang backends (their --served-model-name,
-	// by default the modelRef) and for oMLX backends, whose engine serves
-	// the model-store directory basename. Empty for other backends, where
+	// by default the modelRef), for oMLX backends, whose engine serves the
+	// model-store directory basename, and for Ollama backends, whose daemon
+	// serves the tag the executor pulls for the Model name (a mapped Model
+	// name is not a tag Ollama resolves). Empty for other backends, where
 	// InferenceService is the fallback.
 	ServedModel string `json:"servedModel,omitempty"`
 
