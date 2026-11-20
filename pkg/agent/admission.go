@@ -23,8 +23,11 @@ package agent
 import (
 	"context"
 	"fmt"
+	"strings"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/types"
 
 	inferencev1alpha1 "github.com/defilantech/llmkube/api/v1alpha1"
 )
@@ -212,32 +215,48 @@ func (a *MetalAgent) fitAdmissionLocked(key string, b *admissionBudget, estimate
 	return admissionFit{fits: true, committed: committed}
 }
 
+// adoptedChargeReportPrefix opens the report an adopted engine's re-estimated
+// charge writes when it does not fit. It is how a later fit tells this report
+// from any other scheduling status, so the report can be cleared (#2535).
+const adoptedChargeReportPrefix = "adopted engine is serving over its memory budget: "
+
+// adoptedCharge is the estimate and budget an adopted engine's charge was
+// re-estimated with, kept on the process so a report that charge produced can
+// be re-fitted without I/O (#2535).
+type adoptedCharge struct {
+	estimate MemoryEstimate
+	budget   *admissionBudget
+	// backoff is the wait before the next re-check of a report this charge
+	// wrote; it doubles to refusalRecheckMax while the cause holds.
+	backoff time.Duration
+}
+
 // reestimateAdoptedCharge charges an adopted engine the estimate a fresh
 // admission of its InferenceService and Model computes today, once. Adoption
 // runs before the agent reaches the API server and the engine record carries no
 // context size, so the first reconcile is the earliest point the current
-// estimate can be computed (#2535).
+// estimate can be computed (#2535). It reports whether it charged the engine.
 func (a *MetalAgent) reestimateAdoptedCharge(
 	ctx context.Context, isvc *inferencev1alpha1.InferenceService, key string, p *ManagedProcess,
-) {
+) bool {
 	a.mu.Lock()
 	pending := p.Adopted && !p.AdmissionReestimated
 	a.mu.Unlock()
 	if !pending {
-		return
+		return false
 	}
 
 	model, err := a.fetchModelForReconcile(ctx, isvc)
 	if err != nil {
 		a.logger.Warnw("keeping an adopted engine's recorded memory charge: the Model is not available",
 			"key", key, "error", err)
-		return
+		return false
 	}
 	estimate, contextSize, err := a.admissionEstimate(ctx, isvc, model)
 	if err != nil {
 		a.logger.Warnw("keeping an adopted engine's recorded memory charge: the model cannot be estimated",
 			"key", key, "error", err)
-		return
+		return false
 	}
 
 	budget, budgetErr := a.resolveAdmissionBudget(ctx, isvc, model, estimate, false)
@@ -249,43 +268,155 @@ func (a *MetalAgent) reestimateAdoptedCharge(
 	a.mu.Lock()
 	if a.processes[key] != p || p.AdmissionReestimated {
 		a.mu.Unlock()
-		return
+		return false
 	}
 	previous := p.AdmittedBytes
 	p.AdmittedBytes = estimate.TotalBytes
 	p.AdmissionReestimated = true
-	a.updateCommittedMetricLocked()
 	var fit admissionFit
 	if budget != nil {
 		fit = a.fitAdmissionLocked(key, budget, estimate)
+		p.adoptedCharge = &adoptedCharge{
+			estimate: estimate, budget: budget, backoff: refusalRecheckInitial,
+		}
 	}
+	a.updateCommittedMetricLocked()
 	a.mu.Unlock()
 
 	memoryEstimatedBytes.WithLabelValues(isvc.Name, isvc.Namespace).Set(float64(estimate.TotalBytes))
 	a.logger.Infow("re-estimated an adopted engine's memory charge",
 		"key", key, "previous", formatMemory(previous), "estimate", formatMemory(estimate.TotalBytes))
 
-	if budget != nil && !fit.fits {
-		a.reportAdoptedChargeOverBudget(ctx, isvc, key,
-			"adopted engine is serving over its memory budget: "+fit.message+kvNotCountedNote(estimate, contextSize),
-			fit.logKV...)
+	if budget == nil {
+		return true
 	}
+	if fit.fits {
+		// The engine fits now, and an earlier report may still say it does not.
+		a.clearAdoptedChargeReport(ctx, isvc)
+		return true
+	}
+	a.reportAdoptedChargeOverBudget(ctx, isvc, key,
+		adoptedChargeReportPrefix+fit.message+kvNotCountedNote(estimate, contextSize),
+		fit.logKV...)
+	return true
+}
+
+// reestimatePendingAdoptedCharges re-estimates every adopted engine whose charge
+// this agent has not re-estimated yet, so no admission measures its fit against
+// a charge the current estimate no longer holds (#2535). The watcher delivers
+// services in list order, so the engine that needs it may be handled after the
+// service being admitted. It does not hold a.mu: each Get is I/O.
+func (a *MetalAgent) reestimatePendingAdoptedCharges(ctx context.Context) {
+	a.mu.Lock()
+	pending := make([]*ManagedProcess, 0, len(a.processes))
+	for _, p := range a.processes {
+		if p.Adopted && !p.AdmissionReestimated {
+			pending = append(pending, p)
+		}
+	}
+	a.mu.Unlock()
+	for _, p := range pending {
+		namespaced := types.NamespacedName{Namespace: p.Namespace, Name: p.Name}
+		isvc := &inferencev1alpha1.InferenceService{}
+		if err := a.config.K8sClient.Get(ctx, namespaced, isvc); err != nil {
+			a.logger.Warnw("keeping an adopted engine's recorded memory charge: its InferenceService is not available",
+				"key", namespaced.String(), "error", err)
+			continue
+		}
+		a.reestimateAdoptedCharge(ctx, isvc, namespaced.String(), p)
+	}
+}
+
+// recheckAdoptedChargeReport re-fits an adopted engine's re-estimated charge,
+// without I/O, when a report it wrote may have outlived its cause: the other
+// services' charges are what changed since (#2535). A fit that passes clears
+// the report; one that still fails keeps it and arms the next check on the same
+// backoff a start refusal uses, starting at refusalRecheckInitial and doubling
+// to refusalRecheckMax.
+func (a *MetalAgent) recheckAdoptedChargeReport(
+	ctx context.Context, isvc *inferencev1alpha1.InferenceService, key string, p *ManagedProcess,
+) {
+	if !hasAdoptedChargeReport(isvc) {
+		return
+	}
+	a.mu.Lock()
+	charge := p.adoptedCharge
+	// A charge over its own budget cannot clear without a spec change that
+	// respawns the engine, and admission clears the status then.
+	if charge == nil || !charge.budget.budget.Fits {
+		a.mu.Unlock()
+		return
+	}
+	fit := a.fitAdmissionLocked(key, charge.budget, charge.estimate)
+	charge.backoff = min(2*charge.backoff, refusalRecheckMax)
+	wait := charge.backoff
+	a.mu.Unlock()
+
+	if fit.fits && a.clearAdoptedChargeReport(ctx, isvc) {
+		return
+	}
+	a.requeueAt(key, a.clock().Add(wait))
+}
+
+// hasAdoptedChargeReport reports whether isvc carries the report an adopted
+// engine's re-estimated charge writes.
+func hasAdoptedChargeReport(isvc *inferencev1alpha1.InferenceService) bool {
+	return isvc.Status.SchedulingStatus == EventReasonInsufficientMemory &&
+		strings.HasPrefix(isvc.Status.SchedulingMessage, adoptedChargeReportPrefix)
+}
+
+// clearAdoptedChargeReport clears that report once a fit passes: its cause is
+// gone. It reads the object fresh because the controller may have written since
+// the list, and leaves any other status alone. It reports whether no report of
+// ours is left on the object.
+func (a *MetalAgent) clearAdoptedChargeReport(
+	ctx context.Context, isvc *inferencev1alpha1.InferenceService,
+) bool {
+	if !hasAdoptedChargeReport(isvc) {
+		return true
+	}
+	namespaced := types.NamespacedName{Namespace: isvc.Namespace, Name: isvc.Name}
+	fresh := &inferencev1alpha1.InferenceService{}
+	if err := a.config.K8sClient.Get(ctx, namespaced, fresh); err != nil {
+		a.logger.Warnw("failed to fetch InferenceService to clear an adopted engine's memory report",
+			"key", namespaced.String(), "error", err)
+		return false
+	}
+	if !hasAdoptedChargeReport(fresh) {
+		return true
+	}
+	fresh.Status.SchedulingStatus = ""
+	fresh.Status.SchedulingMessage = ""
+	if err := a.config.K8sClient.Status().Update(ctx, fresh); err != nil {
+		a.logger.Warnw("failed to clear an adopted engine's memory report",
+			"key", namespaced.String(), "error", err)
+		return false
+	}
+	return true
 }
 
 // reportAdoptedChargeOverBudget reports a serving engine whose re-estimated
 // charge does not fit, through the status and Warning event admission refusals
 // use. The text says serving over budget, not refused: the engine keeps
-// running.
+// running. It writes a freshly read object: the copy the watcher listed may be
+// behind the controller's own write, which the status update would refuse.
 func (a *MetalAgent) reportAdoptedChargeOverBudget(
 	ctx context.Context, isvc *inferencev1alpha1.InferenceService, key, msg string, logKV ...interface{},
 ) {
 	a.logger.Warnw("adopted engine is serving over its memory budget",
 		append([]interface{}{"key", key, "reason", msg}, logKV...)...)
-	prev := statusBeforeRefusal(isvc)
-	isvc.Status.SchedulingStatus = EventReasonInsufficientMemory
-	isvc.Status.SchedulingMessage = msg
-	if a.publishRefusal(ctx, isvc, prev) {
-		a.emitInferenceEvent(ctx, &ManagedProcess{Namespace: isvc.Namespace, Name: isvc.Name},
+	namespaced := types.NamespacedName{Namespace: isvc.Namespace, Name: isvc.Name}
+	fresh := &inferencev1alpha1.InferenceService{}
+	if err := a.config.K8sClient.Get(ctx, namespaced, fresh); err != nil {
+		a.logger.Warnw("failed to fetch InferenceService to report an adopted engine over budget",
+			"key", key, "error", err)
+		return
+	}
+	prev := statusBeforeRefusal(fresh)
+	fresh.Status.SchedulingStatus = EventReasonInsufficientMemory
+	fresh.Status.SchedulingMessage = msg
+	if a.publishRefusal(ctx, fresh, prev) {
+		a.emitInferenceEvent(ctx, &ManagedProcess{Namespace: fresh.Namespace, Name: fresh.Name},
 			corev1.EventTypeWarning, EventReasonInsufficientMemory, "%s", msg)
 	}
 }

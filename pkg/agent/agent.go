@@ -537,6 +537,11 @@ type ManagedProcess struct {
 	// process this agent started (#2535).
 	AdmissionReestimated bool
 
+	// adoptedCharge is the estimate and budget an adopted engine's charge was
+	// re-estimated with, so a report that charge produced can be re-checked
+	// without I/O when other services' charges change (#2535).
+	adoptedCharge *adoptedCharge
+
 	// healthFailures counts this process's consecutive failed health probes.
 	// Guarded by MetalAgent.mu; a replacement process starts again at zero.
 	healthFailures int
@@ -1438,14 +1443,17 @@ func (a *MetalAgent) reconcileProcess(ctx context.Context, isvc *inferencev1alph
 	}
 
 	if exists && existing.SpecHash == desiredHash {
-		// Charge an adopted engine what admission would charge today (#2535).
-		a.reestimateAdoptedCharge(ctx, isvc, key, existing)
 		// An unhealthy process is left to the health monitor, which stops
 		// it and restarts it after healthFailureThreshold consecutive
 		// failed probes. Starting a new engine here would leave this one
 		// running untracked, with its weights still wired (#2077).
 		a.logger.Debugw("inference service already has a process with matching spec",
 			"key", key, "healthy", existing.Healthy)
+		// Charge an adopted engine what admission would charge today, then
+		// clear the report once that charge fits again (#2535).
+		if !a.reestimateAdoptedCharge(ctx, isvc, key, existing) {
+			a.recheckAdoptedChargeReport(ctx, isvc, key, existing)
+		}
 		return nil
 	}
 
@@ -2424,6 +2432,10 @@ func (a *MetalAgent) checkMemoryAdmission(
 	contextSize int,
 	cacheTypeK, cacheTypeV string,
 ) error {
+	// An admission must not fit against an adopted engine's recorded charge,
+	// which the current estimate may no longer hold: re-estimate every engine
+	// still carrying one, whatever order the watcher delivers them in (#2535).
+	a.reestimatePendingAdoptedCharges(ctx)
 	estimate, err := a.estimateModelMemory(ctx, model, contextSize, cacheTypeK, cacheTypeV,
 		derefInt32(isvc.Spec.ParallelSlots))
 	if err != nil {

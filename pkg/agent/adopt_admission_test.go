@@ -20,6 +20,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	corev1 "k8s.io/api/core/v1"
@@ -102,6 +103,56 @@ func wantReestimatedCharge(t *testing.T, got uint64) {
 	}
 }
 
+// adoptedReportClock puts a watcher and a fake clock on the agent, which is
+// what observing the report's re-check needs.
+func adoptedReportClock(t *testing.T, a *MetalAgent) *fakeClock {
+	t.Helper()
+	a.watcher = a.newWatcher()
+	clk := &fakeClock{t: time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC)}
+	a.now = clk.now
+	a.watcher.now = clk.now
+	return clk
+}
+
+// adoptedRecheckIn returns how long after the fake clock's now the report of
+// default/phi is re-checked, failing when none is scheduled.
+func adoptedRecheckIn(t *testing.T, a *MetalAgent, clk *fakeClock) time.Duration {
+	t.Helper()
+	a.watcher.requeueMu.Lock()
+	defer a.watcher.requeueMu.Unlock()
+	at, ok := a.watcher.requeued["default/phi"]
+	if !ok {
+		t.Fatal("no re-check is scheduled for default/phi")
+	}
+	return at.Sub(clk.t)
+}
+
+// adoptedRecheckQueued reports whether a re-check of default/phi is scheduled.
+func adoptedRecheckQueued(t *testing.T, a *MetalAgent) bool {
+	t.Helper()
+	a.watcher.requeueMu.Lock()
+	defer a.watcher.requeueMu.Unlock()
+	_, ok := a.watcher.requeued["default/phi"]
+	return ok
+}
+
+// adoptedReconcileAt consumes the re-check due for default/phi, advancing the
+// fake clock to it, and reconciles phi as the watcher would.
+func adoptedReconcileAt(t *testing.T, a *MetalAgent, clk *fakeClock) {
+	t.Helper()
+	a.watcher.requeueMu.Lock()
+	if at, ok := a.watcher.requeued["default/phi"]; ok {
+		clk.t = at
+	}
+	a.watcher.requeueMu.Unlock()
+	if !a.watcher.takeRequeue("default/phi") {
+		t.Fatal("no re-check is due for default/phi")
+	}
+	if err := a.ensureProcess(context.Background(), refreshedISVC(t, a, "phi")); err != nil {
+		t.Fatalf("ensureProcess: %v", err)
+	}
+}
+
 // The issue's defect: an adopted engine keeps the charge it was admitted with,
 // so the next admission counts memory the engine is using as free. After the
 // first reconcile the adopted engine must be charged the current estimate, and
@@ -153,6 +204,83 @@ func TestAdoptedEngine_ReestimateCountsTowardCumulativeAdmission(t *testing.T) {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("refusal %q does not mention %q", err.Error(), want)
 		}
+	}
+}
+
+// The startup list delivers services in list order, so a service that sorts
+// before an adopted engine is admitted first. Its admission must re-estimate the
+// adopted engine before it measures the fit: the recorded charge is not the
+// memory the engine is using (#2535).
+func TestAdoptedEngine_AdmissionReestimatesAPendingEngineFirst(t *testing.T) {
+	model := sizedModel("33.0 GiB")
+	model.Spec.Hardware = &inferencev1alpha1.HardwareSpec{Accelerator: "metal"}
+	phi := cumulativeISVC("phi")
+	alpha := cumulativeISVC("alpha")
+	a, _, _ := adoptAdmissionAgent(t, model, phi, alpha)
+	adoptEngineRecord(t, a, phi)
+
+	w := a.newWatcher()
+	ch := make(chan InferenceServiceEvent, 8)
+	if err := w.listExisting(context.Background(), ch); err != nil {
+		t.Fatal(err)
+	}
+	close(ch)
+
+	var order []string
+	var alphaErr error
+	for ev := range ch {
+		isvc := ev.InferenceService
+		order = append(order, isvc.Name)
+		switch isvc.Name {
+		case "phi":
+			if err := a.ensureProcess(context.Background(), isvc); err != nil {
+				t.Fatal(err)
+			}
+		case "alpha":
+			// The admission step of alpha's fresh start, with the inputs
+			// reconcileProcess derives for it.
+			cacheTypeK, cacheTypeV := resolveCacheTypes(isvc)
+			alphaErr = a.checkMemoryAdmission(context.Background(), isvc, model,
+				admissionContextSize(isvc), cacheTypeK, cacheTypeV)
+		}
+	}
+	t.Logf("initial list order: %v", order)
+	if len(order) != 2 || order[0] != "alpha" || order[1] != "phi" {
+		t.Fatalf("initial list order = %v, want alpha admitted before the adopted phi", order)
+	}
+
+	wantReestimatedCharge(t, a.processes["default/phi"].AdmittedBytes)
+	if alphaErr == nil {
+		a.mu.Lock()
+		committed, holders := a.committedMemoryLocked("", false)
+		a.mu.Unlock()
+		t.Fatalf("alpha (40.1 GB) was admitted before the adopted engine's charge was re-estimated; "+
+			"committed now %s across %v", formatMemory(committed), holders)
+	}
+	if !strings.Contains(alphaErr.Error(), "default/phi") {
+		t.Errorf("refusal %q does not name the adopted engine", alphaErr.Error())
+	}
+}
+
+// An admitted service whose InferenceService cannot be read keeps the adopted
+// engine at the charge admission already counts, rather than guessing (#2535).
+func TestAdoptedEngine_AdmissionKeepsRecordedChargeWhenTheServiceIsUnreadable(t *testing.T) {
+	model := sizedModel("33.0 GiB")
+	phi := cumulativeISVC("phi")
+	alpha := cumulativeISVC("alpha")
+	a, _, _ := adoptAdmissionAgent(t, model, phi, alpha)
+	adoptEngineRecord(t, a, phi)
+	if err := a.config.K8sClient.Delete(context.Background(), phi); err != nil {
+		t.Fatal(err)
+	}
+
+	cacheTypeK, cacheTypeV := resolveCacheTypes(alpha)
+	if err := a.checkMemoryAdmission(context.Background(), alpha, model,
+		admissionContextSize(alpha), cacheTypeK, cacheTypeV); err != nil {
+		t.Fatalf("an unreadable adopted engine's InferenceService failed the admission: %v", err)
+	}
+	if got := a.processes["default/phi"].AdmittedBytes; got != adoptedSeedBytes {
+		t.Errorf("AdmittedBytes = %d, want the recorded %d", got, adoptedSeedBytes)
 	}
 }
 
@@ -283,6 +411,124 @@ func TestAdoptedEngine_FittingReestimateIsNotReported(t *testing.T) {
 	onlyProbes(t, *sent, "an adopted engine that fits")
 }
 
+// Across a restart, an earlier adoption's report is cleared by the re-estimate
+// that fits: the status must not keep saying the engine is over its budget
+// after the cause is gone (#2535).
+func TestAdoptedEngine_FittingReestimateClearsEarlierReport(t *testing.T) {
+	model := sizedModel("33.0 GiB")
+	phi := cumulativeISVC("phi")
+	phi.Status.SchedulingStatus = EventReasonInsufficientMemory
+	phi.Status.SchedulingMessage = "adopted engine is serving over its memory budget: estimated 40.1 GB required, " +
+		"40.1 GB of the 48.0 GB budget already committed to 1 service (default/other), 7.9 GB free"
+	a, _, _ := adoptAdmissionAgent(t, model, phi)
+	adoptEngineRecord(t, a, phi)
+
+	if err := a.ensureProcess(context.Background(), refreshedISVC(t, a, "phi")); err != nil {
+		t.Fatal(err)
+	}
+	wantReestimatedCharge(t, a.processes["default/phi"].AdmittedBytes)
+	if status, msg := schedulingStatus(t, a, "phi"); status != "" || msg != "" {
+		t.Errorf("the re-estimate fits (40.1 GB alone on 48 GB) but the status still reads %q / %q", status, msg)
+	}
+}
+
+// The clear belongs to the adopted engine's own report: a status another
+// writer set, in the same reason, is left alone (#2535).
+func TestAdoptedEngine_FittingReestimateLeavesAnotherStatusAlone(t *testing.T) {
+	const msg = "estimated 40.1 GB required, 40.1 GB of the 48.0 GB budget already committed to " +
+		"1 service (default/other), 7.9 GB free"
+	model := sizedModel("33.0 GiB")
+	phi := cumulativeISVC("phi")
+	phi.Status.SchedulingStatus = EventReasonInsufficientMemory
+	phi.Status.SchedulingMessage = msg
+	a, _, _ := adoptAdmissionAgent(t, model, phi)
+	adoptEngineRecord(t, a, phi)
+
+	if err := a.ensureProcess(context.Background(), refreshedISVC(t, a, "phi")); err != nil {
+		t.Fatal(err)
+	}
+	if status, got := schedulingStatus(t, a, "phi"); status != EventReasonInsufficientMemory || got != msg {
+		t.Errorf("SchedulingStatus = %q / %q, want the other writer's status left alone", status, got)
+	}
+}
+
+// A report within one run is cleared once the service holding the memory is
+// gone. The report's own re-check drives it: each one that still does not fit
+// backs off like a start refusal, and the first that fits clears the status
+// (#2535).
+func TestAdoptedEngine_ReportClearsWhenTheCauseGoesAway(t *testing.T) {
+	model := sizedModel("33.0 GiB")
+	phi := cumulativeISVC("phi")
+	a, rec, _ := adoptAdmissionAgent(t, model, phi)
+	clk := adoptedReportClock(t, a)
+	adoptEngineRecord(t, a, phi)
+	a.processes["default/other"] = &ManagedProcess{Name: "other", Namespace: "default", AdmittedBytes: gib(40.1)}
+
+	if err := a.ensureProcess(context.Background(), phi); err != nil {
+		t.Fatalf("ensureProcess: %v", err)
+	}
+	if status, _ := schedulingStatus(t, a, "phi"); status != EventReasonInsufficientMemory {
+		t.Fatalf("SchedulingStatus = %q, want the over-budget report", status)
+	}
+	if events := drainEvents(rec); len(events) != 1 {
+		t.Fatalf("events = %q, want the report's one Warning", events)
+	}
+	if got := adoptedRecheckIn(t, a, clk); got != refusalRecheckInitial {
+		t.Errorf("first re-check in %s, want %s", got, refusalRecheckInitial)
+	}
+
+	// The re-check still does not fit: the report stands, no new Event, and the
+	// next re-check waits twice as long.
+	adoptedReconcileAt(t, a, clk)
+	if status, _ := schedulingStatus(t, a, "phi"); status != EventReasonInsufficientMemory {
+		t.Errorf("the re-check cleared a report whose cause still holds: SchedulingStatus = %q", status)
+	}
+	if events := drainEvents(rec); len(events) != 0 {
+		t.Errorf("a re-check reported again: %q", events)
+	}
+	if got := adoptedRecheckIn(t, a, clk); got != 2*refusalRecheckInitial {
+		t.Errorf("second re-check in %s, want %s", got, 2*refusalRecheckInitial)
+	}
+
+	// The cause is gone: the next re-check fits and clears the report.
+	a.mu.Lock()
+	delete(a.processes, "default/other")
+	a.mu.Unlock()
+	adoptedReconcileAt(t, a, clk)
+	if status, msg := schedulingStatus(t, a, "phi"); status != "" || msg != "" {
+		t.Fatalf("default/other is gone but phi's status still reads %q / %q", status, msg)
+	}
+	if adoptedRecheckQueued(t, a) {
+		t.Error("a re-check was scheduled for a report that was cleared")
+	}
+
+	// A charge over its own budget cannot clear without a respawn, so it is not
+	// re-checked: the report stays and nothing is scheduled after the report's
+	// own first re-check.
+	t.Run("own-budget shortfall is not re-checked", func(t *testing.T) {
+		model := sizedModel("33.0 GiB")
+		model.Spec.Hardware = &inferencev1alpha1.HardwareSpec{MemoryBudget: "12Gi"}
+		phi := cumulativeISVC("phi")
+		a, _, _ := adoptAdmissionAgent(t, model, phi)
+		clk := adoptedReportClock(t, a)
+		adoptEngineRecord(t, a, phi)
+
+		if err := a.ensureProcess(context.Background(), phi); err != nil {
+			t.Fatalf("ensureProcess: %v", err)
+		}
+		if status, _ := schedulingStatus(t, a, "phi"); status != EventReasonInsufficientMemory {
+			t.Fatalf("SchedulingStatus = %q, want the over-budget report", status)
+		}
+		adoptedReconcileAt(t, a, clk)
+		if status, _ := schedulingStatus(t, a, "phi"); status != EventReasonInsufficientMemory {
+			t.Errorf("SchedulingStatus = %q, want the report to stand until a respawn", status)
+		}
+		if adoptedRecheckQueued(t, a) {
+			t.Error("an own-budget shortfall was re-checked against memory that cannot change it")
+		}
+	})
+}
+
 // A process this agent started is never re-estimated, whatever the Model's
 // budget says about its charge: the defect is adoption, and a spawned engine
 // keeps the charge its own admission gave it.
@@ -347,11 +593,13 @@ func TestAdoptedEngine_ReestimateMatchesFreshAdmission(t *testing.T) {
 	model := sizedModel("7.5 GiB")
 	model.Status.GGUF = &inferencev1alpha1.GGUFMetadata{
 		LayerCount: 32, EmbeddingSize: 4096, HeadCount: 32, HeadCountKV: 8,
+		RecurrentStatePerSeq: 64 << 20,
 	}
 	phi := cumulativeISVC("phi")
 	phi.Spec.ContextSize = ptrInt32(131072)
 	phi.Spec.CacheTypeK = "q8_0"
 	phi.Spec.CacheTypeV = "q8_0"
+	phi.Spec.ParallelSlots = ptrInt32(2)
 
 	fresh := phi.DeepCopy()
 	freshAgent, _ := newCumulativeAgent(t, MetalAgentConfig{}, fresh)
@@ -379,8 +627,10 @@ func TestAdoptedEngine_DefaultContextSizeMatchesFreshAdmission(t *testing.T) {
 	model := sizedModel("7.5 GiB")
 	model.Status.GGUF = &inferencev1alpha1.GGUFMetadata{
 		LayerCount: 32, EmbeddingSize: 4096, HeadCount: 32, HeadCountKV: 8,
+		RecurrentStatePerSeq: 64 << 20,
 	}
 	phi := cumulativeISVC("phi")
+	phi.Spec.ParallelSlots = ptrInt32(2)
 
 	freshAgent, _ := newCumulativeAgent(t, MetalAgentConfig{}, phi.DeepCopy())
 	if err := freshAgent.checkMemoryAdmission(context.Background(), phi.DeepCopy(), model,
