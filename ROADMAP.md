@@ -1,6 +1,6 @@
 # LLMKube Roadmap
 
-**Last Updated:** 2026-06-08, at v0.8.1. The milestones and the "What's shipped" list below date from then. For the current release, see the [latest release](https://github.com/defilantech/LLMKube/releases/latest) and [CHANGELOG.md](CHANGELOG.md).
+**Last Updated:** 2026-11-09, at v0.10.17. For the current release, see the [latest release](https://github.com/defilantech/LLMKube/releases/latest) and [CHANGELOG.md](CHANGELOG.md).
 
 ---
 
@@ -34,28 +34,40 @@ The current work (see milestones below) is about coupling these planes into one 
 
 ---
 
-## What's shipped (as of v0.8.1, June 2026)
+## What's shipped
 
-Since then, among other changes (see the [CHANGELOG](CHANGELOG.md) for versions): the SGLang runtime, multi-node vLLM serving (`spec.multiNode`), the `ModelPool`, `GPUQuota`, `LoRAAdapter`, `MetalNode` and `FederatedCluster` CRDs, Pyrra SLOs, `s3://` and `oci://` model sources, and `llmkube metal join` for Macs.
+### Since v0.8.1 (June to November 2026)
 
-### Serving core
+About 330 features shipped since v0.8.1. The highlights, by theme (see the [CHANGELOG](CHANGELOG.md) for versions):
+
+- **Serving breadth:** the SGLang runtime, multi-node vLLM serving (`spec.multiNode`), draft-model speculative decoding, the `ModelPool`, `GPUQuota` and `LoRAAdapter` CRDs, architecture-aware runtime placement, and pinned, flag-checked defaults for llama.cpp, vLLM and SGLang.
+- **Model supply chain:** `s3://` and `oci://` sources (OCI through Kubernetes ImageVolume), OCI publishing for prefetch, resumable downloads, digest verification for multi-file and `pvc://` sources, Hugging Face mirror support, and optional Socair attestation before a Model is served.
+- **Apple Silicon as a fleet member:** the `MetalNode` CRD, verified by a controller dial-back with the agent reporting through its Lease; `llmkube metal join`, `leave` and token management; engines served on loopback behind an authenticated ingress and relay; memory admission against what running engines already hold; engines that survive agent restarts; and signed, notarized macOS binaries with a Homebrew cask.
+- **Governance and routing:** ModelRouter token and dollar budgets enforced in the data plane, load-aware and session-sticky placement, an AgentGateway data plane beside Proxy and Gateway, the Anthropic Messages API, `/v1/embeddings` and `/v1/rerank`, shadow mirroring, and opt-in caller attribution on the router's audit log.
+- **Fleet and federation:** the `FederatedCluster` CRD for multi-site fleets.
+- **Reliability and observability:** Pyrra SLOs, watch-path stall detection, engine-stall liveness for vLLM and SGLang, alerts for unreconciled specs and silent GPU faults, and a pinned llama.cpp metric contract.
+- **Security:** allowlisted local and hostPath model sources and a blocked controller SSRF path (v0.9.0, GHSA-jw3m-8q7m-f35r), the authenticated metal-agent ingress (v0.10.0), allowlisted engine environments, and admission policy limiting metal-agent writes.
+
+### Baseline as of v0.8.1
+
+#### Serving core
 - Kubernetes-native CRDs (`Model`, `InferenceService`)
 - Model sources: HuggingFace / HTTP / PVC / `file://` (air-gapped), PVC-based cache with SHA256 keys
 - OpenAI-compatible `/v1/chat/completions`, multi-replica with HPA and `kubectl scale`
 - Full CLI (`deploy/list/status/queue/cache/benchmark/inspect/license`), Helm chart, model catalog
 - Runtimes: **llama.cpp** (CUDA/Metal), **vLLM** (PagedAttention), **mlx-server** (Apple Silicon MLX)
 
-### Heterogeneous GPU + Apple Silicon fleet
+#### Heterogeneous GPU + Apple Silicon fleet
 - NVIDIA (T4/L4/A100/H100/Blackwell) via CUDA 13 images; automatic GPU layer offload
 - Single-node multi-GPU sharding (layer-split and tensor-split); hybrid CPU/GPU offload for MoE
 - **Apple Silicon as a Kubernetes fleet member** via the metal-agent, with TurboQuant KV cache for long-context, memory pre-flight validation, and health monitoring
 - GPU scheduling, contention visibility (`WaitingForGPU`), priority classes, queue management
 
-### Governance and agentic
+#### Governance and agentic
 - **ModelRouter (Phase 1):** one OpenAI-compatible endpoint across local `InferenceService`s and external providers, with fail-closed routing for sensitive data and a per-request audit log
 - **Foreman (v0.1):** Kubernetes-native agentic pipeline (coder / verifier / reviewer) dispatched across a heterogeneous local fleet, gated against the repo's own build and tests, including Job-mode execution against in-cluster models
 
-### Observability and economics
+#### Observability and economics
 - 10+ Prometheus metrics, OpenTelemetry tracing of ModelRouter proxy requests (OTLP, e.g. Tempo), DCGM GPU metrics, Grafana dashboards, PodMonitor
 - **InferCost** (companion project): cost-per-token from hardware amortization + electricity + DCGM power, per-team attribution, and cloud-vs-on-prem break-even
 
@@ -65,22 +77,22 @@ Since then, among other changes (see the [CHANGELOG](CHANGELOG.md) for versions)
 
 Milestones are tracked in [GitHub Milestones](https://github.com/defilantech/LLMKube/milestones). Dates are targets, sequenced around a concrete enterprise deployment (datacenter B200 + multi-site edge fleet) landing in production in Q3 2026.
 
-### [M1: Trustworthy fleet](https://github.com/defilantech/LLMKube/milestone/1) - July 2026
+### [M1: Trustworthy fleet](https://github.com/defilantech/LLMKube/milestone/1) - July 2026 · **closed**
 *Fix what shipped and make the fleet substrate reliable before extending it.*
 
 The heterogeneous-fleet claim is only as good as the fleet's ability to tell a live node from a dead one and to ship a correct change. This milestone closes the two correctness bugs on the core paths, adds liveness detection for fleet nodes (#627), migrates the metal-agent off deprecated `Endpoints` (#377), and lands Foreman v0.2 with a CI e2e gate.
 
-### [M2: Sovereign enterprise (B200-ready)](https://github.com/defilantech/LLMKube/milestone/2) - August 2026
+### [M2: Sovereign enterprise (B200-ready)](https://github.com/defilantech/LLMKube/milestone/2) - August 2026 · **96% (2 issues open)**
 *The enterprise gate.*
 
 Multi-cluster federation (#630) so a datacenter cluster and multiple edge sites are one fleet rather than islands; NVIDIA Blackwell B200 validation (#413); air-gapped model sources (#53); declarable SLOs via Pyrra (#415); GPUQuota for multi-tenant clusters (#416); supply-chain provenance (#233); and multi-vendor GPU scheduling for AMD/Intel (#395).
 
-### [M3: Governed + heterogeneous breadth](https://github.com/defilantech/LLMKube/milestone/3) - Q4 2026
+### [M3: Governed + heterogeneous breadth](https://github.com/defilantech/LLMKube/milestone/3) - Q4 2026 · **50% (13 of 26 closed)**
 *Make governance real, and extend the fleet's reach.*
 
-ModelRouter to GA (#437) with routing metrics, hierarchical budgets, and audit; **SLO-aware routing and scheduling** that turns SLOs from a dashboard into enforcement (#629); **InferCost token budgets as synchronous admission gates** rather than retrospective reports (#631); and runtime breadth across the fleet (per-CR metal runtime #525, multi-model edge serving #516, speculative decoding #502).
+ModelRouter to GA (#437) with routing metrics, hierarchical budgets, and audit; **SLO-aware routing and scheduling** that turns SLOs from a dashboard into enforcement (#629); **InferCost token budgets as synchronous admission gates** rather than retrospective reports (#631); and runtime breadth across the fleet (multi-model edge serving #516; the per-CR metal runtime and speculative decoding shipped in v0.10.0 and v0.9.18).
 
-### [M4: Foundation + depth](https://github.com/defilantech/LLMKube/milestone/4) - ongoing
+### [M4: Foundation + depth](https://github.com/defilantech/LLMKube/milestone/4) - ongoing · **83%**
 Testing and coverage, EndpointSlice migration follow-through, and depth on the Apple Silicon / TurboQuant path.
 
 ### [Backlog (Q1 2027+)](https://github.com/defilantech/LLMKube/milestone/5)
