@@ -43,6 +43,7 @@ var sha256HelperTokens = []string{
 	"llmkube_sha256_hash",
 	"llmkube_precheck_sha256",
 	"llmkube_marker_hit_sha256",
+	"llmkube_accept_stamp",
 	"llmkube_check_sha256",
 	"llmkube_publish_sha256",
 	"llmkube_precheck_file_sha256",

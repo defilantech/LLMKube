@@ -864,11 +864,22 @@ func hfAuthPrefix(isHFAuth bool) string {
 //   - The stamp (<file>.sha256) attests to the exact bytes that were hashed:
 //     it holds the verified hash, the file size and its mtime, and a hit
 //     skips re-hashing only when all three still agree. A missing or stale
-//     stamp re-hashes once and rewrites it. Stamps and markers are written
-//     through a temp file and renamed so a concurrent reader never sees a
-//     truncated one; mktemp leaves nothing matching the *.tmp sweep. The
-//     stamp is the same format, under the same <file>.sha256 name, that
-//     pkg/agent/executor.go verifyCachedDigest writes and reads: a
+//     stamp re-hashes once and rewrites it. On a FUSE cache the mtime is not
+//     the same on every mount: a blobfuse2 rename copies the blob, so other
+//     nodes report the copy's Last-Modified, while the writing node's file
+//     cache keeps reporting its local copy's time (#2393). There a stamp
+//     whose digest and size agree is also a hit when the file's mtime lies
+//     between the mtime the stamp recorded and the stamp file's own mtime,
+//     both as this mount reports them: the file last changed before it was
+//     stamped. A later replacement or rewrite moves the file's mtime past the
+//     stamp's and misses. A hit never rewrites the stamp, so no stamp vouches
+//     for bytes nobody hashed. The filesystem is classified from the file
+//     itself into a variable the script clears first, so neither the pod's
+//     environment nor the order of the cache prologue decides it. Stamps and
+//     markers are written through a temp file and renamed so a concurrent
+//     reader never sees a truncated one; mktemp leaves nothing matching the
+//     *.tmp sweep. The stamp is the same format, under the same <file>.sha256
+//     name, that pkg/agent/executor.go verifyCachedDigest writes and reads: a
 //     digest+size+mtime triple, so a stamp from either writer is legible to
 //     either reader (#1980). A bare-digest stamp from before #1980 is a miss
 //     and is rewritten.
@@ -910,7 +921,10 @@ const sha256VerifyLogFns = `llmkube_verify_start() { _llmkube_mib=$(($(stat -c %
 	`llmkube_verify_ok() { echo "SHA256 OK for $1: $actual ($_llmkube_mib MiB in $(($(date +%s) - _llmkube_t0)) s)"; }; `
 
 // sha256VerifyFns is the download-time gate set: sha256HashFns plus the
-// atomic stamp/marker writers and the verify-then-publish pair.
+// atomic stamp/marker writers and the verify-then-publish pair. A stamp
+// vouches for a file on its exact digest, size and mtime, or on a FUSE cache
+// on its digest and size with the file's mtime between the recorded one and
+// the stamp's own (llmkube_accept_stamp; see the list above).
 // buildPVCVerifyCommand uses sha256HashFns alone, because a pvc:// mount is
 // read-only and cannot carry a stamp.
 var sha256VerifyFns = sha256VerifyFnsFor(false)
@@ -929,14 +943,15 @@ func sha256VerifyFnsFor(logged bool) string {
 		publishStart, publishOK = `llmkube_verify_start "$1" "$2"; `, `llmkube_verify_ok "$2"; _llmkube_t0=$(date +%s); `
 		published = ` && echo "Published $2 (rename $(($(date +%s) - _llmkube_t0)) s)"`
 	}
-	return sha256HashFns + atomicWriteFn + logFns + `llmkube_stamp_sha256() { llmkube_atomic_write "$1.sha256" "$MODEL_SHA256 $(stat -c '%s %Y' "$1" 2>/dev/null)"; }; llmkube_marker_hit_sha256() { [ -f "$1.$MODEL_SHA256.sha256-rejected" ]; }; llmkube_check_sha256() { if [ "$(cat "$1.sha256" 2>/dev/null)" = "$MODEL_SHA256 $(stat -c '%s %Y' "$1" 2>/dev/null)" ]; then echo "Model verified against ${MODEL_DIGEST_FIELD:-spec.sha256} (stamp hit, skipped re-hashing)` + stampHit + `"; return 0; fi; ` + checkStart + `actual=$(llmkube_sha256_hash "$1") || return 1; if [ "$actual" != "$MODEL_SHA256" ]; then echo "ERROR: ${MODEL_DIGEST_FIELD:-spec.sha256} mismatch for the cached $1: expected $MODEL_SHA256, computed $actual; leaving it in place (the cache dir may be shared); a fresh download replaces it" >&2; return 1; fi; ` + checkOK + `llmkube_stamp_sha256 "$1"; }; llmkube_publish_sha256() { ` + publishStart + `actual=$(llmkube_sha256_hash "$1") || return 1; if [ "$actual" != "$MODEL_SHA256" ]; then rm -f "$1"; llmkube_atomic_write "$2.$MODEL_SHA256.sha256-rejected" "$MODEL_SHA256"; echo "ERROR: ${MODEL_DIGEST_FIELD:-spec.sha256} mismatch: expected $MODEL_SHA256, computed $actual; discarded $1; recorded $2.$MODEL_SHA256.sha256-rejected" >&2; return 1; fi; ` + publishOK + `mv "$1" "$2" && llmkube_stamp_sha256 "$2" && rm -f "$2.$MODEL_SHA256.sha256-rejected"` + published + `; }` + " && "
+	return sha256HashFns + atomicWriteFn + logFns + `_llmkube_stamp_fs=; llmkube_stamp_sha256() { llmkube_atomic_write "$1.sha256" "$MODEL_SHA256 $(stat -c '%s %Y' "$1" 2>/dev/null)"; }; llmkube_accept_stamp() { _llmkube_now=$(stat -c '%s %Y' "$1" 2>/dev/null) || return 1; [ "$2" = "${MODEL_SHA256:-} $_llmkube_now" ] && return 0; [ -n "${MODEL_SHA256:-}" ] || return 1; [ -n "$_llmkube_stamp_fs" ] || _llmkube_stamp_fs=$(stat -f -c %t "$1" 2>/dev/null) || _llmkube_stamp_fs=unknown; [ "$_llmkube_stamp_fs" = ` + fuseSuperMagic + ` ] || return 1; case "$2" in "$MODEL_SHA256 "*) ;; *) return 1;; esac; _llmkube_rec=${2#"$MODEL_SHA256 "}; [ "${_llmkube_rec%% *}" = "${_llmkube_now%% *}" ] || return 1; _llmkube_rec=${_llmkube_rec#* }; _llmkube_now=${_llmkube_now#* }; _llmkube_stamped=$(stat -c %Y "$1.sha256" 2>/dev/null) || return 1; case "$_llmkube_rec$_llmkube_now$_llmkube_stamped" in *[!0-9]*|'') return 1;; esac; [ "$_llmkube_now" -ge "$_llmkube_rec" ] && [ "$_llmkube_now" -le "$_llmkube_stamped" ]; }; llmkube_marker_hit_sha256() { [ -f "$1.$MODEL_SHA256.sha256-rejected" ]; }; llmkube_check_sha256() { if llmkube_accept_stamp "$1" "$(cat "$1.sha256" 2>/dev/null)"; then echo "Model verified against ${MODEL_DIGEST_FIELD:-spec.sha256} (stamp hit, skipped re-hashing)` + stampHit + `"; return 0; fi; ` + checkStart + `actual=$(llmkube_sha256_hash "$1") || return 1; if [ "$actual" != "$MODEL_SHA256" ]; then echo "ERROR: ${MODEL_DIGEST_FIELD:-spec.sha256} mismatch for the cached $1: expected $MODEL_SHA256, computed $actual; leaving it in place (the cache dir may be shared); a fresh download replaces it" >&2; return 1; fi; ` + checkOK + `llmkube_stamp_sha256 "$1"; }; llmkube_publish_sha256() { ` + publishStart + `actual=$(llmkube_sha256_hash "$1") || return 1; if [ "$actual" != "$MODEL_SHA256" ]; then rm -f "$1"; llmkube_atomic_write "$2.$MODEL_SHA256.sha256-rejected" "$MODEL_SHA256"; echo "ERROR: ${MODEL_DIGEST_FIELD:-spec.sha256} mismatch: expected $MODEL_SHA256, computed $actual; discarded $1; recorded $2.$MODEL_SHA256.sha256-rejected" >&2; return 1; fi; ` + publishOK + `mv "$1" "$2" && llmkube_stamp_sha256 "$2" && rm -f "$2.$MODEL_SHA256.sha256-rejected"` + published + `; }` + " && "
 }
 
 // sha256MultiFileFns defines the per-file verify helpers the multi-file loop
 // runs through (#1978). It is appended to sha256VerifyFns so the loop can set
 // MODEL_SHA256 per iteration and reuse llmkube_check_sha256 /
 // llmkube_publish_sha256, which name MODEL_DIGEST_FIELD in their messages
-// (set to spec.fileSha256 for this loop).
+// (set to spec.fileSha256 for this loop). A pinned file's stamp is accepted
+// the way llmkube_accept_stamp accepts it.
 //
 // A file with no digest in $MODEL_FILE_SHA256 gets an empty MODEL_SHA256, and
 // llmkube_accept_file / llmkube_publish_file fall back to existence and a plain
