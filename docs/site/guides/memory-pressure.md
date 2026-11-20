@@ -43,7 +43,11 @@ the agent cannot size a model at all, it fails closed with
 memory so the kernel cannot page it out. `--memory-check-mode warn` restores
 the old log-and-start behavior.
 
-### An engine that is already serving
+How the KV cache is sized, the budget table, and what `InsufficientMemory`
+covers are in [Memory budgets](/docs/guides/macos-metal#memory-budgets) in the
+macOS guide.
+
+## An engine that is already serving
 
 `InsufficientMemory` also covers an engine that is already running. When the
 agent starts, it adopts the engines a previous agent process left running, and
@@ -58,12 +62,11 @@ on the same backoff, clearing `status.schedulingStatus` and
 stopped and its charge released, or after the Model's
 `spec.hardware.memoryBudget` or `spec.hardware.memoryFraction` is raised high
 enough for the charge to fit, up to this host's limit. With that prefix in
-`status.schedulingMessage`, free memory or raise the budget; without it, the
-model was refused and starts on its own once it fits.
-
-How the KV cache is sized, the budget table, and what `InsufficientMemory`
-covers are in [Memory budgets](/docs/guides/macos-metal#memory-budgets) in the
-macOS guide.
+`status.schedulingMessage`, free memory or raise the budget, unless the message
+says the budget is `clamped to this host's`: the Model's budget already reaches
+the limit then, so raise the limit itself with `--memory-fraction` or
+`--allow-model-memory-budget-override`; without the prefix, the model was
+refused and starts on its own once it fits.
 
 ## While models run: the watchdog
 
