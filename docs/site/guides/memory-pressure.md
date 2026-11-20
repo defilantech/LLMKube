@@ -56,7 +56,8 @@ a model started later must fit next to them, and the agent re-checks the report
 on the same backoff, clearing `status.schedulingStatus` and
 `status.schedulingMessage` once the charge fits again: after another model is
 stopped and its charge released, or after the Model's
-`spec.hardware.memoryBudget` is raised. With that prefix in
+`spec.hardware.memoryBudget` or `spec.hardware.memoryFraction` is raised high
+enough for the charge to fit, up to this host's limit. With that prefix in
 `status.schedulingMessage`, free memory or raise the budget; without it, the
 model was refused and starts on its own once it fits.
 
