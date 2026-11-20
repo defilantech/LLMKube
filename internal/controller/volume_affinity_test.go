@@ -31,10 +31,10 @@ import (
 )
 
 func TestDetectUnbindableVolume(t *testing.T) {
-	// Verbatim from a pod blocked by defilantech/LLMKube#1509: the microk8s
-	// hostpath provisioner's helper could not schedule onto a GPU-tainted node,
-	// so it never stamped the PV, and the PV was published with a node affinity
-	// matching no node.
+	// From a pod blocked by defilantech/LLMKube#1509, with the node name replaced
+	// by a placeholder: the microk8s hostpath provisioner's helper could not
+	// schedule onto a GPU-tainted node, so it never stamped the PV, and the PV
+	// was published with a node affinity matching no node.
 	const realMessage = `running PreBind plugin "VolumeBinding": binding volumes: ` +
 		`pv "pvc-7d8e47dd-1b2c-4a3e-9f10-2c3d4e5f6a7b" node affinity doesn't match node "spark-2": no matching NodeSelectorTerms`
 

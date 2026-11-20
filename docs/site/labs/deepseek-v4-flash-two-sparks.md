@@ -60,8 +60,8 @@ node to port 1 of the next.
 
 | Leg | Node | Address | Ethernet device | RDMA device |
 | --- | --- | --- | --- | --- |
-| dgx3 to dgx1 | `spark-3` | `10.10.4.1` | `enp1s0f0np0` | `rocep1s0f0` |
-| dgx3 to dgx1 | `spark-1` | `10.10.4.2` | `enp1s0f1np1` | `rocep1s0f1` |
+| spark-3 to spark-1 | `spark-3` | `10.10.4.1` | `enp1s0f0np0` | `rocep1s0f0` |
+| spark-3 to spark-1 | `spark-1` | `10.10.4.2` | `enp1s0f1np1` | `rocep1s0f1` |
 
 Two details that are easy to get wrong:
 

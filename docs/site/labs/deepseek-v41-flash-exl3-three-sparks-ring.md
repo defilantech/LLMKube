@@ -237,7 +237,8 @@ The serving arguments that are load-bearing:
   and a guard sidecar that flushes the cache and suspends the group at a MemFree
   floor (see [Node memory while serving](../guides/multi-node-inference#node-memory-while-serving)).
   `config/samples/gb10-memory-guard.yaml` is the older DaemonSet form of the same
-  job, for an operator without the serving guard; run one or the other, never both.
+  job, for an operator without the serving guard or a cluster too old for its
+  native sidecar (Kubernetes 1.29); run one or the other, never both.
   Do not raise the pin past about 4.2 GiB on three Sparks.
 - `--default-chat-template-kwargs '{"thinking": false}'`. Thinking off, with the
   reasoning parser still wired.
@@ -401,8 +402,9 @@ exits with a message that reads like a memory-sizing problem. Drop the page
 cache on each member before creating the `InferenceService`
 (`config/samples/jobs/drop-page-cache.yaml`). With the KV cache pinned there is
 no profiler left to catch a dirty cache, so the drop is mandatory before every
-boot; the ring sample's `spec.multiNode.memory` does it on every member. Note this is the exact opposite of
-what the one-Spark ExLlamaV3 build needs, which aliases that same page cache;
+boot; the ring sample's `spec.multiNode.memory` does it on every member. Note
+this is the exact opposite of what the one-Spark ExLlamaV3 build needs, which
+aliases that same page cache;
 do not copy a cleanup step between the two.
 
 **A claim that must bind will not bind.** The members are placed with
@@ -434,7 +436,8 @@ build the dict form replaces `text_config` wholesale.
 7. Do not apply `config/samples/gb10-memory-guard.yaml`: the ring sample's
    `spec.multiNode.memory` drops caches before every boot and runs the memory
    guard on every member while it serves, and the two together put two guards on
-   every node.
+   every node. Apply the DaemonSet instead only where that guard cannot run: an
+   operator without it, or Kubernetes older than 1.29 (see the DaemonSet's header).
 8. Apply the `Model`, then the `InferenceService`, then `dsv41-keepwarm.yaml`
    (the first request after a long idle otherwise runs in a hidden GB10 slow
    state, about 1.5x slower for its whole length).
