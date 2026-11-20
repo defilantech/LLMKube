@@ -33,6 +33,7 @@ import (
 
 	inferencev1alpha1 "github.com/defilantech/llmkube/api/v1alpha1"
 	"github.com/defilantech/llmkube/internal/router"
+	metalagent "github.com/defilantech/llmkube/pkg/agent"
 )
 
 // routerProxyConfigKey is the file name inside the controller-managed
@@ -396,10 +397,12 @@ func (r *ModelRouterReconciler) resolveInferenceServiceAddress(
 // --served-model-name, else the modelRef (#1988). oMLX serves the model-store
 // directory basename, mirroring the agent's model-id derivation in
 // pkg/agent/executor_omlx.go (filepath.Base(ModelSource)); the two sides must
-// agree or the router rewrites to a name oMLX rejects. llama.cpp ignores the
-// field. A missing InferenceService or Model, or an empty ModelRef, degrades
-// to "" (the InferenceService name fallback) rather than failing the compile;
-// the address path already reports the backend unhealthy.
+// agree or the router rewrites to a name oMLX rejects. Ollama serves the tag
+// its executor pulls for the Model name; OllamaModelTag is the same function
+// exported for this side. llama.cpp ignores the field. A missing
+// InferenceService or Model, or an empty ModelRef, degrades to "" (the
+// InferenceService name fallback) rather than failing the compile; the
+// address path already reports the backend unhealthy.
 func (r *ModelRouterReconciler) localBackendServedModel(
 	ctx context.Context,
 	namespace string,
@@ -408,13 +411,14 @@ func (r *ModelRouterReconciler) localBackendServedModel(
 	if isvc == nil {
 		return ""
 	}
-	switch runtimeNameLabel(isvc) {
+	runtimeName := runtimeNameLabel(isvc)
+	switch runtimeName {
 	case RuntimeVLLM, RuntimeSGLANG:
 		if names := servedModelNames(isvc); len(names) > 0 {
 			return names[0]
 		}
 		return ""
-	case inferencev1alpha1.RuntimeOMLX:
+	case inferencev1alpha1.RuntimeOMLX, inferencev1alpha1.RuntimeOllama:
 	default:
 		return ""
 	}
@@ -424,6 +428,9 @@ func (r *ModelRouterReconciler) localBackendServedModel(
 	model := &inferencev1alpha1.Model{}
 	if err := r.Get(ctx, types.NamespacedName{Name: isvc.Spec.ModelRef, Namespace: namespace}, model); err != nil {
 		return ""
+	}
+	if runtimeName == inferencev1alpha1.RuntimeOllama {
+		return metalagent.OllamaModelTag(model.Name)
 	}
 	if model.Spec.Source != "" {
 		return filepath.Base(model.Spec.Source)
