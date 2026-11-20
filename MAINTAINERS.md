@@ -4,11 +4,11 @@ This file lists the maintainers of LLMKube.
 
 ## Current Maintainers
 
-| Maintainer  | GitHub                                       | Areas                                 |
-| ----------- | -------------------------------------------- | ------------------------------------- |
-| Chris Maher | [@Defilan](https://github.com/Defilan)       | Lead: operator, CLI, Helm, docs       |
-| Jory Irving | [@joryirving](https://github.com/joryirving) | Foreman (coder/reviewer harness)      |
-| Tanguille   | [@Tanguille](https://github.com/Tanguille)   | Observability                         |
+| Name        | GitHub ID                                    | Company/Organization   | Areas                            |
+| ----------- | -------------------------------------------- | ---------------------- | -------------------------------- |
+| Chris Maher | [@Defilan](https://github.com/Defilan)       | Defilan Technologies   | Lead: operator, CLI, Helm, docs  |
+| Jory Irving | [@joryirving](https://github.com/joryirving) | <!-- pending reply --> | Foreman (coder/reviewer harness) |
+| Tanguille   | [@Tanguille](https://github.com/Tanguille)   | <!-- pending reply --> | Observability                    |
 
 Maintainers review and merge pull requests, triage issues, and help set
 technical direction. Area maintainers focus their review and merge authority
