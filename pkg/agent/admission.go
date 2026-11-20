@@ -301,11 +301,14 @@ func (a *MetalAgent) reestimateAdoptedCharge(
 	return true
 }
 
-// reestimatePendingAdoptedCharges re-estimates every adopted engine whose charge
+// reestimatePendingAdoptedCharges re-estimates the adopted engines whose charge
 // this agent has not re-estimated yet, so no admission measures its fit against
-// a charge the current estimate no longer holds (#2535). The watcher delivers
-// services in list order, so the engine that needs it may be handled after the
-// service being admitted. It does not hold a.mu: each Get is I/O.
+// a charge the current estimate no longer holds (#2535). It skips an engine
+// whose spec changed since its InferenceService: until the reconcile that
+// replaces it stops and respawns it, nothing can compute what it runs (the
+// engine record holds no context size). The watcher delivers services in list
+// order, so the engine that needs it may be handled after the service being
+// admitted. It does not hold a.mu: each Get is I/O.
 func (a *MetalAgent) reestimatePendingAdoptedCharges(ctx context.Context) {
 	type pendingCharge struct {
 		process  *ManagedProcess
@@ -328,7 +331,7 @@ func (a *MetalAgent) reestimatePendingAdoptedCharges(ctx context.Context) {
 				"key", namespaced.String(), "error", err)
 			continue
 		}
-		// A spec change stops and respawns this engine on its own reconcile;
+		// The reconcile that replaces this engine stops and respawns it;
 		// until then the recorded charge is what the engine holds.
 		if computeSpecHash(isvc) != c.specHash {
 			continue

@@ -2433,8 +2433,9 @@ func (a *MetalAgent) checkMemoryAdmission(
 	cacheTypeK, cacheTypeV string,
 ) error {
 	// An admission must not fit against an adopted engine's recorded charge,
-	// which the current estimate may no longer hold: re-estimate every engine
-	// still carrying one, whatever order the watcher delivers them in (#2535).
+	// which the current estimate may no longer hold: re-estimate the pending
+	// adopted engines whatever order the watcher delivers them in (#2535). One
+	// whose spec changed is left to the reconcile that replaces it.
 	a.reestimatePendingAdoptedCharges(ctx)
 	estimate, err := a.estimateModelMemory(ctx, model, contextSize, cacheTypeK, cacheTypeV,
 		derefInt32(isvc.Spec.ParallelSlots))
