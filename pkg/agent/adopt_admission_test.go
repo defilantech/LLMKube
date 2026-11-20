@@ -18,6 +18,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -308,10 +309,7 @@ func TestAdoptedEngine_PendingPassReestimatesOnlyAdoptedEngines(t *testing.T) {
 	beta := cumulativeISVC("beta")
 	gamma := cumulativeISVC("gamma")
 	spawned := cumulativeISVC("spawned")
-	a, rec, _ := adoptAdmissionAgent(t, model, beta, gamma, spawned)
-	if err := a.config.K8sClient.Delete(context.Background(), gamma); err != nil {
-		t.Fatal(err)
-	}
+	a, _, _ := adoptAdmissionAgent(t, model, beta, gamma, spawned)
 	a.mu.Lock()
 	a.processes["default/beta"] = adoptedEngineProcess(beta)
 	a.processes["default/gamma"] = adoptedEngineProcess(gamma)
@@ -321,22 +319,40 @@ func TestAdoptedEngine_PendingPassReestimatesOnlyAdoptedEngines(t *testing.T) {
 	}
 	a.mu.Unlock()
 
-	// The pass ranges a map, so repeat it to see every order: the unreadable
-	// adopted engine must not end the pass before the readable one is charged.
-	for range 12 {
-		a.mu.Lock()
-		a.processes["default/beta"].AdmittedBytes = adoptedSeedBytes
-		a.processes["default/beta"].AdmissionReestimated = false
-		a.mu.Unlock()
-		a.reestimatePendingAdoptedCharges(context.Background())
-		drainEvents(rec)
-		if got := a.processes["default/beta"].AdmittedBytes; got < gib(40) || got > gib(40.2) {
-			t.Fatalf("AdmittedBytes = %s (%d), want the re-estimated 40.1 GB", formatMemory(got), got)
-		}
+	// The pass ranges a map, so fail whichever adopted engine it reaches first:
+	// the one after it must still be charged, in either order.
+	var failed string
+	base, ok := a.config.K8sClient.(client.WithWatch)
+	if !ok {
+		t.Fatalf("fake client is not a client.WithWatch: %T", a.config.K8sClient)
 	}
-	if got := a.processes["default/gamma"].AdmittedBytes; got != adoptedSeedBytes {
-		t.Errorf("an unreadable adopted engine's charge changed to %s (%d), want the recorded %s",
-			formatMemory(got), got, formatMemory(adoptedSeedBytes))
+	a.config.K8sClient = interceptor.NewClient(base, interceptor.Funcs{
+		Get: func(
+			ctx context.Context, w client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption,
+		) error {
+			if failed == "" && (key.Name == beta.Name || key.Name == gamma.Name) {
+				failed = key.Name
+				return errors.New("the API server is unavailable")
+			}
+			return w.Get(ctx, key, obj, opts...)
+		},
+	})
+
+	a.reestimatePendingAdoptedCharges(context.Background())
+
+	if failed == "" {
+		t.Fatal("the pass read no adopted engine's InferenceService")
+	}
+	for _, name := range []string{beta.Name, gamma.Name} {
+		got := a.processes["default/"+name].AdmittedBytes
+		if name == failed {
+			if got != adoptedSeedBytes {
+				t.Errorf("the unreadable engine default/%s changed to %s (%d), want the recorded %s",
+					name, formatMemory(got), got, formatMemory(adoptedSeedBytes))
+			}
+			continue
+		}
+		wantReestimatedCharge(t, got)
 	}
 	if got := a.processes["default/spawned"].AdmittedBytes; got != gib(1) {
 		t.Errorf("a spawned engine's charge changed to %s (%d), want the admitted %s",
