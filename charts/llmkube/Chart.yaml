@@ -4,8 +4,8 @@ description: >-
   The Kubernetes operator for self-hosted LLM inference. Run models across
   NVIDIA, Apple Silicon, and AMD from one spec.
 type: application
-version: 0.10.19
-appVersion: 0.10.19
+version: 0.10.20
+appVersion: 0.10.20
 keywords:
   - llm
   - kubernetes
@@ -31,10 +31,9 @@ maintainers:
     email: contact@defilan.com
 annotations:
   helm.sh/resource-policy: keep
-  # Artifact Hub listing metadata: https://artifacthub.io/docs/topics/annotations/helm/
   artifacthub.io/category: ai-machine-learning
   artifacthub.io/license: Apache-2.0
-  artifacthub.io/operator: "true"
+  artifacthub.io/operator: 'true'
   artifacthub.io/operatorCapabilities: Seamless Upgrades
   artifacthub.io/links: |
     - name: Documentation
