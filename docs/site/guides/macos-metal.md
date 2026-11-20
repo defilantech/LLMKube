@@ -652,8 +652,8 @@ What stays:
 
 `join` writes `~/Library/LaunchAgents/com.llmkube.metal-agent.plist` with its
 own arguments (`--kubeconfig`, `--namespace`, `--metal-node`,
-`--renew-service-account-token`, `--log-level` and `--llama-server`) plus the
-ones you give it: `--host-ip`, `--allowlist`, and `--agent-arg <flag>=<value>`
+`--renew-service-account-token`, `--log-level`, and `--llama-server` when
+it found one) plus the ones you give it: `--host-ip`, `--allowlist`, and `--agent-arg <flag>=<value>`
 for any other agent flag (see [On the Mac: join and leave](#on-the-mac-join-and-leave)). On a Mac
 that is already joined, change a flag without a new join string by editing
 that plist by hand:
@@ -1300,21 +1300,25 @@ token. The Mac trusts only that CA (no system roots).
 
 ### On the Mac: join and leave
 
-`llmkube metal join <join-string>` runs on the Mac (it refuses to run
-elsewhere). In order:
+`llmkube metal join <join-string>` runs on the Mac, or on a Linux host as a
+systemd user unit (see [Linux Host Agent](/docs/guides/linux-host-agent#join-the-host)).
+On a Mac, in order:
 
 1. Decodes the string and checks the CA against its pin, then prints
    the pin. Compare it with the one `token create` printed.
 2. Finds `llmkube-metal-agent`: `--agent-binary`, else on `PATH`,
    else next to `llmkube` (a release archive, a Homebrew prefix). Finds
-   `llama-server`, which the agent cannot start without:
-   `--llama-server`, else `/opt/homebrew/bin` or `/usr/local/bin`, else
-   on `PATH`. Either one missing stops join before it changes anything,
-   so the join string still works after you install it. So does a
-   `com.llmkube.metal-agent` LaunchAgent that `join` did not write
-   (`make install-metal-agent`, a playbook): it runs the agent with the
-   Mac's own arguments, so `join` refuses to replace it without
-   `--force`.
+   `llama-server`: `--llama-server`, else `/opt/homebrew/bin` or
+   `/usr/local/bin`, else on `PATH`. A missing agent stops join before it
+   changes anything, so the join string still works after you install it.
+   So does a missing `llama-server` for an explicit `--llama-server` or
+   the agent's default llama.cpp runtime. With another runtime, such as
+   `--agent-arg runtime=omlx`, the agent starts without `llama-server`
+   and refuses only services that select llama.cpp, so join goes on and
+   writes no `--llama-server`. A `com.llmkube.metal-agent` LaunchAgent
+   that `join` did not write (`make install-metal-agent`, a playbook)
+   also stops join before any change: it runs the agent with the Mac's
+   own arguments, so `join` refuses to replace it without `--force`.
 3. With the join token, which trusts only the string's CA, mints the
    agent's own token for the Mac's ServiceAccount (`--token-lifetime`,
    7 days by default).
@@ -1336,7 +1340,7 @@ elsewhere). In order:
    `LaunchAgents`, where launchd could load it at login; a later `join`
    does not overwrite that copy. The agent runs with `--kubeconfig`,
    `--namespace`, `--metal-node`, `--renew-service-account-token`,
-   `--log-level` and `--llama-server`, plus the flags from
+   `--log-level`, `--llama-server` when join found one, plus the flags from
    `--host-ip`, `--allowlist` and `--agent-arg` and any kept from the
    previous `join`, and logs to `~/Library/Logs/llmkube/metal-agent.log`. If
    `launchctl bootstrap` fails, the string is already used, but the
@@ -1356,7 +1360,7 @@ elsewhere). In order:
 | Flag | Default | Meaning |
 |---|---|---|
 | `--agent-binary` | on `PATH`, else next to `llmkube` | Path to `llmkube-metal-agent`. |
-| `--llama-server` | Homebrew's, else on `PATH` | Path to `llama-server`; join passes the path it found to the agent. |
+| `--llama-server` | Homebrew's, else on `PATH` | Path to `llama-server`, which the agent's llama.cpp runtime needs; join passes the path it found to the agent. |
 | `--token-lifetime` | `168h` (7 days) | Lifetime of the agent's token (at least `10m`). |
 | `--wait` | `3m` | How long to wait for `Reachable`; `0` returns once the agent is started. |
 | `--force` | off | Replace a `com.llmkube.metal-agent` LaunchAgent that `join` did not write. |

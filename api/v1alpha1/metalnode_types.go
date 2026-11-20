@@ -135,7 +135,8 @@ type MetalNodeVerifier struct {
 // host's own claim.
 type MetalNodeCapacity struct {
 	// MemoryBytes is the host's memory in bytes: unified memory on a Mac,
-	// RAM capped by the agent's cgroup limit on Linux.
+	// RAM on Linux, capped by the smallest cgroup v2 memory.max on the
+	// agent's cgroup path. A cgroup v1 limit is not read.
 	// +optional
 	MemoryBytes int64 `json:"memoryBytes,omitempty"`
 

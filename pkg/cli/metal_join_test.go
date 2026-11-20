@@ -195,11 +195,15 @@ type fakeListener struct{ net.Listener }
 
 func (fakeListener) Close() error { return nil }
 
-// issueJoinString runs token create for mac-a and returns the join string
-// and its payload.
+// joinTestNode is the MetalNode the join tests create and join: mac-a, or
+// host-a with newFakeLinux.
+var joinTestNode = "mac-a"
+
+// issueJoinString runs token create for joinTestNode and returns the join
+// string and its payload.
 func issueJoinString(t *testing.T, ns string) (string, metaljoin.Payload) {
 	t.Helper()
-	stdout, stderr, err := runMetal(t, "token", "create", "mac-a", "-n", ns)
+	stdout, stderr, err := runMetal(t, "token", "create", joinTestNode, "-n", ns)
 	if err != nil {
 		t.Fatalf("token create: %v\n%s", err, stderr)
 	}
@@ -211,7 +215,7 @@ func issueJoinString(t *testing.T, ns string) (string, metaljoin.Payload) {
 var testIngressSPKI = base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{7}, 32))
 
 // markVerified stands in for an agent and the MetalNode controller: the
-// agent renews mac-a's Lease at renewed with a report, and the controller
+// agent renews joinTestNode's Lease at renewed with a report, and the controller
 // marks the MetalNode connected and Reachable at 100.64.0.2:9443 for it.
 func markVerified(t *testing.T, c client.Client, ns string, renewed time.Time) {
 	t.Helper()
@@ -222,7 +226,7 @@ func markVerified(t *testing.T, c client.Client, ns string, renewed time.Time) {
 		t.Fatal(err)
 	}
 	lease := &coordinationv1.Lease{}
-	if err := c.Get(ctx, types.NamespacedName{Namespace: ns, Name: "mac-a"}, lease); err != nil {
+	if err := c.Get(ctx, types.NamespacedName{Namespace: ns, Name: joinTestNode}, lease); err != nil {
 		t.Fatal(err)
 	}
 	rt := metav1.NewMicroTime(renewed)
@@ -236,7 +240,7 @@ func markVerified(t *testing.T, c client.Client, ns string, renewed time.Time) {
 	}
 
 	mn := &inferencev1alpha1.MetalNode{}
-	if err := c.Get(ctx, types.NamespacedName{Namespace: ns, Name: "mac-a"}, mn); err != nil {
+	if err := c.Get(ctx, types.NamespacedName{Namespace: ns, Name: joinTestNode}, mn); err != nil {
 		t.Fatal(err)
 	}
 	mn.Status = verifiedStatus(mn.Generation)
@@ -371,7 +375,7 @@ func assertAgentKubeconfig(t *testing.T, paths metalAgentPaths, p metaljoin.Payl
 		t.Errorf("the agent's rest config reads its token from %q, want %s", cfg.BearerTokenFile, paths.Token)
 	}
 	user2, err := authenticatedAs(t, cfg)
-	if want := "system:serviceaccount:" + ns + ":llmkube-metal-mac-a"; err != nil || user2 != want {
+	if want := "system:serviceaccount:" + ns + ":llmkube-metal-" + joinTestNode; err != nil || user2 != want {
 		t.Errorf("the agent's kubeconfig authenticates as %q (%v), want %q", user2, err, want)
 	}
 }
@@ -489,10 +493,14 @@ func TestMetalJoinRefusesBeforeAnyChange(t *testing.T) {
 	}
 
 	prev := newMetalHost
-	newMetalHost = func() (metalHost, error) { return metalHost{goos: "linux", home: t.TempDir()}, nil }
+	newMetalHost = func() (metalHost, error) { return metalHost{goos: "windows", home: t.TempDir()}, nil }
 	defer func() { newMetalHost = prev }()
-	if _, _, err := runMetal(t, "join", joinString); err == nil || !strings.Contains(err.Error(), "runs on the Mac") {
-		t.Errorf("join on linux: err = %v, want a refusal", err)
+	if _, _, err := runMetal(t, "join", joinString); err == nil ||
+		!strings.Contains(err.Error(), "runs on the Mac or a Linux host") {
+		t.Errorf("join on windows: err = %v, want a refusal", err)
+	}
+	if _, _, err := runMetal(t, "leave"); err == nil || !strings.Contains(err.Error(), "runs on the Mac or a Linux host") {
+		t.Errorf("leave on windows: err = %v, want a refusal", err)
 	}
 }
 
@@ -895,6 +903,39 @@ func TestFindLlamaServer(t *testing.T) {
 	}
 	if _, err := findLlamaServer(host([]string{brew}, ""), missing); err == nil {
 		t.Error("a missing --llama-server was accepted")
+	}
+}
+
+// TestMetalJoinWithoutLlamaServerForAnotherRuntime: on a Mac too, the agent
+// starts without llama-server when its runtime is another one, so join does,
+// and names no llama-server in the LaunchAgent.
+func TestMetalJoinWithoutLlamaServerForAnotherRuntime(t *testing.T) {
+	_, _, ns := metalEnvtest(t)
+	mac := newFakeMac(t)
+	_ = os.Remove(mac.llamaServer)
+	joinString, _ := issueJoinString(t, ns)
+	_, stderr, err := runMetal(t, "join", joinString, "--wait", "0", "--agent-arg", "runtime=omlx")
+	if err != nil {
+		t.Fatalf("join --agent-arg runtime=omlx without llama-server: %v\n%s", err, stderr)
+	}
+	raw, err := os.ReadFile(mac.paths().Plist)
+	if err != nil {
+		t.Fatalf("read the LaunchAgent: %v", err)
+	}
+	got, err := metalAgentPlistArgs(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, a := range got {
+		if strings.HasPrefix(a, "--llama-server") {
+			t.Errorf("agent arguments %q name llama-server, which join did not find", got)
+		}
+	}
+	if !strings.Contains(strings.Join(got, " "), "--runtime=omlx") {
+		t.Errorf("agent arguments %q, want the given runtime", got)
+	}
+	if !strings.Contains(stderr, "runs --runtime omlx without llama.cpp") {
+		t.Errorf("join does not say the agent runs without llama.cpp: %q", stderr)
 	}
 }
 

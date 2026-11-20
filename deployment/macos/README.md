@@ -1079,11 +1079,11 @@ Names are matched exactly against `metadata.name`. An agent without the flag
 still claims everything, so set it on every agent; an InferenceService on none
 of the lists is then not served.
 
-`llmkube metal join` does not set an allowlist and has no option for one, so
-two Macs joined to the same namespace both start every Metal model there and
-overwrite each other's `<isvc>-agent` registration. Join each Mac to a
-namespace of its own, or add the flag to each joined plist by hand (see
-"Configuration" above). A later `join` drops it.
+`llmkube metal join --allowlist phi-4-mini,qwen-coder` sets the flag in the
+plist it writes. A later `join` keeps it, and `--allowlist ""` drops it.
+Without allowlists, two Macs joined to the same namespace both start every
+Metal model there and overwrite each other's `<isvc>-agent` registration: join
+each Mac to a namespace of its own, or give each one an allowlist.
 
 ### Ingress and client-proxy flags
 
@@ -1715,7 +1715,8 @@ On a Metal InferenceService (`kubectl describe inferenceservice <name>`):
 - From the agent: `RelayNotAdopted`, `ExtraArgsRejected`,
   `EndpointNameConflict`, `ModelSourceNotAllowed`, `ServiceNameTooLong`,
   `ModelDigestMismatch`, `ModelDownloadTooLarge`, `ModelDownloadNoSpace`, `SourceSecretNotAllowed`,
-  `RuntimeNotAvailable`, `SourceSecretUnlabeled`, `StartFailed`, `EngineExited`
+  `RuntimeNotAvailable`, `RuntimeCannotServeSource`, `HailoDeviceInUse`, `SourceSecretUnlabeled`, `StartFailed`,
+  `EngineExited`
   (Warning).
 
 `StartFailed` means a start the agent did not refuse failed anyway (the engine

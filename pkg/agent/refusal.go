@@ -39,15 +39,17 @@ import (
 // the controller did not recognize: it cleared the status every poll and the
 // agent refused again every poll, in a loop.
 const (
-	EventReasonEndpointNameConflict   = inferencev1alpha1.ReasonEndpointNameConflict
-	EventReasonModelSourceNotAllowed  = inferencev1alpha1.ReasonModelSourceNotAllowed
-	EventReasonExtraArgsRejected      = inferencev1alpha1.ReasonExtraArgsRejected
-	EventReasonServiceNameTooLong     = inferencev1alpha1.ReasonServiceNameTooLong
-	EventReasonModelDigestMismatch    = inferencev1alpha1.ReasonModelDigestMismatch
-	EventReasonModelDownloadTooLarge  = inferencev1alpha1.ReasonModelDownloadTooLarge
-	EventReasonModelDownloadNoSpace   = inferencev1alpha1.ReasonModelDownloadNoSpace
-	EventReasonSourceSecretNotAllowed = inferencev1alpha1.ReasonSourceSecretNotAllowed
-	EventReasonRuntimeNotAvailable    = inferencev1alpha1.ReasonRuntimeNotAvailable
+	EventReasonEndpointNameConflict     = inferencev1alpha1.ReasonEndpointNameConflict
+	EventReasonModelSourceNotAllowed    = inferencev1alpha1.ReasonModelSourceNotAllowed
+	EventReasonExtraArgsRejected        = inferencev1alpha1.ReasonExtraArgsRejected
+	EventReasonServiceNameTooLong       = inferencev1alpha1.ReasonServiceNameTooLong
+	EventReasonModelDigestMismatch      = inferencev1alpha1.ReasonModelDigestMismatch
+	EventReasonModelDownloadTooLarge    = inferencev1alpha1.ReasonModelDownloadTooLarge
+	EventReasonModelDownloadNoSpace     = inferencev1alpha1.ReasonModelDownloadNoSpace
+	EventReasonSourceSecretNotAllowed   = inferencev1alpha1.ReasonSourceSecretNotAllowed
+	EventReasonRuntimeNotAvailable      = inferencev1alpha1.ReasonRuntimeNotAvailable
+	EventReasonRuntimeCannotServeSource = inferencev1alpha1.ReasonRuntimeCannotServeSource
+	EventReasonHailoDeviceInUse         = inferencev1alpha1.ReasonHailoDeviceInUse
 )
 
 // runtimeNotAvailableMessage is the refusal message for an InferenceService

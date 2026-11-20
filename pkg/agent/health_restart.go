@@ -82,6 +82,9 @@ type restartBackoff struct {
 	// attempting is set while runRestart's own start runs. A failed start
 	// then leaves the retry and its Event to runRestart (failStart).
 	attempting bool
+	// hailo is set when the stopped engine served a hailo:// source: the
+	// pending restart keeps the host's Hailo device (see claimHailoDevice).
+	hailo bool
 }
 
 // healthFailureThreshold resolves config.HealthFailureThreshold.
@@ -308,6 +311,7 @@ func (a *MetalAgent) stopForRestart(
 	// cancels it, and that is how the check below sees the delete.
 	st := a.restartStateLocked(key)
 	st.specHash = proc.SpecHash
+	st.hailo = proc.Hailo
 	a.mu.Unlock()
 
 	a.logger.Warnw("stopping unhealthy process to restart it", append([]interface{}{

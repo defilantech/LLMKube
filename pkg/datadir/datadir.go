@@ -29,15 +29,22 @@ import (
 // XDG_DATA_HOME is unset or not absolute, as the XDG Base Directory
 // Specification requires. home is the user's home directory.
 func Dir(home string) string {
-	return dir(runtime.GOOS, home, os.Getenv("XDG_DATA_HOME"))
+	return DirFor(runtime.GOOS, home, os.Getenv("XDG_DATA_HOME"))
 }
 
-func dir(goos, home, xdgDataHome string) string {
+// DirFor is Dir on goos, with xdgDataHome as $XDG_DATA_HOME.
+func DirFor(goos, home, xdgDataHome string) string {
 	if goos == "darwin" {
 		return filepath.Join(home, "Library", "Application Support", "llmkube")
 	}
+	return filepath.Join(XDGDataHome(home, xdgDataHome), "llmkube")
+}
+
+// XDGDataHome is the data home xdgDataHome ($XDG_DATA_HOME) names: itself
+// when absolute, else ~/.local/share.
+func XDGDataHome(home, xdgDataHome string) string {
 	if filepath.IsAbs(xdgDataHome) {
-		return filepath.Join(xdgDataHome, "llmkube")
+		return xdgDataHome
 	}
-	return filepath.Join(home, ".local", "share", "llmkube")
+	return filepath.Join(home, ".local", "share")
 }

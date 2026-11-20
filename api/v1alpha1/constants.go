@@ -308,6 +308,16 @@ const (
 	// configured when the agent started.
 	ReasonRuntimeNotAvailable string = "RuntimeNotAvailable"
 
+	// ReasonRuntimeCannotServeSource is set when the service's resolved
+	// runtime cannot serve its Model's source: a hailo:// source on a runtime
+	// other than ollama.
+	ReasonRuntimeCannotServeSource string = "RuntimeCannotServeSource"
+
+	// ReasonHailoDeviceInUse is set when the service's Model has a hailo://
+	// source and another InferenceService already holds the host's Hailo
+	// device: the agent serves one hailo:// InferenceService per host.
+	ReasonHailoDeviceInUse string = "HailoDeviceInUse"
+
 	// ReasonStartFailed is set when a start the agent did not refuse failed
 	// anyway: the engine exited while loading, the download failed (a full
 	// disk, say), or the engine did not answer its health check in time. The
@@ -343,6 +353,8 @@ var MetalAgentRefusalReasons = []string{
 	ReasonModelDownloadNoSpace,
 	ReasonSourceSecretNotAllowed,
 	ReasonRuntimeNotAvailable,
+	ReasonRuntimeCannotServeSource,
+	ReasonHailoDeviceInUse,
 	ReasonStartFailed,
 }
 

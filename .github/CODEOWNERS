@@ -8,3 +8,7 @@
 /pkg/foreman/          @Defilan @joryirving
 /cmd/foreman-agent/    @Defilan @joryirving
 /cmd/foreman-operator/ @Defilan @joryirving
+
+# Metal agent (host agents) — @cnuss co-maintains this area.
+/cmd/metal-agent/ @Defilan @cnuss
+/pkg/agent/       @Defilan @cnuss

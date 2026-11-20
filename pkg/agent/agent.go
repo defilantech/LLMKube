@@ -114,6 +114,12 @@ type MetalAgentConfig struct {
 	OMLXPort int
 	// OllamaPort is the port the Ollama daemon listens on (default 11434).
 	OllamaPort int
+	// HailoManifestsDir is hailo-ollama's model manifest directory. Empty
+	// searches the directories hailo-ollama itself reads.
+	HailoManifestsDir string
+	// HailoLibraryURL is the host hailo-ollama pulls HEFs from. Empty means
+	// DefaultHailoLibraryURL.
+	HailoLibraryURL string
 	// VLLMSwiftBin is the path to the vllm-swift binary. Only used when
 	// Runtime is "vllm-swift". Empty means auto-detect via $PATH.
 	VLLMSwiftBin string
@@ -397,6 +403,11 @@ type MetalAgent struct {
 	// twice, enough to exhaust host memory.
 	starting map[string]bool
 
+	// hailoStarting is the key of the hailo:// start in flight, between
+	// claimHailoDevice and the store of its process; empty when none is.
+	// Guarded by mu.
+	hailoStarting string
+
 	// reservedMemory holds the admitted estimate of each start that
 	// passed memory admission and has not yet stored its process, keyed like
 	// processes. Admission counts it next to running processes, so two
@@ -521,6 +532,10 @@ type ManagedProcess struct {
 	// fit next to them, not just on its own (#2080). Zero when admission did
 	// not size the process (memory-check-mode=warn after a failed estimate).
 	AdmittedBytes uint64
+
+	// Hailo is set when the process serves a hailo:// source, so it holds
+	// the host's Hailo device (see claimHailoDevice).
+	Hailo bool
 
 	// PGID and StartToken are the engine's process group and kernel start
 	// token, as its record holds them (#2079).
@@ -1522,6 +1537,14 @@ func (a *MetalAgent) reconcileProcess(ctx context.Context, isvc *inferencev1alph
 		return err
 	}
 
+	// A hailo:// source on another runtime, or while another service holds
+	// the host's Hailo device, is refused before memory admission, for the
+	// same reason; the llama.cpp path would try to download it.
+	releaseHailo, err := a.checkHailoSource(ctx, isvc, key, model, runtime)
+	if err != nil {
+		return err
+	}
+	defer releaseHailo()
 	if err := a.validateRuntimeFormat(model, runtime); err != nil {
 		return err
 	}
@@ -1606,6 +1629,7 @@ func (a *MetalAgent) reconcileProcess(ctx context.Context, isvc *inferencev1alph
 	// The served model name lets the client proxy route a request that names
 	// it when several engines run (#2412).
 	process.ServedModel = engineServedName(runtime, cfg)
+	process.Hailo = inferencev1alpha1.IsHailoSource(model.Spec.Source)
 
 	// Store process and update metrics. The admission reservation moves onto
 	// the record in the same critical section, so the budget it holds is
@@ -2826,20 +2850,55 @@ func recurrentSequences(parallelSlots int) uint64 {
 	return uint64(parallelSlots) //nolint:gosec // G115: positive here
 }
 
+// hailoBlobSource resolves a hailo:// source to the URL of the HEF
+// hailo-ollama maps its tag to in its manifests, on the library host.
+func (a *MetalAgent) hailoBlobSource(model *inferencev1alpha1.Model) (string, error) {
+	tag, _, err := inferencev1alpha1.HailoSourceTag(model.Spec.Source)
+	if err != nil {
+		return "", err
+	}
+	dir := a.config.HailoManifestsDir
+	if dir == "" {
+		home, _ := os.UserHomeDir()
+		if dir, err = hailoManifestsDir(home, os.Getenv("XDG_DATA_HOME"), os.Getenv("XDG_DATA_DIRS")); err != nil {
+			return "", err
+		}
+	}
+	digest, err := hailoHEFDigest(dir, tag)
+	if err != nil {
+		return "", err
+	}
+	base := a.config.HailoLibraryURL
+	if base == "" {
+		base = DefaultHailoLibraryURL
+	}
+	return hailoBlobURL(base, digest), nil
+}
+
 // probeRemoteModelSize sizes an http(s) source with a HEAD for its
 // Content-Length, or an s3:// source with a signed HEAD through the same
 // executor the download uses, since it needs the credential-bearing client.
+// A hailo:// source is sized as the http(s) URL of its HEF (hailoBlobSource).
 // probed is false for any other source, which has no remote size to ask for.
 func (a *MetalAgent) probeRemoteModelSize(
 	ctx context.Context, model *inferencev1alpha1.Model,
 ) (size uint64, probed bool, err error) {
+	source := model.Spec.Source
+	if inferencev1alpha1.IsHailoSource(source) {
+		if source, err = a.hailoBlobSource(model); err != nil {
+			return 0, true, err
+		}
+		if !strings.HasPrefix(source, "http://") && !strings.HasPrefix(source, "https://") {
+			return 0, true, fmt.Errorf("--hailo-library-url must be an http:// or https:// URL, got %q", source)
+		}
+	}
 	switch {
-	case strings.HasPrefix(model.Spec.Source, "http://") || strings.HasPrefix(model.Spec.Source, "https://"):
+	case strings.HasPrefix(source, "http://") || strings.HasPrefix(source, "https://"):
 		probeClient := safehttp.NewClient(a.downloadAllow, 0, downloadHostsFlag)
 		defer probeClient.CloseIdleConnections()
-		size, err = remoteModelSize(ctx, probeClient, model.Spec.Source)
+		size, err = remoteModelSize(ctx, probeClient, source)
 		return size, true, err
-	case isS3Source(model.Spec.Source):
+	case isS3Source(source):
 		size, err = a.s3SizeProbe(ctx, model)
 		return size, true, err
 	}
