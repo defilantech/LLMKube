@@ -54,6 +54,7 @@ import (
 	llmkubemetrics "github.com/defilantech/llmkube/internal/metrics"
 	"github.com/defilantech/llmkube/internal/safehttp"
 	"github.com/defilantech/llmkube/pkg/cachekey"
+	"github.com/defilantech/llmkube/pkg/fileset"
 	"github.com/defilantech/llmkube/pkg/gguf"
 	"github.com/defilantech/llmkube/pkg/license"
 )
@@ -561,7 +562,7 @@ func (r *ModelReconciler) validateMultiFileStagingSource(ctx context.Context, mo
 			return true, r.failInvalidFileSet(ctx, model, "fileSha256 requires spec.files")
 		}
 		staged := make(map[string]struct{}, len(plan.Files))
-		for _, f := range plan.entries() {
+		for _, f := range plan.Entries() {
 			staged[f] = struct{}{}
 		}
 		for k := range model.Spec.FileSHA256 {
@@ -898,12 +899,7 @@ func (r *ModelReconciler) reconcileBySourceType(
 // condition means this controller never wrote a Ready status for the object (a
 // hand-set or pre-upgrade status), so there is no evidence the status is stale.
 func availableObservedGeneration(model *inferencev1alpha1.Model) (int64, bool) {
-	for i := range model.Status.Conditions {
-		if model.Status.Conditions[i].Type == ConditionAvailable {
-			return model.Status.Conditions[i].ObservedGeneration, true
-		}
-	}
-	return 0, false
+	return fileset.AvailableObservedGeneration(model)
 }
 
 // availableBehindSpec reports a Ready status written for an earlier spec: the
