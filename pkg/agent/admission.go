@@ -307,20 +307,30 @@ func (a *MetalAgent) reestimateAdoptedCharge(
 // services in list order, so the engine that needs it may be handled after the
 // service being admitted. It does not hold a.mu: each Get is I/O.
 func (a *MetalAgent) reestimatePendingAdoptedCharges(ctx context.Context) {
+	type pendingCharge struct {
+		process  *ManagedProcess
+		specHash string
+	}
 	a.mu.Lock()
-	pending := make([]*ManagedProcess, 0, len(a.processes))
+	pending := make([]pendingCharge, 0, len(a.processes))
 	for _, p := range a.processes {
 		if p.Adopted && !p.AdmissionReestimated {
-			pending = append(pending, p)
+			pending = append(pending, pendingCharge{process: p, specHash: p.SpecHash})
 		}
 	}
 	a.mu.Unlock()
-	for _, p := range pending {
+	for _, c := range pending {
+		p := c.process
 		namespaced := types.NamespacedName{Namespace: p.Namespace, Name: p.Name}
 		isvc := &inferencev1alpha1.InferenceService{}
 		if err := a.config.K8sClient.Get(ctx, namespaced, isvc); err != nil {
 			a.logger.Warnw("keeping an adopted engine's recorded memory charge: its InferenceService is not available",
 				"key", namespaced.String(), "error", err)
+			continue
+		}
+		// A spec change stops and respawns this engine on its own reconcile;
+		// until then the recorded charge is what the engine holds.
+		if computeSpecHash(isvc) != c.specHash {
 			continue
 		}
 		a.reestimateAdoptedCharge(ctx, isvc, namespaced.String(), p)
@@ -332,7 +342,8 @@ func (a *MetalAgent) reestimatePendingAdoptedCharges(ctx context.Context) {
 // services' charges are what changed since (#2535). A fit that passes clears
 // the report; one that still fails keeps it and arms the next check on the same
 // backoff a start refusal uses, starting at refusalRecheckInitial and doubling
-// to refusalRecheckMax.
+// to refusalRecheckMax. The report's own publishRefusal arms the first check;
+// this arms the ones after it.
 func (a *MetalAgent) recheckAdoptedChargeReport(
 	ctx context.Context, isvc *inferencev1alpha1.InferenceService, key string, p *ManagedProcess,
 ) {

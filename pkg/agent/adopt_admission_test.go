@@ -26,7 +26,9 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	inferencev1alpha1 "github.com/defilantech/llmkube/api/v1alpha1"
 )
@@ -80,6 +82,15 @@ func adoptEngineRecord(t *testing.T, a *MetalAgent, isvc *inferencev1alpha1.Infe
 	})
 	if adopted := a.adoptEngines(context.Background()); !adopted["default/phi"] {
 		t.Fatal("engine phi was not adopted")
+	}
+}
+
+// adoptedEngineProcess is an adopted engine of isvc's running spec that has not
+// been charged the current estimate yet.
+func adoptedEngineProcess(isvc *inferencev1alpha1.InferenceService) *ManagedProcess {
+	return &ManagedProcess{
+		Name: isvc.Name, Namespace: isvc.Namespace, Adopted: true, Healthy: true,
+		SpecHash: computeSpecHash(isvc), AdmittedBytes: adoptedSeedBytes,
 	}
 }
 
@@ -261,6 +272,113 @@ func TestAdoptedEngine_AdmissionReestimatesAPendingEngineFirst(t *testing.T) {
 	if !strings.Contains(alphaErr.Error(), "default/phi") {
 		t.Errorf("refusal %q does not name the adopted engine", alphaErr.Error())
 	}
+}
+
+// A spec edited while the agent was down is that engine's own reconcile's
+// business: until it stops and respawns the engine, another service's admission
+// must measure the memory the running engine holds, not the estimate its new
+// spec would need (#2535).
+func TestAdoptedEngine_PendingPassLeavesASpecChangedEngineAlone(t *testing.T) {
+	model := sizedModel("33.0 GiB")
+	old := cumulativeISVC("phi") // the spec the running engine was started with
+	phi := cumulativeISVC("phi")
+	newContext := int32(131072)
+	phi.Spec.ContextSize = &newContext // edited while the agent was down
+	alpha := cumulativeISVC("alpha")
+	a, _, _ := adoptAdmissionAgent(t, model, phi, alpha)
+	adoptEngineRecord(t, a, old)
+
+	cacheTypeK, cacheTypeV := resolveCacheTypes(alpha)
+	alphaErr := a.checkMemoryAdmission(context.Background(), alpha, model,
+		admissionContextSize(alpha), cacheTypeK, cacheTypeV)
+
+	if got := a.processes["default/phi"].AdmittedBytes; got != adoptedSeedBytes {
+		t.Fatalf("AdmittedBytes = %s (%d), want the recorded %s: the engine still runs the old spec",
+			formatMemory(got), got, formatMemory(adoptedSeedBytes))
+	}
+	if alphaErr != nil {
+		t.Errorf("alpha was refused against the estimate of a spec the engine is not running: %v", alphaErr)
+	}
+}
+
+// The pass is for adopted engines, and one whose InferenceService cannot be read
+// must not end it before the others are charged (#2535).
+func TestAdoptedEngine_PendingPassReestimatesOnlyAdoptedEngines(t *testing.T) {
+	model := sizedModel("33.0 GiB")
+	beta := cumulativeISVC("beta")
+	gamma := cumulativeISVC("gamma")
+	spawned := cumulativeISVC("spawned")
+	a, rec, _ := adoptAdmissionAgent(t, model, beta, gamma, spawned)
+	if err := a.config.K8sClient.Delete(context.Background(), gamma); err != nil {
+		t.Fatal(err)
+	}
+	a.mu.Lock()
+	a.processes["default/beta"] = adoptedEngineProcess(beta)
+	a.processes["default/gamma"] = adoptedEngineProcess(gamma)
+	a.processes["default/spawned"] = &ManagedProcess{
+		Name: "spawned", Namespace: "default", Healthy: true,
+		SpecHash: computeSpecHash(spawned), AdmittedBytes: gib(1),
+	}
+	a.mu.Unlock()
+
+	// The pass ranges a map, so repeat it to see every order: the unreadable
+	// adopted engine must not end the pass before the readable one is charged.
+	for range 12 {
+		a.mu.Lock()
+		a.processes["default/beta"].AdmittedBytes = adoptedSeedBytes
+		a.processes["default/beta"].AdmissionReestimated = false
+		a.mu.Unlock()
+		a.reestimatePendingAdoptedCharges(context.Background())
+		drainEvents(rec)
+		if got := a.processes["default/beta"].AdmittedBytes; got < gib(40) || got > gib(40.2) {
+			t.Fatalf("AdmittedBytes = %s (%d), want the re-estimated 40.1 GB", formatMemory(got), got)
+		}
+	}
+	if got := a.processes["default/gamma"].AdmittedBytes; got != adoptedSeedBytes {
+		t.Errorf("an unreadable adopted engine's charge changed to %s (%d), want the recorded %s",
+			formatMemory(got), got, formatMemory(adoptedSeedBytes))
+	}
+	if got := a.processes["default/spawned"].AdmittedBytes; got != gib(1) {
+		t.Errorf("a spawned engine's charge changed to %s (%d), want the admitted %s",
+			formatMemory(got), got, formatMemory(gib(1)))
+	}
+}
+
+// The charge behavior for an engine this agent started is enforced where the
+// charge is made, so the pass' filter for it saves the Get it would need to
+// learn that, not the charge (#2535).
+func TestAdoptedEngine_PendingPassDoesNotReadASpawnedEnginesService(t *testing.T) {
+	model := sizedModel("33.0 GiB")
+	beta := cumulativeISVC("beta")
+	spawned := cumulativeISVC("spawned")
+	a, _, _ := adoptAdmissionAgent(t, model, beta, spawned)
+	gets := map[string]int{}
+	base, ok := a.config.K8sClient.(client.WithWatch)
+	if !ok {
+		t.Fatalf("fake client is not a client.WithWatch: %T", a.config.K8sClient)
+	}
+	a.config.K8sClient = interceptor.NewClient(base, interceptor.Funcs{
+		Get: func(
+			ctx context.Context, w client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption,
+		) error {
+			gets[key.Name]++
+			return w.Get(ctx, key, obj, opts...)
+		},
+	})
+	a.mu.Lock()
+	a.processes["default/beta"] = adoptedEngineProcess(beta)
+	a.processes["default/spawned"] = &ManagedProcess{
+		Name: "spawned", Namespace: "default", Healthy: true,
+		SpecHash: computeSpecHash(spawned), AdmittedBytes: gib(1),
+	}
+	a.mu.Unlock()
+
+	a.reestimatePendingAdoptedCharges(context.Background())
+
+	if got := gets["spawned"]; got != 0 {
+		t.Errorf("the pass read a spawned engine's InferenceService %d times, want none", got)
+	}
+	wantReestimatedCharge(t, a.processes["default/beta"].AdmittedBytes)
 }
 
 // An admitted service whose InferenceService cannot be read keeps the adopted
