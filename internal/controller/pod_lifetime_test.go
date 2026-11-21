@@ -5,11 +5,13 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"testing"
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	discoveryv1 "k8s.io/api/discovery/v1"
 	policyv1 "k8s.io/api/policy/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -216,6 +218,74 @@ func TestReconcilePodLifetimeWaitsForIdle(t *testing.T) {
 	}
 }
 
+// The pod is carried by an EndpointSlice with its own targetRef, so it reaches
+// the per-endpoint probe path rather than the Service URL fallback: a busy
+// answer holds the recycle, an idle one evicts, base and branch alike.
+func TestReconcilePodLifetimeProbesARunningReplicaOnTheEndpointPath(t *testing.T) {
+	now := time.Date(2026, 7, 22, 12, 0, 0, 0, time.UTC)
+	const addr = "10.0.0.95"
+	for name, tc := range map[string]struct {
+		busy        bool
+		wantEvicted bool
+	}{
+		"busy replica holds the recycle": {busy: true, wantEvicted: false},
+		"idle replica is recycled once":  {busy: false, wantEvicted: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			r, isvc, pod := lifetimeReconcilerWith(t, now.Add(-2*time.Minute), time.Minute, 1, func(pod *corev1.Pod) {
+				pod.Labels["inference.llmkube.dev/service"] = "svc"
+				pod.Spec.Containers = []corev1.Container{{Name: "llama-server"}}
+				pod.Status.ContainerStatuses = []corev1.ContainerStatus{{
+					Name:  "llama-server",
+					State: corev1.ContainerState{Running: &corev1.ContainerStateRunning{}},
+				}}
+			})
+			ready := false
+			ep := &discoveryv1.EndpointSlice{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "svc-endpoints",
+					Namespace: "ns",
+					Labels:    map[string]string{"kubernetes.io/service-name": "svc"},
+				},
+				AddressType: discoveryv1.AddressTypeIPv4,
+				Endpoints: []discoveryv1.Endpoint{{
+					Addresses:  []string{addr},
+					Conditions: discoveryv1.EndpointConditions{Ready: &ready},
+					TargetRef:  &corev1.ObjectReference{Kind: "Pod", Namespace: "ns", Name: pod.Name},
+				}},
+			}
+			if err := r.Create(context.Background(), ep); err != nil {
+				t.Fatal(err)
+			}
+			port := resolveIdlePort(isvc, resolveBackend(isvc))
+			r.HTTPClient = &http.Client{
+				Transport: &addressAwareRoundTripper{responses: map[string]string{
+					addr + ":" + strconv.Itoa(int(port)): fmt.Sprintf(`[{"id":0,"is_processing":%t}]`, tc.busy),
+				}},
+				Timeout: 5 * time.Second,
+			}
+			isvc.Spec.RolloutPolicy = &inferencev1alpha1.RolloutPolicySpec{WaitForIdle: true}
+			recorder := &recordingClient{Client: r.Client}
+			r.Client = recorder
+
+			requeue, err := r.reconcilePodLifetime(context.Background(), isvc, false, now)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := 0
+			if tc.wantEvicted {
+				want = 1
+			}
+			if len(recorder.evictions) != want {
+				t.Fatalf("eviction calls = %d, want %d", len(recorder.evictions), want)
+			}
+			if !tc.wantEvicted && requeue != inferencev1alpha1.DefaultIdleCheckInterval {
+				t.Fatalf("requeue = %s, want %s", requeue, inferencev1alpha1.DefaultIdleCheckInterval)
+			}
+		})
+	}
+}
+
 func TestEarliestPositive(t *testing.T) {
 	if got := earliestPositive(0, 5*time.Second, 2*time.Second, -time.Second); got != 2*time.Second {
 		t.Fatalf("got %s", got)
@@ -353,6 +423,9 @@ func lifetimeReconcilerWith(t *testing.T, start time.Time, lifetime time.Duratio
 		t.Fatal(err)
 	}
 	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	if err := discoveryv1.AddToScheme(scheme); err != nil {
 		t.Fatal(err)
 	}
 	if err := policyv1.AddToScheme(scheme); err != nil {
