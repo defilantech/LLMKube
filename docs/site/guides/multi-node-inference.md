@@ -205,9 +205,10 @@ init container that never finishes and the members stay in `Init`. Every
   counts tmpfs and shared memory (a memory-backed `emptyDir`, `/dev/shm`),
   which a drop cannot free.
 - **Guard.** When MemFree stays under `suspendBelowMemFree` for 10 seconds,
-  it drops once more. If MemFree is still under, it writes the reason to its
-  termination message and exits 42. The operator sees that exit on a group
-  that has formed, sets `spec.suspend: true` on the InferenceService, records a
+  it drops once more, unless a drop already ran in the last 5 seconds. If
+  MemFree is still under, it writes the reason to its termination message and
+  exits 42. The operator sees that exit on a group that has formed, sets
+  `spec.suspend: true` on the InferenceService, records a
   `MultiNodeMemoryGuardSuspended` Warning event with the member, the node and
   the measured MemFree, and counts it in
   `llmkube_multinode_guard_suspends_total`. The group is then deleted the usual
@@ -223,9 +224,11 @@ and a node squeezed to 6.4 GiB MemFree stopped answering its kubelet. The
 guard's loop stalls with the node, so a floor at or under the high watermark
 fires late: in that test it took about 3 minutes, not 10 seconds. Read the
 watermarks on a member node (`grep -E 'min|low|high' /proc/zoneinfo`, in
-4 KiB pages) and leave a few GiB above `high`. The floor may be higher than
-`flushBelowMemFree`: the guard drops the page cache itself before it decides,
-so a dip that page cache explains (a model load) does not suspend the group.
+pages; `getconf PAGESIZE` gives the page size, 4 KiB on most kernels, 16 or
+64 KiB on some arm64 ones) and leave a few GiB above `high`. The floor may
+be higher than `flushBelowMemFree`: the guard drops the page cache itself
+before it decides, so a dip that page cache explains (a model load) does not
+suspend the group.
 With the floors that way round, that drop is the one you will see in the log:
 whenever MemFree has been under the suspend floor for about 10 seconds the
 guard drops the cache, and `flushBelowMemFree` only adds an immediate drop
@@ -246,9 +249,10 @@ group by writing `spec.suspend: true`. A GitOps tool that self-heals and has
 back: the group loads again, can trip again, and none of that counts against
 the recreate bound, because a suspend is not a failure. Either leave
 `spec.suspend` out of what the tool manages for this service (Argo CD
-`ignoreDifferences` on `/spec/suspend`, or drop the field from the manifest
-under Flux's server-side apply), or alert on the
-`MultiNodeMemoryGuardSuspended` event and on
+`ignoreDifferences` on `/spec/suspend` together with the sync option
+`RespectIgnoreDifferences=true`, without which a sync still applies the Git
+value; or drop the field from the manifest under Flux's server-side apply),
+or alert on the `MultiNodeMemoryGuardSuspended` event and on
 `llmkube_multinode_guard_suspends_total` so a loop is noticed.
 
 Every drop is one log line with MemFree and Cached before and after:
