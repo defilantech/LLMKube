@@ -25,6 +25,9 @@ install keeps running on its current images. The last Foreman images and chart
 are the ones from the last LLMKube release before the move. New releases come
 from the Meitheal repository.
 
+Meitheal's first release, 0.1.0, is still pending: until it ships, stay on
+Foreman 0.10.19.
+
 ## Old names and new names
 
 | Foreman | Meitheal |

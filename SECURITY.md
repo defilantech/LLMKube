@@ -47,6 +47,7 @@ This security policy applies to:
 - Third-party dependencies (report to upstream)
 - LLM model vulnerabilities (report to model providers)
 - Self-hosted llama.cpp issues (report to llama.cpp project)
+- Foreman, which moved to [Meitheal](https://github.com/defilantech/meitheal), including the Foreman images, chart and binaries that earlier LLMKube releases published (report through [Meitheal's security policy](https://github.com/defilantech/meitheal/security/policy))
 
 ## Trust model
 
