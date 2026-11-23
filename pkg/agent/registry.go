@@ -502,7 +502,7 @@ func (r *ServiceRegistry) upsertEndpoint(
 		}
 		if r.relayMode() {
 			slice.Annotations[inferencev1alpha1.AnnotationAgentIngressSPKI] = r.ingressPin
-			// The engine's own loopback port, for a foreman-agent using
+			// The engine's own loopback port, for a Meitheal agent using
 			// --inference-base-url-host-override on the same host: the
 			// "<isvc>" slice it would otherwise read now points at the
 			// relay pod once the controller adopts it, not the engine.

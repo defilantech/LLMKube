@@ -6,6 +6,7 @@ linters:
   enable:
     - bodyclose
     - copyloopvar
+    - depguard
     - dupl
     - errcheck
     - ginkgolinter
@@ -24,6 +25,24 @@ linters:
     - unparam
     - unused
   settings:
+    depguard:
+      rules:
+        # Foreman moved to its own module, github.com/defilantech/meitheal
+        # (#2526). Meitheal imports this module (api/v1alpha1, pkg/agent);
+        # an import in the other direction would tie the two release
+        # cycles back together. The llmkube paths are the ones Foreman
+        # lived at here, denied so it cannot come back under its old name.
+        no-meitheal:
+          list-mode: lax
+          deny:
+            - pkg: github.com/defilantech/meitheal
+              desc: Meitheal depends on LLMKube, never the reverse (#2526)
+            - pkg: github.com/defilantech/llmkube/api/foreman
+              desc: Foreman moved to github.com/defilantech/meitheal (#2526)
+            - pkg: github.com/defilantech/llmkube/pkg/foreman
+              desc: Foreman moved to github.com/defilantech/meitheal (#2526)
+            - pkg: github.com/defilantech/llmkube/internal/foreman
+              desc: Foreman moved to github.com/defilantech/meitheal (#2526)
     revive:
       rules:
         - name: comment-spacings

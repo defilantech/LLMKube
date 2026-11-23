@@ -16,9 +16,7 @@
 # To bump a tool, change its version and SHA-256 together. Take the SHA-256
 # from the release's checksums file and check it against the release's
 # provenance: `gh attestation verify <archive> --repo aquasecurity/trivy` for
-# trivy, the multiple.intoto.jsonl asset for go-containerregistry. The Foreman
-# scan gate pins trivy separately (TrivyVersion in
-# pkg/foreman/agent/tools/run_scan_job.go).
+# trivy, the multiple.intoto.jsonl asset for go-containerregistry.
 #
 # PINNED_TOOL_URL and PINNED_TOOL_SHA256 override the pin for
 # scripts/install-pinned-tool_test.sh only.

@@ -143,36 +143,6 @@ sections:
         slug: operations/kv-cache
         file: operations/kv-cache.md
 
-  - title: Foreman
-    items:
-      - label: Overview
-        slug: foreman
-        file: foreman/README.md
-      - label: M3 coder runbook
-        slug: foreman/runbook-m3
-        file: foreman/runbook-m3.md
-      - label: M4 verifier runbook
-        slug: foreman/runbook-m4
-        file: foreman/runbook-m4.md
-      - label: Verifier node install
-        slug: foreman/install-verifier-node
-        file: foreman/install-verifier-node.md
-      - label: Remote-model coder
-        slug: foreman/remote-model-coder
-        file: foreman/remote-model-coder.md
-      - label: Model compatibility
-        slug: foreman/model-compatibility
-        file: foreman/model-compatibility.md
-      - label: Non-Go projects (language gates)
-        slug: foreman/language-gates
-        file: foreman/language-gates.md
-      - label: Reproducing release scan gates locally
-        slug: foreman/scan-gates
-        file: foreman/scan-gates.md
-      - label: Grounding checks
-        slug: foreman/grounding-checks
-        file: foreman/grounding-checks.md
-
   - title: Reference
     items:
       - label: CLI
@@ -187,3 +157,6 @@ sections:
       - label: CRD YAML
         slug: reference/crds-yaml
         file: reference/crds.md
+      - label: Foreman (moved to Meitheal)
+        slug: foreman
+        file: foreman.md

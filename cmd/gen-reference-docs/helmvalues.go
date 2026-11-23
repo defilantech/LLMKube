@@ -28,7 +28,6 @@ import (
 
 const (
 	llmkubeValues = "charts/llmkube/values.yaml"
-	foremanValues = "charts/foreman/values.yaml"
 	// maxInlineDefault is the longest default shown verbatim; a longer list
 	// or map is summarized by its size, and the reader follows the link to the
 	// file for the content.
@@ -44,8 +43,8 @@ type valueRow struct {
 func renderHelmValues(root string) (string, error) {
 	var b strings.Builder
 	b.WriteString(pageHeader("Helm values",
-		"Every value the llmkube and Foreman Helm charts accept, with its default and description.",
-		sourceLink(llmkubeValues)+" and "+sourceLink(foremanValues)))
+		"Every value the llmkube Helm chart accepts, with its default and description.",
+		sourceLink(llmkubeValues)))
 	b.WriteString("Keys are written as `helm --set` paths: a dot inside a key is escaped as `\\.`. " +
 		"A description is the comment above the key in values.yaml; a key without one has an empty cell. " +
 		"A map whose own comment describes the keys under it gets a row with no default. " +
@@ -55,16 +54,7 @@ func renderHelmValues(root string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	writeValuesSections(&b, llmkube, "##", "")
-
-	foreman, err := loadValues(filepath.Join(root, foremanValues))
-	if err != nil {
-		return "", err
-	}
-	b.WriteString("## Foreman chart\n\n")
-	fmt.Fprintf(&b, "The Foreman chart is installed separately from the llmkube chart. Its values come from %s.\n\n",
-		sourceLink(foremanValues))
-	writeValuesSections(&b, foreman, "###", "Foreman: ")
+	writeValuesSections(&b, llmkube)
 	return strings.TrimRight(b.String(), "\n") + "\n", nil
 }
 
@@ -86,10 +76,10 @@ func loadValues(path string) (*yaml.Node, error) {
 // writeValuesSections writes one heading per top-level key, in file order.
 // A top-level map's comment becomes the section's prose; its keys fill the
 // table.
-func writeValuesSections(b *strings.Builder, top *yaml.Node, level, headingPrefix string) {
+func writeValuesSections(b *strings.Builder, top *yaml.Node) {
 	for i := 0; i+1 < len(top.Content); i += 2 {
 		key, val := top.Content[i], resolveAlias(top.Content[i+1])
-		fmt.Fprintf(b, "%s %s%s\n\n", level, headingPrefix, key.Value)
+		fmt.Fprintf(b, "## %s\n\n", key.Value)
 		var rows []valueRow
 		if isNestedMap(val) {
 			if desc := commentText(key, val); desc != "" {

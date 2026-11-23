@@ -7,9 +7,9 @@ description: Wire LLMKube into Prometheus, Grafana and an OTLP collector. The ch
 
 Where LLMKube's signals come from:
 
-- **Operator components.** The controller, the Foreman operator, the router
-  proxy and the Metal agent export Prometheus metrics; every name, type and
-  label is in the [metrics reference](/docs/reference/metrics).
+- **Operator components.** The controller, the router proxy and the Metal
+  agent export Prometheus metrics; every name, type and label is in the
+  [metrics reference](/docs/reference/metrics).
 - **Inference pods.** The serving engine's own `/metrics`. For llama.cpp the
   names are pinned in the [llama.cpp metric contract](#llamacpp-metric-contract).
 - **AMD GPUs.** Device metrics from the AMD GPU exporter, pinned in the

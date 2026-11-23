@@ -1,14 +1,7 @@
 # Default owners for all files
 * @Defilan
 
-# Foreman (coder/reviewer harness) — @joryirving co-maintains this area.
-# More specific paths win, so these override the catch-all above.
-/api/foreman/          @Defilan @joryirving
-/internal/foreman/     @Defilan @joryirving
-/pkg/foreman/          @Defilan @joryirving
-/cmd/foreman-agent/    @Defilan @joryirving
-/cmd/foreman-operator/ @Defilan @joryirving
-
 # Metal agent (host agents) — @cnuss co-maintains this area.
+# More specific paths win, so these override the catch-all above.
 /cmd/metal-agent/ @Defilan @cnuss
 /pkg/agent/       @Defilan @cnuss

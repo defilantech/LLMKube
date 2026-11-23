@@ -42,7 +42,7 @@ const (
 
 // crdGroupOrder puts the groups a user meets first at the top. A group not
 // listed here follows, alphabetically, rather than being dropped.
-var crdGroupOrder = []string{"inference.llmkube.dev", "foreman.llmkube.dev", "federation.llmkube.dev"}
+var crdGroupOrder = []string{"inference.llmkube.dev", "federation.llmkube.dev"}
 
 type crdDoc struct {
 	file string

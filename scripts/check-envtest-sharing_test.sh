@@ -18,8 +18,8 @@
 #
 # Scoped to internal/controller on purpose. The other envtest packages finish
 # well inside the limit and keep their own control planes: internal/watchcanary
-# 7 s, pkg/cli 12 s, internal/foreman/controller 19 s, 64 to 171 times under
-# the 20m limit. The rule would be churn there.
+# 7 s and pkg/cli 12 s, 100 to 171 times under the 20m limit. The rule would
+# be churn there.
 #
 # Usage: scripts/check-envtest-sharing_test.sh
 set -euo pipefail

@@ -109,7 +109,7 @@ func TestArchivesShipThirdPartyLicenses(t *testing.T) {
 			t.Errorf("archive %s does not ship third_party_licenses/** (files: %v)", a.ID, a.Files)
 		}
 	}
-	for _, id := range []string{"llmkube-cli", "llmkube-metal-agent", "llmkube-metal-agent-linux", "llmkube-foreman-agent"} {
+	for _, id := range []string{"llmkube-cli", "llmkube-metal-agent", "llmkube-metal-agent-linux"} {
 		if !ids[id] {
 			t.Errorf("archive %s not in .goreleaser.yaml", id)
 		}

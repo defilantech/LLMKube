@@ -14,7 +14,6 @@ on the Linux release runner, before anything is archived:
 |------------------------|-----------------------|-----------------------------|--------------------------------------------------|
 | `llmkube-cli`          | `llmkube`             | `dev.llmkube.cli`           | none (a Terminal tool needs no bundle identity)  |
 | `llmkube-metal-agent`  | `llmkube-metal-agent` | `dev.llmkube.metal-agent`   | `deployment/macos/metal-agent.Info.plist.tmpl`   |
-| `llmkube-foreman-agent`| `foreman-agent`       | `dev.llmkube.foreman-agent` | `deployment/macos/foreman-agent.Info.plist.tmpl` |
 
 1. The template is rendered with the release version and embedded as a
    `__TEXT,__info_plist` section by `cmd/machoplist`. Apple's linker would do
@@ -30,7 +29,7 @@ on the Linux release runner, before anything is archived:
 
 With the notary key set, the `notarize-macos` job runs after the release is
 published: `hack/macos-notarize.sh` reads GoReleaser's `dist/artifacts.json`,
-zips every darwin binary (six today), submits them to Apple's notary service in
+zips every darwin binary (four today), submits them to Apple's notary service in
 one submission and waits up to an hour for the verdict. Notarization does not
 change the binaries; Apple records a ticket for their signatures, so the
 published assets become notarized when it is accepted. Running it after the

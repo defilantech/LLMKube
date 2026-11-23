@@ -4,9 +4,8 @@ name: macOS Tests
 # runner (#455). Linux CI cross-compiles the metal-agent for darwin but runs
 # no darwin test binary, so the darwin implementations (the kern.procargs2
 # process inspector, vm_stat parsing, the powermetrics sampler and its
-# sudoers rule, the Foreman capability probe) and the darwin-only tests,
-# codesign's check of the Info.plist the release embeds among them, had no
-# CI coverage.
+# sudoers rule) and the darwin-only tests, codesign's check of the Info.plist
+# the release embeds among them, had no CI coverage.
 #
 # Scoped to the packages it tests and the files their darwin tests read. A
 # path-filtered workflow is not a required check and has no merge_group
@@ -19,8 +18,6 @@ on:
       - 'pkg/agent/**'
       - 'cmd/metal-agent/**'
       - 'internal/machoplist/**'
-      - 'pkg/foreman/agent/*'
-      - 'pkg/foreman/agent/testdata/**'
       # The sudoers fragment the darwin power tests render with make and
       # check with visudo, and the rest of the macOS install assets.
       - 'deployment/macos/**'
@@ -35,8 +32,6 @@ on:
       - 'pkg/agent/**'
       - 'cmd/metal-agent/**'
       - 'internal/machoplist/**'
-      - 'pkg/foreman/agent/*'
-      - 'pkg/foreman/agent/testdata/**'
       - 'deployment/macos/**'
       - 'Makefile'
       - 'go.mod'
@@ -61,8 +56,7 @@ jobs:
     # Unique across workflows: a required status check is matched by job name
     # alone (#2379).
     name: Darwin packages (macOS)
-    # Apple Silicon, the platform the metal-agent and the Mac Foreman agent
-    # run on.
+    # Apple Silicon, the platform the metal-agent runs on.
     runs-on: macos-latest
     timeout-minutes: 20
     steps:
@@ -78,10 +72,10 @@ jobs:
         # Once, before any step builds; retried on network errors only (#2380).
         run: hack/go-mod-download.sh
 
-      # The packages with darwin-only tests (pkg/agent, internal/machoplist,
-      # pkg/foreman/agent) and the rest of the metal-agent: pkg/agent's
-      # subpackages and the command. -count=1 because setup-go restores the
-      # build cache, cached test results included. -race because the agent's
+      # The packages with darwin-only tests (pkg/agent, internal/machoplist)
+      # and the rest of the metal-agent: pkg/agent's subpackages and the
+      # command. -count=1 because setup-go restores the build cache, cached
+      # test results included. -race because the agent's
       # watch loop, watchdog and child-exit monitors run concurrently and no
       # other job runs the race detector. No envtest binaries here, so the
       # pkg/agent tests that need an API server skip; they run in the Tests
@@ -91,7 +85,7 @@ jobs:
         shell: bash
         run: |
           go test -race -count=1 -json \
-            ./pkg/agent/... ./cmd/metal-agent/... ./internal/machoplist/... ./pkg/foreman/agent/ 2>&1 \
+            ./pkg/agent/... ./cmd/metal-agent/... ./internal/machoplist/... 2>&1 \
             | tee test-report-macos.jsonl | hack/go-test-report.sh stream
 
       # Where the time went, as in the Tests workflow. Runs after a failure

@@ -11,8 +11,6 @@
 
   **Who it's for:** platform and AI-ops teams running on-prem, mixed-hardware, or air-gapped inference. If you want one model on one laptop, Ollama is simpler.
 
-  *Plus [Foreman](#foreman): an agentic harness that runs coding agents on your own fleet. It has shipped real fixes to this repo.*
-
   <p>
     <a href="https://github.com/defilantech/LLMKube/actions/workflows/test.yml">
       <img src="https://github.com/defilantech/LLMKube/actions/workflows/test.yml/badge.svg" alt="Tests">
@@ -42,7 +40,6 @@
     <a href="#quick-start">Quick Start</a> &bull;
     <a href="#project-status">Status</a> &bull;
     <a href="#composition-modelrouter">ModelRouter</a> &bull;
-    <a href="#foreman">Foreman</a> &bull;
     <a href="#the-metal-agent">Metal Agent</a> &bull;
     <a href="#how-is-this-different">Why LLMKube?</a> &bull;
     <a href="#performance">Benchmarks</a> &bull;
@@ -188,7 +185,6 @@ kubectl apply -f model.yaml
 - **Kubernetes versions:** CI runs kind from its `latest` download link with kind's default node image, neither pinned (Kubernetes v1.37.0 in November 2026), plus a best-effort MicroShift job. Older versions are not tested in CI. Some features need newer clusters: the multi-node memory guard needs 1.29+ (native sidecars), DRA needs 1.34+, and `oci://` model sources need 1.36+.
 - **Releases ship often**, sometimes several a week, and new features land in patch releases (0.10.x). See the [latest release](https://github.com/defilantech/LLMKube/releases/latest) for what is current.
 - **First-time contributors have landed real features:** Intel oneAPI / SYCL GPU support arrived as PR [#557](https://github.com/defilantech/LLMKube/pull/557) from a first-time contributor, and configurable GPU resource names for AMD/Vulkan/Intel scheduling as [#709](https://github.com/defilantech/LLMKube/pull/709) from a contributor new to the repo, who followed with vendor-neutral DRA scheduling in [#750](https://github.com/defilantech/LLMKube/pull/750).
-- **Foreman, the agentic harness, contributes code to this repository:** its first two merged PRs landed in May 2026 ([#508](https://github.com/defilantech/LLMKube/pull/508), [#588](https://github.com/defilantech/LLMKube/pull/588)), with more Foreman-authored PRs merging since.
 - **Running LLMKube in production, a lab, or a homelab?** [Add yourself to ADOPTERS.md](ADOPTERS.md).
 
 ---
@@ -285,39 +281,6 @@ Three properties worth calling out:
 
 ---
 
-## Foreman
-
-<img src="docs/site/images/foreman-logo-icon.svg" alt="Foreman" width="80" height="80" align="right" />
-
-`Model` and `InferenceService` give you self-hosted inference. `ModelRouter` gives you policy-aware routing. **Foreman gives you an orchestrator for agentic workloads on top of both.**
-
-Foreman is an opt-in add-on that ships its own Helm chart, its own API group (`foreman.llmkube.dev`), and its own controller and node-agent binaries. It introduces four CRDs (`Workload`, `AgenticTask`, `Agent`, `FleetNode`), a capability-aware scheduler, and a native Go agent loop that runs OpenAI function-calling against your local inference endpoints. The v0.1 shape is a linear pipeline: coder agent on one node produces a branch, verifier agent (gate) on another node runs `make fmt vet lint test`, reviewer agent(s) on a third node read the diff against the issue body and score it.
-
-```yaml
-apiVersion: foreman.llmkube.dev/v1alpha1
-kind: Workload
-metadata:
-  name: fix-small-bugs
-  namespace: default
-spec:
-  intent: "Fix small open issues"
-  repo: defilantech/LLMKube
-  issues: [510, 526, 449]
-  coderAgentRef:    { name: qwen36-35b-carnice-mtp-coder }
-  verifierAgentRef: { name: shadowstack-gate }
-  reviewerAgentRefs:
-    - { name: qwen36-35b-a3b-reviewer }
-    - { name: devstral-24b-reviewer }
-```
-
-`kubectl apply` and watch the fleet land DCO-signed branches on a fork. Foreman's debut branches landed as upstream PRs [#508](https://github.com/defilantech/LLMKube/pull/508) and [#588](https://github.com/defilantech/LLMKube/pull/588) in May 2026, and the pipeline has merged Foreman-authored PRs ever since.
-
-Foreman is meant for shops where on-prem hardware, sovereignty constraints, or sheer batch scale make the agentic-coding cloud-API model a poor fit. It is not a replacement for individual-developer tools like Cursor or aider; it is the control plane *below* those tools, for when you want a fleet doing the work instead of one developer.
-
-**[Full Foreman docs →](https://llmkube.com/docs/foreman)** | **[Model compatibility table](https://llmkube.com/docs/foreman/model-compatibility)** | **[Sample manifests](examples/foreman/)**
-
----
-
 ## How Is This Different?
 
 **LLMKube is for teams that want Kubernetes-managed LLM inference across heterogeneous hardware.** What it combines:
@@ -364,7 +327,7 @@ One machine with two RTX 5060 Ti GPUs, 10 iterations of 256 max tokens per model
 ## Features
 
 **Inference:**
-- Kubernetes-native CRDs, all `v1alpha1`: `Model` and `InferenceService` at the core; the Helm chart also installs `ModelRouter`, `ModelPool`, `GPUQuota`, `LoRAAdapter`, `MetalNode` and `FederatedCluster` (Foreman's CRDs come with its own chart)
+- Kubernetes-native CRDs, all `v1alpha1`: `Model` and `InferenceService` at the core; the Helm chart also installs `ModelRouter`, `ModelPool`, `GPUQuota`, `LoRAAdapter`, `MetalNode` and `FederatedCluster`
 - In-cluster runtimes: llama.cpp (GGUF, plus a router mode that serves several models from one server), vLLM, SGLang, PersonaPlex (Moshi speech-to-speech; bring your own image), and any container (`generic`). TGI is still accepted as a legacy runtime: upstream archived it, and the operator pins its final release, 3.3.7
 - On Apple Silicon through the Metal Agent: llama-server, mlx-server, oMLX, vllm-swift, Ollama and TensorFold, as native processes
 - Model sources: `http(s)://`, `hf://`, `s3://` (S3-compatible stores), `pvc://`, `oci://` (image volumes, Kubernetes 1.36+), and `file://` or absolute paths under allowlisted host roots

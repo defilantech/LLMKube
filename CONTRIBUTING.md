@@ -273,10 +273,10 @@ make test
 
 ## AI-Assisted and Agent Contributions
 
-LLMKube is built by people who use AI coding agents heavily: our own Foreman
-harness opens PRs against this project. So we welcome AI-assisted
-contributions. We hold them to one standard, the same one we hold our own
-agent to: human accountability, not where the code came from.
+LLMKube is built by people who use AI coding agents heavily: the project's
+own agent, `defilan-agent[bot]`, opens PRs against this project. So we
+welcome AI-assisted contributions. We hold them to one standard, the same one
+we hold our own agent to: human accountability, not where the code came from.
 
 If any part of your contribution (code, tests, commit messages, PR text) was
 generated or substantially assisted by an AI tool, the following apply.
