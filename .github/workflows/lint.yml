@@ -42,9 +42,9 @@ jobs:
         # module (#2526); nothing here may import it back. -e lists a package
         # whose module is not in go.mod too, so this names the import where
         # the linter below reports only a typecheck error and its depguard
-        # rule never runs.
+        # rule never runs. -test includes the test binaries' imports.
         run: |
-          deps="$(go list -e -deps ./...)"
+          deps="$(go list -e -test -deps ./...)"
           if printf '%s\n' "$deps" | grep -i -E 'foreman|meitheal'; then
             echo "::error::LLMKube must not import Foreman or Meitheal packages (#2526)"
             exit 1

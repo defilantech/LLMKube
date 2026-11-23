@@ -26,7 +26,7 @@ are the ones from the last LLMKube release before the move. New releases come
 from the Meitheal repository.
 
 Meitheal's first release, 0.1.0, is still pending: until it ships, stay on
-Foreman 0.10.19.
+the last Foreman release LLMKube published.
 
 ## Old names and new names
 
@@ -70,7 +70,7 @@ helm list -A | grep foreman
 The steps below need foreman chart 0.9.1 or later, the first version that
 templates its CRDs behind `crds.install`. On an older chart, setting
 `crds.install=false` changes nothing, so upgrade the release to a current
-foreman chart (0.10.19 is the last one) the way you normally upgrade it, then
+foreman chart (the last one LLMKube published) the way you normally upgrade it, then
 start here. Move in this order:
 
 1. Annotate the six `foreman.llmkube.dev` CRDs with
@@ -95,7 +95,7 @@ start here. Move in this order:
    CRDs, and the CRDs must still exist:
 
    ```sh
-   helm get manifest foreman --namespace foreman-system | grep -c 'kind: CustomResourceDefinition'   # expect 0
+   helm get manifest foreman --namespace foreman-system | grep -c 'kind: CustomResourceDefinition' || true   # expect 0
    kubectl get crd | grep -c foreman.llmkube.dev                                                    # expect 6
    ```
 
