@@ -553,13 +553,25 @@ var (
 
 	// ModelPoolReclaimsTotal counts slot reclaims: the controller returned the
 	// shared slot to spec.default after the resident non-default member went
-	// idle for the pool's reclaimAfter under the "reclaim" swap policy.
+	// idle for the pool's reclaimAfter under the "reclaim" swap policy, or
+	// released it to zero (to="") under "reclaim-down".
 	ModelPoolReclaimsTotal = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "llmkube_modelpool_reclaims_total",
-			Help: "Total number of ModelPool slot reclaims to spec.default after the resident member went idle.",
+			Help: "Total number of ModelPool slot reclaims after the resident member went idle: to spec.default, or released to zero (empty to) under swapPolicy reclaim-down.",
 		},
 		[]string{"namespace", "pool", "from", "to"},
+	)
+
+	// MultiNodeGuardSuspendsTotal counts the multiNode groups the operator
+	// suspended because a member's memory guard saw MemFree stay under
+	// spec.multiNode.memory.suspendBelowMemFree.
+	MultiNodeGuardSuspendsTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "llmkube_multinode_guard_suspends_total",
+			Help: "Total number of multiNode groups suspended by the memory guard (spec.multiNode.memory.suspendBelowMemFree).",
+		},
+		[]string{"inferenceservice", "namespace"},
 	)
 
 	// ModelPoolSwapDuration measures how long a swap takes from the router's
@@ -700,6 +712,7 @@ var ControllerCollectors = []prometheus.Collector{
 	ReconcileDuration,
 	ModelPoolResident,
 	ModelPoolReclaimsTotal,
+	MultiNodeGuardSuspendsTotal,
 	WatchCanaryLastObservedTimestamp,
 	WatchCanaryUp,
 	WatchCanaryWritesTotal,

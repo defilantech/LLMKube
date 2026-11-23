@@ -40,6 +40,7 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	inferencev1alpha1 "github.com/defilantech/llmkube/api/v1alpha1"
+	llmkubemetrics "github.com/defilantech/llmkube/internal/metrics"
 )
 
 // Multi-node serving groups (#1423). One InferenceService, N pods on N named
@@ -197,7 +198,187 @@ func validateMultiNodeMemory(mem *inferencev1alpha1.MultiNodeMemory) error {
 			return fmt.Errorf("multiNode.memory.sysctls[%q] value %q is not a non-negative integer", k, v)
 		}
 	}
+	if _, _, err := multiNodeMemoryGuardFloors(mem); err != nil {
+		return err
+	}
 	return nil
+}
+
+// multiNodeMemoryGuardContainer is the sidecar that flushes the page cache
+// and watches MemFree while a member runs (spec.multiNode.memory
+// flushBelowMemFree / suspendBelowMemFree).
+const multiNodeMemoryGuardContainer = "multinode-memory-guard"
+
+// multiNodeMemoryGuardExitCode is the guard's exit code when MemFree stayed
+// under suspendBelowMemFree. The controller reads it off the sidecar's last
+// termination and suspends the group. The kubelet restarts the sidecar in the
+// meantime (with its usual back-off); a restarted guard that still finds
+// MemFree under the floor exits the same way again after the hold time.
+const multiNodeMemoryGuardExitCode = 42
+
+// multiNodeMemoryGuardFloors parses the two thresholds into MiB. Zero means
+// unset. A threshold below 1 MiB is rejected rather than rounded to zero,
+// which would silently turn it off.
+func multiNodeMemoryGuardFloors(mem *inferencev1alpha1.MultiNodeMemory) (flushMiB, suspendMiB int64, err error) {
+	if mem == nil {
+		return 0, 0, nil
+	}
+	parse := func(field, v string) (int64, error) {
+		if v == "" {
+			return 0, nil
+		}
+		q, err := resource.ParseQuantity(v)
+		if err != nil {
+			return 0, fmt.Errorf("multiNode.memory.%s %q is not a quantity: %w", field, v, err)
+		}
+		mib := q.Value() / (1 << 20)
+		if mib < 1 {
+			return 0, fmt.Errorf("multiNode.memory.%s %q must be at least 1Mi", field, v)
+		}
+		return mib, nil
+	}
+	if flushMiB, err = parse("flushBelowMemFree", mem.FlushBelowMemFree); err != nil {
+		return 0, 0, err
+	}
+	if suspendMiB, err = parse("suspendBelowMemFree", mem.SuspendBelowMemFree); err != nil {
+		return 0, 0, err
+	}
+	return flushMiB, suspendMiB, nil
+}
+
+// multiNodeMemoryGuardScript is the guard's loop. $1 is the flush floor and
+// $2 the suspend floor, both MiB, 0 for off. Every 2 s it reads /proc/meminfo:
+//   - MemFree under the flush floor with more than 512 MiB of page cache, and
+//     no drop in the last 5 s: sync and drop the page cache. Page cache here
+//     is Cached minus Shmem: Cached also counts tmpfs and shared memory (a
+//     memory-backed emptyDir, /dev/shm), which a drop cannot free, so a node
+//     whose Cached is mostly Shmem must not be dropped every few seconds for
+//     nothing.
+//   - MemFree under the suspend floor for 10 s: one last drop (skipped when
+//     the flush branch dropped inside the last 5 s, so one pass never syncs
+//     twice); if MemFree is still under, write why to the termination message
+//     and exit 42.
+//   - No MemFree line to read: say so once and do nothing until it is back. A
+//     missing value must not read as 0 and suspend the group.
+//
+// sh is PID 1 of the container, and PID 1 ignores a signal it has no handler
+// for: without the trap every member deletion would wait out the pod's grace
+// period for this loop. The sleep runs in the background under wait so the
+// trap is taken at once.
+//
+// Every drop prints MemFree and Cached before and after, which is the audit
+// trail (kubectl logs <member> -c multinode-memory-guard).
+//
+// The paths and timings come from variables the pod never sets, so the
+// defaults are what runs on a node; the unit tests point them at fake files.
+const multiNodeMemoryGuardScript = `set -u
+flush=$1
+floor=$2
+meminfo=${GUARD_MEMINFO:-/proc/meminfo}
+dropf=${GUARD_DROP_CACHES:-/proc/sys/vm/drop_caches}
+term=${GUARD_TERMINATION_LOG:-/dev/termination-log}
+poll=${GUARD_POLL_S:-2}
+hold=${GUARD_HOLD_S:-10}
+gap=${GUARD_DROP_GAP_S:-5}
+mib() { awk -v k="$1:" '$1 == k {print int($2/1024); f=1} END {if (!f) print 0}' "$meminfo"; }
+droppable() { echo $(( $(mib Cached) - $(mib Shmem) )); }
+last=0
+low=
+warned=
+trap 'exit 0' TERM INT
+drop() {
+  f0=$(mib MemFree); c0=$(mib Cached)
+  sync
+  echo 3 > "$dropf"
+  last=$(date +%s)
+  echo "$1: MemFree $f0 -> $(mib MemFree) MiB, Cached $c0 -> $(mib Cached) MiB"
+}
+echo "start: MemFree $(mib MemFree) MiB, Cached $(mib Cached) MiB; flush below $flush MiB, suspend below $floor MiB (0 = off)"
+while :; do
+  if ! grep -q '^MemFree:' "$meminfo" 2>/dev/null; then
+    [ -n "$warned" ] || echo "cannot read MemFree from $meminfo: doing nothing until it is back"
+    warned=1
+    low=
+    sleep "$poll" & wait $!
+    continue
+  fi
+  warned=
+  now=$(date +%s)
+  free=$(mib MemFree)
+  if [ "$flush" -gt 0 ] && [ "$free" -lt "$flush" ] && [ "$(droppable)" -gt 512 ] && [ $((now - last)) -ge "$gap" ]; then
+    drop "drop (MemFree < $flush MiB)"
+    free=$(mib MemFree)
+  fi
+  if [ "$floor" -gt 0 ] && [ "$free" -lt "$floor" ]; then
+    low=${low:-$now}
+    if [ $((now - low)) -ge "$hold" ]; then
+      if [ $(( $(date +%s) - last )) -ge "$gap" ]; then
+        drop "guard: last drop"
+        free=$(mib MemFree)
+      fi
+      if [ "$free" -lt "$floor" ]; then
+        msg="MemFree $free MiB stayed under $floor MiB for ${hold}s after a page cache drop"
+        echo "GUARD: $msg"
+        echo "$msg" > "$term"
+        exit 42
+      fi
+      low=
+    fi
+  else
+    low=
+  fi
+  sleep "$poll" & wait $!
+done
+`
+
+// multiNodeMemoryGuardSidecar builds the guard sidecar, or reports false when
+// neither threshold is set. It is a native sidecar (an init container with
+// restartPolicy Always), so it starts before the runtime, runs beside it, and
+// goes away with the member pod. Privileged and root for the same reason as
+// the prep container: drop_caches is under the read-only /proc/sys. It needs
+// no API access; the controller acts on its exit.
+func multiNodeMemoryGuardSidecar(mem *inferencev1alpha1.MultiNodeMemory, image string) (corev1.Container, bool) {
+	flushMiB, suspendMiB, err := multiNodeMemoryGuardFloors(mem)
+	if err != nil || (flushMiB == 0 && suspendMiB == 0) {
+		return corev1.Container{}, false
+	}
+	if image == "" {
+		image = defaultPrefetchImage
+	}
+	always := corev1.ContainerRestartPolicyAlways
+	return corev1.Container{
+		Name:          multiNodeMemoryGuardContainer,
+		Image:         image,
+		RestartPolicy: &always,
+		Command: []string{"sh", "-c", multiNodeMemoryGuardScript, multiNodeMemoryGuardContainer,
+			strconv.FormatInt(flushMiB, 10), strconv.FormatInt(suspendMiB, 10)},
+		TerminationMessagePolicy: corev1.TerminationMessageReadFile,
+		Resources: corev1.ResourceRequirements{
+			Requests: corev1.ResourceList{
+				corev1.ResourceCPU:    resource.MustParse("10m"),
+				corev1.ResourceMemory: resource.MustParse("16Mi"),
+			},
+			Limits: corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("64Mi")},
+		},
+		SecurityContext: &corev1.SecurityContext{
+			Privileged:             boolPtr(true),
+			RunAsUser:              int64Ptr(0),
+			ReadOnlyRootFilesystem: boolPtr(true),
+		},
+	}, true
+}
+
+// isSidecar reports whether the pod spec declares the named init container as
+// a native sidecar. A sidecar never completes, so the staging checks below
+// must not wait for it.
+func isSidecar(p *corev1.Pod, name string) bool {
+	for i := range p.Spec.InitContainers {
+		c := &p.Spec.InitContainers[i]
+		if c.Name == name {
+			return c.RestartPolicy != nil && *c.RestartPolicy == corev1.ContainerRestartPolicyAlways
+		}
+	}
+	return false
 }
 
 // multiNodeMemoryPrepScript writes each "vm.name=value" argument under
@@ -442,10 +623,17 @@ func memberPodFromTemplate(
 		}
 	}
 
-	// Last, so it runs after the model-downloader has filled the page cache
-	// and immediately before the runtime starts.
+	// After every staging init container, so it runs once the
+	// model-downloader has filled the page cache and immediately before the
+	// runtime starts. Only the guard sidecar below comes after it.
 	if prep, ok := multiNodeMemoryPrepInitContainer(isvc.Spec.MultiNode.Memory, initImage); ok {
 		spec.InitContainers = append(spec.InitContainers, prep)
+	}
+	// After the prep: init containers start in order, and a sidecar keeps
+	// running, so placed last it starts once staging and the prep are done
+	// and flushes only around the runtime.
+	if guard, ok := multiNodeMemoryGuardSidecar(isvc.Spec.MultiNode.Memory, initImage); ok {
+		spec.InitContainers = append(spec.InitContainers, guard)
 	}
 
 	return &corev1.Pod{
@@ -530,6 +718,9 @@ type memberObservation struct {
 func memberStaging(p *corev1.Pod) bool {
 	for i := range p.Status.InitContainerStatuses {
 		ics := p.Status.InitContainerStatuses[i]
+		if isSidecar(p, ics.Name) {
+			continue
+		}
 		if ics.State.Running != nil {
 			return true
 		}
@@ -545,6 +736,9 @@ func memberStaging(p *corev1.Pod) bool {
 func initRestartCount(p *corev1.Pod) int32 {
 	var n int32
 	for i := range p.Status.InitContainerStatuses {
+		if isSidecar(p, p.Status.InitContainerStatuses[i].Name) {
+			continue
+		}
 		n += p.Status.InitContainerStatuses[i].RestartCount
 	}
 	return n
@@ -699,12 +893,52 @@ func groupNeedsRecreate(obs []memberObservation, hash string, now time.Time, for
 			if p == nil {
 				continue
 			}
-			if o.rank == 0 && p.Status.Phase == corev1.PodRunning && !podReady(p) && headNotReadyFor(p, now) > budget {
+			if o.rank != 0 || p.Status.Phase != corev1.PodRunning || podReady(p) {
+				continue
+			}
+			notReadyFor := headNotReadyFor(p, now)
+			if at, ok := guardDownSince(p); ok {
+				notReadyFor = now.Sub(at)
+			}
+			if notReadyFor > budget {
 				return multiNodeReasonHeadNotReady, fmt.Sprintf("%s not Ready after %s", p.Name, budget), p
 			}
 		}
 	}
 	return "", "", nil
+}
+
+// guardDownSince reports when the memory guard last exited, for a pod whose
+// runtime containers are all ready and whose guard sidecar is not running.
+// A pod is Ready only when its sidecars are, so a guard between an exit and
+// its restart makes a serving head not Ready. headNotReadyFor measures from
+// the runtime's start, which on a group that has served for hours is already
+// past the budget: without this, one guard restart (an OOM kill at its small
+// limit, a runtime hiccup) would recreate the whole group at once. The budget
+// is counted from the guard's exit instead, so the kubelet gets to restart
+// the sidecar, and a guard that never comes back still ends in HeadNotReady.
+// False when a runtime container is itself not ready: then the head is not
+// answering and the ordinary deadline applies.
+func guardDownSince(p *corev1.Pod) (time.Time, bool) {
+	if len(p.Status.ContainerStatuses) == 0 {
+		return time.Time{}, false
+	}
+	for _, cs := range p.Status.ContainerStatuses {
+		if !cs.Ready {
+			return time.Time{}, false
+		}
+	}
+	for _, cs := range p.Status.InitContainerStatuses {
+		if cs.Name != multiNodeMemoryGuardContainer || cs.State.Running != nil {
+			continue
+		}
+		for _, t := range []*corev1.ContainerStateTerminated{cs.State.Terminated, cs.LastTerminationState.Terminated} {
+			if t != nil && !t.FinishedAt.IsZero() {
+				return t.FinishedAt.Time, true
+			}
+		}
+	}
+	return time.Time{}, false
 }
 
 // headNotReadyFor is how long the head's runtime has had to answer. The
@@ -989,7 +1223,10 @@ func groupReadiness(obs []memberObservation) (bool, int32) {
 // is created; any member that is stale (different group hash), failed,
 // restarted, terminating, or a rank 0 that has not become Ready inside the
 // startup budget, deletes the WHOLE group, which the next reconcile
-// recreates. Returns readyReplicas (1 when the group serves, else 0).
+// recreates. One outcome writes the spec instead: a member whose memory guard
+// exited with multiNodeMemoryGuardExitCode on a formed group sets
+// spec.suspend, and the next reconcile deletes the group as any suspend does.
+// Returns readyReplicas (1 when the group serves, else 0).
 func (r *InferenceServiceReconciler) reconcileMultiNodeGroup(
 	ctx context.Context,
 	isvc *inferencev1alpha1.InferenceService,
@@ -1064,6 +1301,16 @@ func (r *InferenceServiceReconciler) reconcileMultiNodeGroup(
 	for i, d := range desired {
 		obs[i] = memberObservation{rank: i, desired: d, existing: byName[d.Name]}
 	}
+	// The memory guard is checked before the recreate reasons. A guard that
+	// exits is a sidecar that is not ready until the kubelet has restarted
+	// it, and a pod is Ready only when its sidecars are: a trip on rank 0
+	// makes the head not Ready, and on a group that has served longer than
+	// the startup budget HeadNotReady would fire first and recreate the
+	// group as a counted failure, with the trip never seen.
+	if trigger, msg := memoryGuardTripped(obs, hash, multiNodeFormedAt(isvc)); trigger != nil {
+		return r.suspendForMemoryGuard(ctx, isvc, trigger, msg)
+	}
+
 	if reason, msg, trigger := groupNeedsRecreate(obs, hash, now, multiNodeFormedAt(isvc), multiNodeStagedAt(isvc)); reason != "" {
 		return r.tearDownGroup(ctx, isvc, desired, existing.Items, groupTeardown{hash: hash, reason: reason, msg: msg, trigger: trigger}, now, modelReady, desiredReplicas)
 	}
@@ -1110,6 +1357,79 @@ func (r *InferenceServiceReconciler) reconcileMultiNodeGroup(
 	}
 	setMultiNodeStatus(isvc, desired, existing.Items, metav1.ConditionFalse, "Starting", fmt.Sprintf("%d of %d members running", running, len(desired)))
 	return 0, nil, nil
+}
+
+// memoryGuardTripped returns the first member whose memory guard exited
+// with multiNodeMemoryGuardExitCode after the group formed, and the guard's
+// termination message. Nil when nothing tripped.
+//
+// MultiNodeFormed is set once every member's runtime container is running,
+// which is before the runtime has loaded its weights, so the guard is armed
+// for the whole load. That is intended: a dip the load's page cache explains
+// is recovered by the guard's own last drop and never becomes an exit, and
+// one that survives the drop is the condition the guard exists for. An exit
+// from before formation is not acted on: the recreate logic owns a group
+// that has not formed.
+//
+// The comparison is between two clocks at one-second resolution: formedAt is
+// the operator's, FinishedAt the node's. An exit in the same second as
+// formation, or hidden by clock skew, is not lost: the kubelet restarts the
+// guard, and a guard that still finds MemFree under the floor exits again.
+//
+// A member that is terminating, or that carries another group hash (the spec
+// changed under it), is skipped: that pod is on its way out and its guard no
+// longer speaks for the group the spec describes.
+func memoryGuardTripped(obs []memberObservation, hash string, formedAt time.Time) (*corev1.Pod, string) {
+	if formedAt.IsZero() {
+		return nil, ""
+	}
+	for _, o := range obs {
+		p := o.existing
+		if p == nil || p.DeletionTimestamp != nil || p.Annotations[AnnotationMultiNodeGroupHash] != hash {
+			continue
+		}
+		for _, cs := range p.Status.InitContainerStatuses {
+			if cs.Name != multiNodeMemoryGuardContainer {
+				continue
+			}
+			for _, t := range []*corev1.ContainerStateTerminated{cs.State.Terminated, cs.LastTerminationState.Terminated} {
+				if t == nil || t.ExitCode != multiNodeMemoryGuardExitCode || !t.FinishedAt.Time.After(formedAt) {
+					continue
+				}
+				return p, strings.TrimSpace(t.Message)
+			}
+		}
+	}
+	return nil, ""
+}
+
+// suspendForMemoryGuard sets spec.suspend on the service, once, because a
+// member's memory guard saw MemFree stay under suspendBelowMemFree. The next
+// reconcile sees the suspend and deletes the members the usual way. Writing
+// the spec is deliberate: the stop must hold until a person looks, and
+// setting spec.suspend back to false is the documented way to start again.
+//
+// The patch carries the resourceVersion, so a reconcile working on a stale
+// copy (one that has not seen the suspend an earlier reconcile wrote) gets a
+// conflict and requeues instead of counting and announcing the suspend twice.
+func (r *InferenceServiceReconciler) suspendForMemoryGuard(ctx context.Context, isvc *inferencev1alpha1.InferenceService, trigger *corev1.Pod, msg string) (int32, *ctrl.Result, error) {
+	if msg == "" {
+		msg = "MemFree stayed under suspendBelowMemFree"
+	}
+	base := isvc.DeepCopy()
+	isvc.Spec.Suspend = true
+	if err := r.Patch(ctx, isvc, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); err != nil {
+		if apierrors.IsConflict(err) {
+			return 0, &ctrl.Result{RequeueAfter: time.Second}, nil
+		}
+		return 0, nil, fmt.Errorf("multiNode: suspend for memory guard: %w", err)
+	}
+	llmkubemetrics.MultiNodeGuardSuspendsTotal.WithLabelValues(isvc.Name, isvc.Namespace).Inc()
+	r.multiNodeEvent(isvc, "MultiNodeMemoryGuardSuspended",
+		fmt.Sprintf("suspended by the memory guard on %s (node %s): %s. Set spec.suspend to false to start the group again",
+			trigger.Name, trigger.Spec.NodeName, msg))
+	logf.FromContext(ctx).Info("multiNode group suspended by the memory guard", "member", trigger.Name, "node", trigger.Spec.NodeName, "message", msg)
+	return 0, &ctrl.Result{RequeueAfter: time.Second}, nil
 }
 
 // deleteStaleSingleNodeDeployment removes a Deployment this service owned

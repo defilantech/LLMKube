@@ -309,6 +309,11 @@ const (
 	// configured when the agent started.
 	ReasonRuntimeNotAvailable string = "RuntimeNotAvailable"
 
+	// ReasonRuntimeCannotServeSource is set when the service's resolved
+	// runtime cannot serve its Model's source: a hailo:// source on a runtime
+	// other than ollama.
+	ReasonRuntimeCannotServeSource string = "RuntimeCannotServeSource"
+
 	// ReasonStartFailed is set when a start the agent did not refuse failed
 	// anyway: the engine exited while loading, the download failed (a full
 	// disk, say), or the engine did not answer its health check in time. The
@@ -344,6 +349,7 @@ var MetalAgentRefusalReasons = []string{
 	ReasonModelDownloadNoSpace,
 	ReasonSourceSecretNotAllowed,
 	ReasonRuntimeNotAvailable,
+	ReasonRuntimeCannotServeSource,
 	ReasonStartFailed,
 }
 

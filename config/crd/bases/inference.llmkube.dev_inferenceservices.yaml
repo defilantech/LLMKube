@@ -4008,14 +4008,60 @@ spec:
                     type: array
                   memory:
                     description: |-
-                      Memory prepares each member node's memory right before the member's
-                      runtime starts. Unset adds nothing to the member pods.
+                      Memory looks after each member node's memory: it can prepare it right
+                      before the member's runtime starts (a page-cache drop and vm sysctls)
+                      and watch it for as long as the member runs (a sidecar that flushes the
+                      page cache and can suspend the group). Unset adds nothing to the member
+                      pods.
                     properties:
                       dropPageCacheBeforeBoot:
                         description: |-
                           DropPageCacheBeforeBoot syncs and drops the node's page cache after the
                           member has staged its weights and before its runtime container starts.
                         type: boolean
+                      flushBelowMemFree:
+                        description: |-
+                          FlushBelowMemFree drops the node's page cache while the member runs
+                          whenever MemFree falls below it and there is page cache to drop (more
+                          than 512Mi of Cached that is not Shmem), with at least 5 seconds between
+                          two drops.
+                          Page cache that regrows while serving (row reads from weights on disk)
+                          is the memory a unified-memory GPU then cannot allocate. Setting it, or
+                          SuspendBelowMemFree, adds a privileged sidecar, multinode-memory-guard,
+                          to every member pod.
+                          A quantity of at least 1Mi, e.g. "4Gi". Omit the field to turn the
+                          flusher off: the API server rejects "0" and anything under 1Mi.
+                        maxLength: 32
+                        pattern: ^([+-]?[0-9.]+)([eEinumkKMGTP]*[-+]?[0-9]*)$
+                        type: string
+                        x-kubernetes-validations:
+                        - message: flushBelowMemFree must be a quantity of at least
+                            1Mi; omit it to turn the flusher off
+                          rule: isQuantity(self) && quantity(self).compareTo(quantity('1Mi'))
+                            >= 0
+                      suspendBelowMemFree:
+                        description: |-
+                          SuspendBelowMemFree suspends the group once when a member's MemFree
+                          stays below it for 10 seconds, even after a last page-cache drop: the
+                          operator sets spec.suspend to true and records a Warning event, so the
+                          members are deleted cleanly instead of starving the GPU allocator.
+                          Setting spec.suspend back to false starts the group again and re-arms
+                          the guard. The guard is armed from the moment every member's runtime
+                          container is running, so it also watches the weight load. Set it well
+                          above the kernel's high watermark: a node with nothing left to reclaim
+                          stalls near that mark, and a lower floor fires too late.
+                          A floor above what the node can ever have free suspends the group
+                          shortly after every start.
+                          A quantity of at least 1Mi, e.g. "8Gi". Omit the field to turn the
+                          guard off: the API server rejects "0" and anything under 1Mi.
+                        maxLength: 32
+                        pattern: ^([+-]?[0-9.]+)([eEinumkKMGTP]*[-+]?[0-9]*)$
+                        type: string
+                        x-kubernetes-validations:
+                        - message: suspendBelowMemFree must be a quantity of at least
+                            1Mi; omit it to turn the guard off
+                          rule: isQuantity(self) && quantity(self).compareTo(quantity('1Mi'))
+                            >= 0
                       sysctls:
                         additionalProperties:
                           description: |-

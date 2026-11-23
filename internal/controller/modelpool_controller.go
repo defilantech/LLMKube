@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"slices"
 	"sort"
 	"time"
 
@@ -54,9 +55,9 @@ const modelPoolSwapRequeue = 3 * time.Second
 // fires promptly after reclaimAfter elapses, high enough not to hammer /slots.
 const modelPoolReclaimPoll = 30 * time.Second
 
-// defaultReclaimAfter is used when SwapPolicy is "reclaim" but spec.reclaimAfter
-// is unset (the CRD default also supplies 300s; this guards direct API writes
-// and unit construction).
+// defaultReclaimAfter is used when SwapPolicy is "reclaim" or "reclaim-down"
+// but spec.reclaimAfter is unset (the CRD default also supplies 300s; this
+// guards direct API writes and unit construction).
 const defaultReclaimAfter = 300 * time.Second
 
 // ModelPoolReconciler enforces the exclusive-slot invariant for a ModelPool:
@@ -159,6 +160,9 @@ func (r *ModelPoolReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	// keeps the reconciler polling idle state, which no InferenceService or Pod
 	// event would otherwise surface.
 	restartIdleClockOnReactivation(pool, members, owner)
+	// Under reclaim-down the reclaim can release the slot outright: no owner,
+	// so the drain below takes every member, the resident included, to zero.
+	unreclaimedOwner := owner
 	owner, reclaimRequeue := r.applyReclaimOwner(ctx, pool, members, owner)
 
 	// Drain every non-owner. A non-owner that reports Ready could still be
@@ -181,6 +185,7 @@ func (r *ModelPoolReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	// could otherwise admit the owner before the incumbent's process is gone and
 	// briefly co-reside (OOM).
 	deferReason := ""
+	var deferred []string
 	othersClear := true
 	for _, name := range memberNames(pool) {
 		if name == owner {
@@ -203,12 +208,14 @@ func (r *ModelPoolReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 			case idleVerdictBusy:
 				// Busy: let the in-flight request finish; do not unload.
 				deferReason = inferencev1alpha1.ReasonPodsBusy
+				deferred = append(deferred, name)
 				othersClear = false
 				continue
 			default:
 				// Fail closed: keep the incumbent resident.
 				log.Info("member idleness unestablished; deferring swap", "member", name)
 				deferReason = inferencev1alpha1.ReasonIdleCheckFailed
+				deferred = append(deferred, name)
 				othersClear = false
 				continue
 			}
@@ -223,6 +230,8 @@ func (r *ModelPoolReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 			othersClear = false
 		}
 	}
+
+	countRelease(pool, members, owner, unreclaimedOwner, deferred)
 
 	// The owner is held at zero replicas until every incumbent's Pods are gone.
 	// Only then is it scaled to one, so its Pod cannot start before the
@@ -262,7 +271,8 @@ func (r *ModelPoolReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		result.RequeueAfter = reclaimRequeue
 	}
 	result.RequeueAfter = soonerRequeue(result.RequeueAfter, externalScaleRequeue)
-	if err := r.updateStatus(ctx, pool, statusBefore, members, owner, swapping, deferReason); err != nil {
+	statusOwner := reportedOwner(owner, unreclaimedOwner, deferReason)
+	if err := r.updateStatus(ctx, pool, statusBefore, members, statusOwner, swapping, deferReason); err != nil {
 		if apierrors.IsConflict(err) {
 			//nolint:staticcheck // SA1019: keep the rate-limited retry on a write conflict; RequeueAfter would swap backoff for a fixed delay.
 			return ctrl.Result{Requeue: true}, nil
@@ -507,16 +517,19 @@ func clearDepartedResident(pool *inferencev1alpha1.ModelPool, members map[string
 	}
 }
 
-// applyReclaimOwner implements the "reclaim" swap policy. When a non-default
-// member has held the slot and been continuously idle for spec.reclaimAfter, it
-// overrides owner with spec.default so the ordinary drain-and-swap machinery
-// returns the slot to the background model. It returns the (possibly overridden)
+// applyReclaimOwner implements the "reclaim" and "reclaim-down" swap policies.
+// When a non-default member has held the slot and been continuously idle for
+// spec.reclaimAfter, it overrides owner with spec.default so the ordinary
+// drain-and-swap machinery returns the slot to the background model. Under
+// reclaim-down (no spec.default) it overrides owner with "" instead: every
+// member, the idle resident included, is drained to zero and the slot is
+// released until a request activates a member. It returns the (possibly overridden)
 // owner and a requeue interval that keeps the reconciler polling idle state
 // while a non-default member is resident (no watch fires on a busy->idle
 // transition). Idle-probe failure is fail-closed: the clock holds its value and
 // the slot is not reclaimed on that poll. The idle clock lives in
 // status.ResidentIdleSince, which updateStatus persists untouched; it
-// self-clears once the default is resident.
+// self-clears once the default is resident, or once a released pool is cold.
 func (r *ModelPoolReconciler) applyReclaimOwner(
 	ctx context.Context,
 	pool *inferencev1alpha1.ModelPool,
@@ -526,27 +539,49 @@ func (r *ModelPoolReconciler) applyReclaimOwner(
 	log := logf.FromContext(ctx)
 
 	def := pool.Spec.Default
-	if pool.Spec.SwapPolicy != inferencev1alpha1.ModelPoolSwapPolicyReclaim || def == "" {
+	// Releasing to zero is an explicit opt-in (#1896): reclaim with no default
+	// keeps the resident, as it always has. Admission rejects reclaim-down with a
+	// default; one admitted without the rule reclaims to it rather than
+	// releasing a slot the cold-pool default would warm straight back up.
+	toZero := false
+	switch pool.Spec.SwapPolicy {
+	case inferencev1alpha1.ModelPoolSwapPolicyReclaim:
+		if def == "" {
+			pool.Status.ResidentIdleSince = nil
+			return owner, 0
+		}
+	case inferencev1alpha1.ModelPoolSwapPolicyReclaimDown:
+		toZero = def == ""
+	default:
 		pool.Status.ResidentIdleSince = nil
 		return owner, 0
 	}
 
 	// Reclaim only applies to a pool that is settled on a non-default resident:
 	// resolveSlotOwner returned that same resident (no cross-model activation is
-	// already redirecting the slot), the resident is Ready, and spec.default is
-	// still a member to reclaim to. Any other shape means a real swap is already
-	// in motion or there is nothing to reclaim.
+	// already redirecting the slot), the resident is Ready, and, under reclaim,
+	// spec.default is still a member to reclaim to. Under reclaim-down there is
+	// no default, so any settled resident qualifies. Any other shape means a real
+	// swap is already in motion or there is nothing to reclaim.
 	resident := pool.Status.ResidentMember
-	if owner == "" || owner != resident || resident == def {
+	if owner == "" || owner != resident || (!toZero && resident == def) {
 		pool.Status.ResidentIdleSince = nil
 		return owner, 0
 	}
 	residentISVC, ok := members[resident]
+	if toZero && ok && drainedByPool(residentISVC) && replicasOf(residentISVC) == 0 {
+		// The pool already drained the resident to release the slot, but status
+		// still names it: the release pass's status write was lost, or this pass
+		// read a stale member. No one has scaled it back up (that would read
+		// replicas 1), so keep releasing. Treating it as the owner would scale
+		// it straight back up once it stops reporting Ready.
+		return "", 0
+	}
 	if !ok || !memberReady(residentISVC) {
 		pool.Status.ResidentIdleSince = nil
 		return owner, 0
 	}
-	if _, ok := members[def]; !ok {
+	if _, ok := members[def]; !ok && !toZero {
 		pool.Status.ResidentIdleSince = nil
 		return owner, 0
 	}
@@ -575,14 +610,61 @@ func (r *ModelPoolReconciler) applyReclaimOwner(
 		return owner, pollWithin(reclaimAfter)
 	}
 	if elapsed := now.Sub(pool.Status.ResidentIdleSince.Time); elapsed >= reclaimAfter {
-		log.Info("reclaiming pool slot to default after idle",
-			"pool", pool.Name, "from", resident, "to", def, "idleFor", elapsed.String())
-		llmkubemetrics.ModelPoolReclaimsTotal.WithLabelValues(pool.Namespace, pool.Name, resident, def).Inc()
+		if toZero {
+			log.Info("releasing pool slot to zero after idle",
+				"pool", pool.Name, "from", resident, "idleFor", elapsed.String())
+		} else {
+			log.Info("reclaiming pool slot to default after idle",
+				"pool", pool.Name, "from", resident, "to", def, "idleFor", elapsed.String())
+		}
+		// A release is counted by countRelease once its drain is carried out: the
+		// drain probes again and can defer it, and this decision is then retaken
+		// on the next pass. A reclaim to the default is counted here, once, since
+		// the pending default keeps later passes out of this branch.
+		if !toZero {
+			llmkubemetrics.ModelPoolReclaimsTotal.WithLabelValues(pool.Namespace, pool.Name, resident, def).Inc()
+		}
 		// Leave ResidentIdleSince set; it clears on the next reconcile once the
-		// default is resident (owner == resident == def branch above).
+		// default is resident (owner == resident == def branch above), or once a
+		// released pool is cold (owner == "" branch).
 		return def, 0
 	}
 	return owner, pollWithin(reclaimAfter)
+}
+
+// countRelease counts a reclaim-down release in llmkube_modelpool_reclaims_total
+// (to="", since no member is named "") on the pass whose drain scales the
+// resident down. Not when the drain deferred the resident: the release is
+// retaken, and counted, on a later pass. Not when the resident was already
+// drained at zero before this pass either: that is applyReclaimOwner keeping
+// an earlier, already counted release going.
+func countRelease(
+	pool *inferencev1alpha1.ModelPool,
+	members map[string]*inferencev1alpha1.InferenceService,
+	owner, unreclaimedOwner string,
+	deferred []string,
+) {
+	if owner != "" || unreclaimedOwner == "" || slices.Contains(deferred, unreclaimedOwner) {
+		return
+	}
+	// members holds the state read at the start of the pass; drainMember
+	// patches a copy.
+	resident, ok := members[unreclaimedOwner]
+	if !ok || (drainedByPool(resident) && replicasOf(resident) == 0) {
+		return
+	}
+	llmkubemetrics.ModelPoolReclaimsTotal.WithLabelValues(pool.Namespace, pool.Name, unreclaimedOwner, "").Inc()
+}
+
+// reportedOwner is the owner the pool's status reports. A release to zero
+// (owner "" where the reclaim started from a resident) that the drain deferred
+// left the resident serving: keep reporting it as the resident rather than a
+// cold pool. The next pass probes it again and retries the release.
+func reportedOwner(owner, unreclaimedOwner, deferReason string) string {
+	if owner == "" && unreclaimedOwner != "" && deferReason != "" {
+		return unreclaimedOwner
+	}
+	return owner
 }
 
 // pollWithin returns how long to wait before re-checking a running idle clock:

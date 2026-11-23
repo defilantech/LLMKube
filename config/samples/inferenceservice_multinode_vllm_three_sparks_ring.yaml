@@ -10,12 +10,14 @@
 #     subnet. Without it NCCL pairs NICs by channel index on both ends, which a P0->P1 ring never satisfies.
 #
 # Before creating this: stage all 54 checkpoint files on every member (config/samples/model_dsv41_flash_exl3.yaml),
-# apply config/samples/jobs/dsv41-tp3-config.yaml (72 heads / 9 o_groups), and apply
-# config/samples/gb10-memory-guard.yaml once: with the KV pin below, vLLM skips memory profiling, so nothing else
-# catches a dirty page cache (a fresh 460 GB stage leaves ~10 GiB of it resident even with the group down; measured
-# 2026-09-20). multiNode.memory below drops the cache and sets the two vm sysctls on every member right before its
-# runtime starts, on every boot (a privileged init container, so the namespace must allow privileged pods); the
-# guard DaemonSet keeps MemFree above 4 GiB while serving and suspends the group before the allocator stalls.
+# and apply config/samples/jobs/dsv41-tp3-config.yaml (72 heads / 9 o_groups). With the KV pin below, vLLM skips
+# memory profiling, so nothing else catches a dirty page cache (a fresh 460 GB stage leaves ~10 GiB of it resident
+# even with the group down; measured 2026-09-20). multiNode.memory below covers both halves: it drops the cache and
+# sets the two vm sysctls on every member right before its runtime starts, on every boot (a privileged init
+# container), and it runs a guard sidecar beside every member that flushes the page cache and suspends the group
+# before the allocator stalls (a privileged sidecar; the namespace must allow privileged pods). Do NOT also apply
+# config/samples/gb10-memory-guard.yaml: that DaemonSet is the older way to do the same job, and with both there
+# are two guards on every node.
 #
 # Turn swap off on every member before the first boot (sudo swapoff -a): a memory overrun then OOM-kills the worker,
 # which the operator restarts, instead of paging kubelet out and wedging the node. The image pre-warms FlashInfer's
@@ -208,13 +210,22 @@ spec:
       sysctls:
         vm.min_free_kbytes: "1048576"
         vm.watermark_scale_factor: "200"
+      # While serving: suspend the ring once if MemFree stays under 8 GiB after a page-cache drop. The suspend
+      # floor sits above the kernel's high watermark (about 6 GiB with the two sysctls above, see /proc/zoneinfo):
+      # a node with nothing left to reclaim stalls near it, and a lower floor fires too late.
+      # With the suspend floor above the flush floor, the guard's own drop is the one that runs in practice:
+      # whenever MemFree has been under 8 GiB for about 10 s it drops the cache, and suspends only if that did
+      # not help (three to five such drops per member during a weight load on this ring). flushBelowMemFree is
+      # then the faster backstop: an immediate drop, no 10 s wait, once MemFree is under 4 GiB.
+      flushBelowMemFree: 4Gi
+      suspendBelowMemFree: 8Gi
     members:
-      - node: ahazidgx1
-        fabric: {address: 192.168.1.28, socketInterface: enP7s7, ibHCA: "rocep1s0f0,rocep1s0f1,roceP2p1s0f0,roceP2p1s0f1"}
+      - node: spark-1
+        fabric: {address: 192.168.1.11, socketInterface: enP7s7, ibHCA: "rocep1s0f0,rocep1s0f1,roceP2p1s0f0,roceP2p1s0f1"}
         modelCache: {claimName: dsv41-dgx1}
-      - node: ahazidgx2
-        fabric: {address: 192.168.1.86,  socketInterface: enP7s7, ibHCA: "rocep1s0f0,rocep1s0f1,roceP2p1s0f0,roceP2p1s0f1"}
+      - node: spark-2
+        fabric: {address: 192.168.1.12, socketInterface: enP7s7, ibHCA: "rocep1s0f0,rocep1s0f1,roceP2p1s0f0,roceP2p1s0f1"}
         modelCache: {claimName: dsv41-dgx2}
-      - node: ahazidgx3
-        fabric: {address: 192.168.1.220, socketInterface: enP7s7, ibHCA: "rocep1s0f0,rocep1s0f1,roceP2p1s0f0,roceP2p1s0f1"}
+      - node: spark-3
+        fabric: {address: 192.168.1.13, socketInterface: enP7s7, ibHCA: "rocep1s0f0,rocep1s0f1,roceP2p1s0f0,roceP2p1s0f1"}
         modelCache: {claimName: dsv41-dgx3}

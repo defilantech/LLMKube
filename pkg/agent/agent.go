@@ -114,6 +114,12 @@ type MetalAgentConfig struct {
 	OMLXPort int
 	// OllamaPort is the port the Ollama daemon listens on (default 11434).
 	OllamaPort int
+	// HailoManifestsDir is hailo-ollama's model manifest directory. Empty
+	// searches the directories hailo-ollama itself reads.
+	HailoManifestsDir string
+	// HailoLibraryURL is the host hailo-ollama pulls HEFs from. Empty means
+	// DefaultHailoLibraryURL.
+	HailoLibraryURL string
 	// VLLMSwiftBin is the path to the vllm-swift binary. Only used when
 	// Runtime is "vllm-swift". Empty means auto-detect via $PATH.
 	VLLMSwiftBin string
@@ -531,6 +537,16 @@ type ManagedProcess struct {
 	// tracks it: stopping it goes through stopEngineGroup, which re-proves
 	// its identity before signalling its group.
 	Adopted bool
+
+	// AdmissionReestimated marks an adopted engine whose charge has been
+	// re-estimated from its InferenceService and Model; always false for a
+	// process this agent started (#2535).
+	AdmissionReestimated bool
+
+	// adoptedCharge is the estimate and budget an adopted engine's charge was
+	// re-estimated with, so a report that charge produced can be re-checked
+	// without I/O when other services' charges change (#2535).
+	adoptedCharge *adoptedCharge
 
 	// healthFailures counts this process's consecutive failed health probes.
 	// Guarded by MetalAgent.mu; a replacement process starts again at zero.
@@ -1245,6 +1261,23 @@ func isvcStopped(isvc *inferencev1alpha1.InferenceService) bool {
 	return isvc.Spec.Replicas != nil && *isvc.Spec.Replicas == 0
 }
 
+// refreshEvictionPolicy copies spec.priority and spec.evictionProtection onto
+// the running engine of key. Neither reaches the engine's arguments, so
+// editing them keeps the engine, but the memory-pressure selector reads them
+// from the process, which otherwise kept the values it started with (#2410).
+// The pressure loop copies each process under a.mu before reading them. The
+// engine record keeps the values from the spawn: an agent that adopts the
+// engine after a restart refreshes them on its first reconcile.
+func (a *MetalAgent) refreshEvictionPolicy(key string, isvc *inferencev1alpha1.InferenceService) {
+	protect := isvc.Spec.EvictionProtection != nil && *isvc.Spec.EvictionProtection
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if p := a.processes[key]; p != nil {
+		p.Priority = isvc.Spec.Priority
+		p.EvictionProtection = protect
+	}
+}
+
 // ensureProcess ensures a llama-server process is running for the InferenceService.
 // On UPDATED events, the spec is diffed against the running process's stored
 // hash; if it changed, the existing process is stopped before a fresh one is
@@ -1432,13 +1465,19 @@ func (a *MetalAgent) reconcileProcess(ctx context.Context, isvc *inferencev1alph
 		return nil
 	}
 
-	if exists && existing.SpecHash == desiredHash {
+	if exists && sameEngineSpec(existing.SpecHash, isvc) {
+		a.refreshEvictionPolicy(key, isvc)
 		// An unhealthy process is left to the health monitor, which stops
 		// it and restarts it after healthFailureThreshold consecutive
 		// failed probes. Starting a new engine here would leave this one
 		// running untracked, with its weights still wired (#2077).
 		a.logger.Debugw("inference service already has a process with matching spec",
 			"key", key, "healthy", existing.Healthy)
+		// Charge an adopted engine what admission would charge today, then
+		// clear the report once that charge fits again (#2535).
+		if !a.reestimateAdoptedCharge(ctx, isvc, key, existing) {
+			a.recheckAdoptedChargeReport(ctx, isvc, key, existing)
+		}
 		return nil
 	}
 
@@ -1507,6 +1546,12 @@ func (a *MetalAgent) reconcileProcess(ctx context.Context, isvc *inferencev1alph
 		return err
 	}
 
+	// A hailo:// source on another runtime is refused before memory
+	// admission, for the same reason; the llama.cpp path would try to
+	// download it.
+	if err := inferencev1alpha1.HailoSourceRuntimeError(model, runtime); err != nil {
+		return a.refuseStart(ctx, isvc, EventReasonRuntimeCannotServeSource, err.Error())
+	}
 	if err := a.validateRuntimeFormat(model, runtime); err != nil {
 		return err
 	}
@@ -1518,10 +1563,7 @@ func (a *MetalAgent) reconcileProcess(ctx context.Context, isvc *inferencev1alph
 	}
 
 	// Get context size from InferenceService spec, default to 2048
-	contextSize := defaultContextSize
-	if isvc.Spec.ContextSize != nil && *isvc.Spec.ContextSize > 0 {
-		contextSize = int(*isvc.Spec.ContextSize)
-	}
+	contextSize := admissionContextSize(isvc)
 
 	// Resolve KV cache types now (custom > standard) so the memory check and
 	// the executor config see the same values; otherwise the pre-flight check
@@ -2420,6 +2462,11 @@ func (a *MetalAgent) checkMemoryAdmission(
 	contextSize int,
 	cacheTypeK, cacheTypeV string,
 ) error {
+	// An admission must not fit against an adopted engine's recorded charge,
+	// which the current estimate may no longer hold: re-estimate the pending
+	// adopted engines whatever order the watcher delivers them in (#2535). One
+	// whose spec changed is left to the reconcile that replaces it.
+	a.reestimatePendingAdoptedCharges(ctx)
 	estimate, err := a.estimateModelMemory(ctx, model, contextSize, cacheTypeK, cacheTypeV,
 		derefInt32(isvc.Spec.ParallelSlots))
 	if err != nil {
@@ -2432,120 +2479,34 @@ func (a *MetalAgent) checkMemoryAdmission(
 	// admitted model shares it, and a Model budget may not exceed it. An
 	// engine outside the agent's cgroup is measured against the host-wide
 	// budget, every other engine against the cgroup's.
-	hostWide := runsOutsideAgentCgroup(a.resolveRuntime(isvc))
-	provider := a.memoryProvider
-	if hostWide {
-		provider, _ = hostWideProvider(provider)
-	}
-	agentTotal, hostTotal, totalErr := a.memoryTotals()
-	if totalErr != nil {
-		return a.failMemoryCheck(ctx, isvc,
-			fmt.Sprintf("memory budget check failed: failed to get total memory: %v", totalErr))
-	}
-	total := agentTotal
-	if hostWide {
-		total = hostTotal
-	}
-	serviceBudget := uint64(float64(total) * a.memoryFraction)
-	hostBudget := uint64(float64(hostTotal) * a.memoryFraction)
-	memoryBudgetBytes.Set(float64(hostBudget))
-
-	resolved, resolveErr := ResolveMemoryBudget(model.Spec.Hardware, a.memoryFraction)
-	if resolveErr != nil {
-		return a.failMemoryCheck(ctx, isvc, fmt.Sprintf("memory budget resolution failed: %v", resolveErr))
+	b, err := a.resolveAdmissionBudget(ctx, isvc, model, estimate, admissionBudgetOptions{publishHostBudget: true})
+	if err != nil {
+		return a.failMemoryCheck(ctx, isvc, err.Error())
 	}
 	a.logger.Infow("resolved memory budget",
-		"mode", resolved.Mode, "source", resolved.Source)
+		"mode", b.resolved.Mode, "source", b.resolved.Source)
 
-	var budget *MemoryBudget
-	switch resolved.Mode {
-	case BudgetModeAbsolute:
-		budget = CheckMemoryBudgetAbsolute(resolved.Bytes, estimate)
-	default: // BudgetModeFraction
-		var budgetErr error
-		budget, budgetErr = CheckMemoryBudget(provider, estimate, resolved.Fraction)
-		if budgetErr != nil {
-			return a.failMemoryCheck(ctx, isvc, fmt.Sprintf("memory budget check failed: %v", budgetErr))
-		}
-	}
-
-	// A Model's memoryBudget or memoryFraction may lower this host's limit for
-	// itself but not raise it, unless the agent allows overrides (#2080).
-	clamped := false
-	if budget.BudgetBytes > serviceBudget && !a.config.AllowModelMemoryBudgetOverride {
-		a.emitInferenceEvent(ctx, &ManagedProcess{Namespace: isvc.Namespace, Name: isvc.Name},
-			corev1.EventTypeWarning, EventReasonMemoryBudgetClamped,
-			"Model %s budget %s (%s) exceeds this host's budget %s (%s total * %.0f%%); clamped to it. "+
-				"Start the metal-agent with --allow-model-memory-budget-override to allow it",
-			model.Name, formatMemory(budget.BudgetBytes), resolved.Source,
-			formatMemory(serviceBudget), formatMemory(total), a.memoryFraction*100,
-		)
-		budget = CheckMemoryBudgetAbsolute(serviceBudget, estimate)
-		clamped = true
-	}
-
-	if !budget.Fits {
-		var msg string
-		switch {
-		case clamped:
-			msg = fmt.Sprintf("estimated %s required, budget %s (the Model's budget, clamped to this host's: %s total * %.0f%%)",
-				formatMemory(budget.EstimateBytes),
-				formatMemory(budget.BudgetBytes),
-				formatMemory(total),
-				a.memoryFraction*100,
-			)
-		case resolved.Mode == BudgetModeAbsolute:
-			msg = fmt.Sprintf("estimated %s required, budget %s (absolute from CRD)",
-				formatMemory(budget.EstimateBytes),
-				formatMemory(budget.BudgetBytes),
-			)
-		default:
-			msg = fmt.Sprintf("estimated %s required, budget %s (%s total * %.0f%%)",
-				formatMemory(budget.EstimateBytes),
-				formatMemory(budget.BudgetBytes),
-				formatMemory(budget.TotalBytes),
-				resolved.Fraction*100,
-			)
-		}
-		return a.refuseInsufficientMemory(ctx, isvc, msg+kvNotCountedNote(estimate, contextSize), "source", resolved.Source)
-	}
-
-	// The model fits on its own; it must also fit next to every running and
-	// starting process. The check and the reservation share one critical
-	// section, so two services starting at once cannot both claim the same
-	// free budget. A respawn is checked against everything but its own key:
-	// its previous engine is already stopped. An override-raised Model budget
-	// raises the shared limit for this admission too. Every service counts
-	// against the host-wide budget; a service in the agent's cgroup must also
-	// fit next to the other in-cgroup services under the cgroup's budget.
+	// The fit and the reservation share one critical section, so two services
+	// starting at once cannot both claim the same free budget.
 	key := types.NamespacedName{Namespace: isvc.Namespace, Name: isvc.Name}.String()
 	a.mu.Lock()
-	committed, holders := a.committedMemoryLocked(key, false)
-	if msg, ok := memoryRefusal(estimate.TotalBytes, committed, max(hostBudget, budget.BudgetBytes), holders); !ok {
+	fit := a.fitAdmissionLocked(key, b, estimate)
+	if !fit.fits {
 		a.mu.Unlock()
-		return a.refuseInsufficientMemory(ctx, isvc, msg+kvNotCountedNote(estimate, contextSize),
-			"committed", formatMemory(committed))
+		return a.refuseInsufficientMemory(ctx, isvc, fit.message+kvNotCountedNote(estimate, contextSize),
+			fit.logKV...)
 	}
-	if !hostWide {
-		inCgroup, inCgroupHolders := a.committedMemoryLocked(key, true)
-		capacity := max(serviceBudget, budget.BudgetBytes)
-		if msg, ok := memoryRefusal(estimate.TotalBytes, inCgroup, capacity, inCgroupHolders); !ok {
-			a.mu.Unlock()
-			return a.refuseInsufficientMemory(ctx, isvc, msg+kvNotCountedNote(estimate, contextSize),
-				"committed", formatMemory(inCgroup))
-		}
-	}
-	a.reservedMemory[key] = memoryReservation{bytes: estimate.TotalBytes, hostWide: hostWide}
+	a.reservedMemory[key] = memoryReservation{bytes: estimate.TotalBytes, hostWide: b.hostWide}
 	a.updateCommittedMetricLocked()
 	a.mu.Unlock()
 
 	a.logger.Infow("memory check passed",
-		"estimate", formatMemory(budget.EstimateBytes),
+		"estimate", formatMemory(b.budget.EstimateBytes),
 		"kvCache", kvCacheLogValue(estimate),
-		"budget", formatMemory(budget.BudgetBytes),
-		"headroom", formatMemory(budget.HeadroomBytes),
-		"committed", formatMemory(committed),
-		"source", resolved.Source,
+		"budget", formatMemory(b.budget.BudgetBytes),
+		"headroom", formatMemory(b.budget.HeadroomBytes),
+		"committed", formatMemory(fit.committed),
+		"source", b.resolved.Source,
 	)
 
 	// Clear any stale scheduling status from a previous failed check.
@@ -2895,20 +2856,55 @@ func recurrentSequences(parallelSlots int) uint64 {
 	return uint64(parallelSlots) //nolint:gosec // G115: positive here
 }
 
+// hailoBlobSource resolves a hailo:// source to the URL of the HEF
+// hailo-ollama maps its tag to in its manifests, on the library host.
+func (a *MetalAgent) hailoBlobSource(model *inferencev1alpha1.Model) (string, error) {
+	tag, _, err := inferencev1alpha1.HailoSourceTag(model.Spec.Source)
+	if err != nil {
+		return "", err
+	}
+	dir := a.config.HailoManifestsDir
+	if dir == "" {
+		home, _ := os.UserHomeDir()
+		if dir, err = hailoManifestsDir(home, os.Getenv("XDG_DATA_HOME"), os.Getenv("XDG_DATA_DIRS")); err != nil {
+			return "", err
+		}
+	}
+	digest, err := hailoHEFDigest(dir, tag)
+	if err != nil {
+		return "", err
+	}
+	base := a.config.HailoLibraryURL
+	if base == "" {
+		base = DefaultHailoLibraryURL
+	}
+	return hailoBlobURL(base, digest), nil
+}
+
 // probeRemoteModelSize sizes an http(s) source with a HEAD for its
 // Content-Length, or an s3:// source with a signed HEAD through the same
 // executor the download uses, since it needs the credential-bearing client.
+// A hailo:// source is sized as the http(s) URL of its HEF (hailoBlobSource).
 // probed is false for any other source, which has no remote size to ask for.
 func (a *MetalAgent) probeRemoteModelSize(
 	ctx context.Context, model *inferencev1alpha1.Model,
 ) (size uint64, probed bool, err error) {
+	source := model.Spec.Source
+	if inferencev1alpha1.IsHailoSource(source) {
+		if source, err = a.hailoBlobSource(model); err != nil {
+			return 0, true, err
+		}
+		if !strings.HasPrefix(source, "http://") && !strings.HasPrefix(source, "https://") {
+			return 0, true, fmt.Errorf("--hailo-library-url must be an http:// or https:// URL, got %q", source)
+		}
+	}
 	switch {
-	case strings.HasPrefix(model.Spec.Source, "http://") || strings.HasPrefix(model.Spec.Source, "https://"):
+	case strings.HasPrefix(source, "http://") || strings.HasPrefix(source, "https://"):
 		probeClient := safehttp.NewClient(a.downloadAllow, 0, downloadHostsFlag)
 		defer probeClient.CloseIdleConnections()
-		size, err = remoteModelSize(ctx, probeClient, model.Spec.Source)
+		size, err = remoteModelSize(ctx, probeClient, source)
 		return size, true, err
-	case isS3Source(model.Spec.Source):
+	case isS3Source(source):
 		size, err = a.s3SizeProbe(ctx, model)
 		return size, true, err
 	}
@@ -2976,6 +2972,40 @@ func localTreeSize(path string, walked map[string]struct{}) (uint64, error) {
 	return total, nil
 }
 
+// hashedReplicas is spec.replicas as the spec hash sees it. A Mac runs one
+// engine per InferenceService, so any count above one hashes as one (#2410);
+// zero and unset keep their own values, so existing hashes are unchanged.
+func hashedReplicas(replicas *int32) *int32 {
+	if replicas != nil && *replicas > 1 {
+		one := int32(1)
+		return &one
+	}
+	return replicas
+}
+
+// sameEngineSpec reports whether an engine started with spec hash stored
+// already runs what isvc asks for: an equal hash, or the hash of the same
+// spec with replicas unset, 1, or the raw count. Unset, 1 and any higher
+// count all run one engine on a Mac, but unset and 1 hash differently in
+// every record written before #2410, and such a record holds the raw count
+// for a service that ran with replicas above 1, so neither a replicas edit
+// nor the agent upgrade restarts the engine.
+func sameEngineSpec(stored string, isvc *inferencev1alpha1.InferenceService) bool {
+	if stored == computeSpecHash(isvc) {
+		return true
+	}
+	if isvc.Spec.Replicas != nil && *isvc.Spec.Replicas < 1 {
+		return false
+	}
+	one := int32(1)
+	for _, r := range []*int32{nil, &one, isvc.Spec.Replicas} {
+		if specHashWithReplicas(isvc, r) == stored {
+			return true
+		}
+	}
+	return false
+}
+
 // computeSpecHash returns a stable hash of the InferenceServiceSpec fields that,
 // if changed, require respawning the underlying llama-server process. Listing
 // fields explicitly (rather than hashing the full Spec) keeps the hash stable
@@ -2991,6 +3021,13 @@ func computeSpecHash(isvc *inferencev1alpha1.InferenceService) string {
 	if isvc == nil {
 		return ""
 	}
+	return specHashWithReplicas(isvc, hashedReplicas(isvc.Spec.Replicas))
+}
+
+// specHashWithReplicas is computeSpecHash with replicas as the count hashed.
+// sameEngineSpec also hashes the raw count, which records written before
+// #2410 hold for a service running with replicas above 1.
+func specHashWithReplicas(isvc *inferencev1alpha1.InferenceService, replicas *int32) string {
 	// Fields included MUST match what the executor actually consumes (or what
 	// it will consume once #349 closes the ExecutorConfig gap). When adding a
 	// new spec field that affects llama-server args, add it here too.
@@ -2998,6 +3035,13 @@ func computeSpecHash(isvc *inferencev1alpha1.InferenceService) string {
 	// ModelRef is hashed because it also derives the --alias served model name
 	// (servedModelName); that derivation needs no separate entry, and a renamed
 	// Model is a new object rather than a spec change.
+	//
+	// An adopted engine keeps the hash its record holds, so a change to the
+	// encoding of a spec that does not use a field restarts every engine on
+	// the Mac when the agent is upgraded. A field added here is omitempty, and
+	// TestComputeSpecHash_UnchangedForExistingSpecs pins the encoding.
+	// TestComputeSpecHash_CoversEveryExecutorConfigField fails on a spec
+	// field buildExecutorConfig consumes that is missing here.
 	relevant := struct {
 		ModelRef               string
 		ContextSize            *int32
@@ -3027,6 +3071,7 @@ func computeSpecHash(isvc *inferencev1alpha1.InferenceService) string {
 		PagedSSDCacheDir       *string
 		HotCacheMaxSize        *string
 		PagedSSDCacheMaxSize   *string
+		RopeScaling            *inferencev1alpha1.RopeScalingSpec `json:",omitempty"`
 	}{
 		ModelRef:               isvc.Spec.ModelRef,
 		ContextSize:            isvc.Spec.ContextSize,
@@ -3049,13 +3094,14 @@ func computeSpecHash(isvc *inferencev1alpha1.InferenceService) string {
 		ReasoningBudget:        isvc.Spec.ReasoningBudget,
 		ReasoningBudgetMessage: isvc.Spec.ReasoningBudgetMessage,
 		Mode:                   isvc.Spec.Mode,
-		Replicas:               isvc.Spec.Replicas,
+		Replicas:               replicas,
 		Suspend:                isvc.Spec.Suspend,
 		Runtime:                isvc.Spec.Runtime,
 		TurboQuantBits:         isvc.Spec.TurboQuantBits,
 		PagedSSDCacheDir:       isvc.Spec.PagedSSDCacheDir,
 		HotCacheMaxSize:        isvc.Spec.HotCacheMaxSize,
 		PagedSSDCacheMaxSize:   isvc.Spec.PagedSSDCacheMaxSize,
+		RopeScaling:            isvc.Spec.RopeScaling,
 	}
 	b, err := json.Marshal(relevant)
 	if err != nil {

@@ -31,8 +31,8 @@ requirement on that issue.
    ansible-playbook dgx-rdma.yml -K --tags verify # peer ping + RDMA bandwidth
    ```
 
-   This gives the point-to-point /30s: `10.10.10.1` (ahazidgx1) ↔
-   `10.10.10.2` (ahazidgx2) on `rdma0`. Nothing works until the verify play
+   This gives the point-to-point /30s: `10.10.10.1` (spark-1) ↔
+   `10.10.10.2` (spark-2) on `rdma0`. Nothing works until the verify play
    passes; the links come up at layer 2 with no addressing.
 
 2. **The runtime image carries the RPC backend.** `cuda-gb10` is built with
@@ -55,10 +55,10 @@ entire security model. Do not bind 0.0.0.0.
 apiVersion: v1
 kind: Pod
 metadata:
-  name: rpc-worker-ahazidgx2
+  name: rpc-worker-spark-2
   namespace: default
 spec:
-  nodeName: ahazidgx2
+  nodeName: spark-2
   hostNetwork: true
   restartPolicy: Always
   containers:
@@ -79,7 +79,7 @@ which reads as a network fault. A bounded worker dies a clean cgroup OOM
 instead, and the node survives to report it.
 
 Confirm it is listening on the fabric address and nothing else:
-`ss -tlnp | grep 50052` on ahazidgx2 must show `10.10.10.2:50052`, not `*:50052`.
+`ss -tlnp | grep 50052` on spark-2 must show `10.10.10.2:50052`, not `*:50052`.
 
 ## Step 2: the InferenceService on the main Spark
 
@@ -97,7 +97,7 @@ spec:
   modelRef: ornith-397b
   image: ghcr.io/defilantech/llmkube-llama-cuda-gb10:candidate-2a9f99817fda084a9c59b0df6943cd29ad683cc3
   nodeSelector:
-    kubernetes.io/hostname: ahazidgx1
+    kubernetes.io/hostname: spark-1
   resources:
     cpu: "8"
     gpu: 1
@@ -134,7 +134,7 @@ spec:
 ```
 
 The model cache PVC and the download land on the MAIN node (RWO local-path
-pins them there, the same way the DeepSeek caches pinned to ahazidgx1).
+pins them there, the same way the DeepSeek caches pinned to spark-1).
 The main node therefore needs disk for the full artifact even though its
 GPU holds only part of it.
 

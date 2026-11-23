@@ -1,2 +1,7 @@
 # Default owners for all files
 * @Defilan
+
+# Metal agent (host agents) — @cnuss co-maintains this area.
+# More specific paths win, so these override the catch-all above.
+/cmd/metal-agent/ @Defilan @cnuss
+/pkg/agent/       @Defilan @cnuss
