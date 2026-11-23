@@ -170,7 +170,7 @@ merged with the operator's own entries where both exist:
 
 - `image`, `command` and `args`
 - `env`, including `valueFrom.secretKeyRef`
-- `nodeSelector`, `tolerations`, `affinity` and `runtimeClassName`
+- `nodeSelector`, `tolerations`, `affinity`, `runtimeClassName` and `schedulerName`
 - `extraVolumes` and `extraVolumeMounts`
 - `securityContext` (the inference container) and `podSecurityContext`
 
@@ -218,6 +218,7 @@ LLMKube features need a more permissive level:
 | Model cache PVC with `modelCache.prep: always` (the default) | the `model-cache-prep` init container runs as uid 0 and adds `CHOWN` and `FOWNER` | `baseline` |
 | Local model source (`file://` or an absolute path) | a hostPath volume the operator generates | `privileged` |
 | `spec.multiNode` | `hostNetwork` and `hostIPC` on every member, plus `IPC_LOCK` when `rdmaResource` is set | `privileged` |
+| `spec.multiNode.memory` | `dropPageCacheBeforeBoot` and `sysctls`: a privileged root init container that runs for seconds. `flushBelowMemFree` and `suspendBelowMemFree`: a privileged root sidecar with a shell that runs for the pod's lifetime, so `pods/exec` on a member pod is root on the node | `privileged` |
 
 GPU device plugins and the NVIDIA GPU Operator run privileged pods in their
 own namespaces under their own policy. That does not carry over to inference

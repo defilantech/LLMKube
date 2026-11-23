@@ -446,6 +446,92 @@ var _ = Describe("Model Controller Reconcile", func() {
 		Expect(foundCondition).To(BeTrue(), "expected Available/MetalAgentManaged condition")
 	})
 
+	// A hailo:// source names a HEF in Hailo's model zoo that hailo-ollama on
+	// the host agent pulls itself: Ready without a download on the metal
+	// path, Failed with the reason on any other accelerator or for a tag that
+	// could name another registry.
+	DescribeTable("hailo:// sources",
+		func(name, accelerator, source, wantPhase, wantReason string) {
+			model := &inferencev1alpha1.Model{
+				ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"},
+				Spec: inferencev1alpha1.ModelSpec{
+					Source:   source,
+					Hardware: &inferencev1alpha1.HardwareSpec{Accelerator: accelerator},
+				},
+			}
+			Expect(k8sClient.Create(ctx, model)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, model) }()
+
+			reconciler := &ModelReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), StoragePath: GinkgoT().TempDir()}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: name, Namespace: "default"},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			updated := &inferencev1alpha1.Model{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: "default"}, updated)).To(Succeed())
+			Expect(updated.Status.Phase).To(Equal(wantPhase))
+			Expect(updated.Status.Size).To(BeEmpty(), "nothing was downloaded or measured")
+			reasons := make([]string, 0, len(updated.Status.Conditions))
+			for _, cond := range updated.Status.Conditions {
+				reasons = append(reasons, cond.Reason)
+			}
+			Expect(reasons).To(ContainElement(wantReason))
+		},
+		Entry("metal", "hailo-metal", "metal", "hailo://qwen2.5-instruct:1.5b", PhaseReady, "MetalAgentManaged"),
+		Entry("cpu", "hailo-cpu", "cpu", "hailo://qwen2.5-instruct:1.5b", PhaseFailed, ReasonInvalidSource),
+		Entry("registry in the tag", "hailo-registry", "metal", "hailo://evil.example.com/x:1", PhaseFailed, ReasonInvalidSource),
+		Entry("no :tag", "hailo-no-tag", "metal", "hailo://qwen3", PhaseFailed, ReasonInvalidSource),
+	)
+
+	It("returns the status write error for an invalid hailo:// source so the Model is retried", func() {
+		// Never created, so the status update fails with NotFound.
+		model := &inferencev1alpha1.Model{
+			ObjectMeta: metav1.ObjectMeta{Name: "hailo-status-write-fails", Namespace: "default"},
+			Spec: inferencev1alpha1.ModelSpec{
+				Source:   "hailo://qwen3",
+				Hardware: &inferencev1alpha1.HardwareSpec{Accelerator: "metal"},
+			},
+		}
+		reconciler := &ModelReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), StoragePath: GinkgoT().TempDir()}
+		_, err := reconciler.reconcileHailoSource(ctx, model)
+		Expect(err).To(HaveOccurred())
+	})
+
+	It("withdraws Available when a Ready hailo:// Model's spec becomes invalid", func() {
+		name := "hailo-ready-then-invalid"
+		key := types.NamespacedName{Name: name, Namespace: "default"}
+		model := &inferencev1alpha1.Model{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"},
+			Spec: inferencev1alpha1.ModelSpec{
+				Source:   "hailo://qwen2.5-instruct:1.5b",
+				Hardware: &inferencev1alpha1.HardwareSpec{Accelerator: "metal"},
+			},
+		}
+		Expect(k8sClient.Create(ctx, model)).To(Succeed())
+		defer func() { _ = k8sClient.Delete(ctx, model) }()
+		reconciler := &ModelReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), StoragePath: GinkgoT().TempDir()}
+
+		_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: key})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(k8sClient.Get(ctx, key, model)).To(Succeed())
+		Expect(model.Status.Phase).To(Equal(PhaseReady))
+		Expect(meta.IsStatusConditionTrue(model.Status.Conditions, ConditionAvailable)).To(BeTrue())
+
+		model.Spec.Hardware.Accelerator = "cpu"
+		Expect(k8sClient.Update(ctx, model)).To(Succeed())
+		_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: key})
+		Expect(err).NotTo(HaveOccurred())
+
+		Expect(k8sClient.Get(ctx, key, model)).To(Succeed())
+		Expect(model.Status.Phase).To(Equal(PhaseFailed))
+		available := meta.FindStatusCondition(model.Status.Conditions, ConditionAvailable)
+		Expect(available).NotTo(BeNil())
+		Expect(available.Status).To(Equal(metav1.ConditionFalse))
+		Expect(available.Reason).To(Equal(ReasonInvalidSource))
+		Expect(available.ObservedGeneration).To(Equal(model.Generation))
+	})
+
 	// Regression for #475: a Metal local-path model that wedged in the copy
 	// path under an older operator keeps stale Degraded/Progressing conditions
 	// after the no-download path marks it Ready. They must be cleared so a
@@ -2579,11 +2665,12 @@ var _ = Describe("Model spec.source re-resolve", func() {
 		rebaselined := &inferencev1alpha1.Model{}
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: modelName, Namespace: "default"}, rebaselined)).To(Succeed())
 		Expect(rebaselined.Status.SourceETag).To(Equal(`"etag-b"`))
-		for _, cond := range rebaselined.Status.Conditions {
-			if cond.Type == ConditionSourceDrifted {
-				Expect(cond.Reason).To(Equal("InSync"), "a spec change must not be reported as upstream drift")
-			}
-		}
+		drift := sourceDriftedCondition(rebaselined)
+		Expect(drift).NotTo(BeNil())
+		Expect(drift.Status).To(Equal(metav1.ConditionFalse), "a spec change must not be reported as upstream drift")
+		// The serving pod downloads an http source, so the controller reports
+		// the upstream unchanged, not a cached copy in sync (#2415).
+		Expect(drift.Reason).To(Equal("UpstreamUnchanged"), "a spec change must not be reported as upstream drift")
 	})
 
 	It("keeps a stable status when the spec is unchanged", func() {

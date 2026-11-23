@@ -354,6 +354,26 @@ func modelNeedsCachePVC(
 		!isOCISource(model.Spec.Source)
 }
 
+// metalAgentServes reports whether the host metal-agent serves this service
+// with no pod: a Metal model outside a multiNode group. reconcileWorkload checks
+// multiNode before the Metal path, so a group runs member pods even for a Metal
+// model. A service the agent serves needs no model cache claim, since nothing in
+// the cluster mounts one (#2511).
+func metalAgentServes(isvc *inferencev1alpha1.InferenceService, model *inferencev1alpha1.Model) bool {
+	return model != nil && isMetalModel(model) && (isvc == nil || isvc.Spec.MultiNode == nil)
+}
+
+// serviceNeedsCachePVC reports whether this reconcile should provision the
+// service's model cache claim: the model needs one and the service runs pods
+// that mount it, which a service the host metal-agent serves does not.
+func (r *InferenceServiceReconciler) serviceNeedsCachePVC(
+	isvc *inferencev1alpha1.InferenceService,
+	model *inferencev1alpha1.Model,
+	cache effectiveModelCache,
+) bool {
+	return !metalAgentServes(isvc, model) && modelNeedsCachePVC(model, cache, r.ModelCachePath)
+}
+
 // modelWantsCacheVolume reports whether this workload should download into the
 // model cache volume rather than an ephemeral emptyDir. It is the MOUNT-side
 // question, and modelNeedsCachePVC (the provisioning side) is defined in terms

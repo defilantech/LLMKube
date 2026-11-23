@@ -158,7 +158,7 @@ Every routing decision is recoverable from the log. Compliance
 audits, "why did this 503", and per-rule budget verification all
 trace back to those records. Pair with the router's Prometheus
 metrics and the proxy's OpenTelemetry request spans
-([tracing](https://github.com/defilantech/LLMKube/blob/main/docs/observability/tracing.md))
+([tracing](/docs/operations/observability#tracing))
 for full visibility.
 
 ## Why this shape

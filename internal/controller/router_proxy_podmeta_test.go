@@ -43,7 +43,7 @@ func TestRouterDeploymentPodLabelsAndAnnotations(t *testing.T) {
 		},
 	}
 	rec := &ModelRouterReconciler{RouterProxyImage: "img"}
-	dep := rec.newRouterDeployment(mr, "hash", false)
+	dep := rec.newRouterDeployment(mr, &compiledConfig{Hash: "hash"})
 
 	selector := routerProxySelectorLabels(mr)
 	if !reflect.DeepEqual(dep.Spec.Selector.MatchLabels, selector) {
@@ -92,7 +92,7 @@ func TestReconcileRouterDeploymentPodMetadataLifecycle(t *testing.T) {
 	reconcile := func(labels, annotations map[string]string) *appsv1.Deployment {
 		t.Helper()
 		mr.Spec.Proxy = &inferencev1alpha1.RouterProxySpec{PodLabels: labels, PodAnnotations: annotations}
-		if err := rec.reconcileRouterDeployment(ctx, mr, "hash", false); err != nil {
+		if err := rec.reconcileRouterDeployment(ctx, mr, &compiledConfig{Hash: "hash"}); err != nil {
 			t.Fatal(err)
 		}
 		return live()
@@ -166,7 +166,7 @@ func TestReconcileRouterDeploymentKeepsUserScrapeAnnotations(t *testing.T) {
 	rec := &ModelRouterReconciler{Client: c, Scheme: scheme, RouterProxyImage: "img"}
 	ctx := context.Background()
 	for i := 0; i < 2; i++ { // create, then the update path
-		if err := rec.reconcileRouterDeployment(ctx, mr, "hash", false); err != nil {
+		if err := rec.reconcileRouterDeployment(ctx, mr, &compiledConfig{Hash: "hash"}); err != nil {
 			t.Fatal(err)
 		}
 	}

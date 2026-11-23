@@ -1663,6 +1663,46 @@ var _ = Describe("ModelCacheClaimIgnored warning events (#928)", func() {
 		Expect(errors.IsNotFound(err)).To(BeTrue())
 	})
 
+	It("provisions no cache PVC for a Metal model, whose agent downloads on the Mac (#2511)", func() {
+		// The Model controller records a cache key for a Metal model with a
+		// remote source, but its service runs no pod: the host metal-agent
+		// fetches the file into its own store. This used to leave an unmounted
+		// <isvc>-model-cache claim, Pending on clusters with no default
+		// StorageClass.
+		model := &inferencev1alpha1.Model{
+			ObjectMeta: metav1.ObjectMeta{Name: modelName, Namespace: namespace},
+			Spec: inferencev1alpha1.ModelSpec{
+				Source:   "https://example.com/model.gguf",
+				Format:   "gguf",
+				Hardware: &inferencev1alpha1.HardwareSpec{Accelerator: acceleratorMetal},
+			},
+		}
+		Expect(k8sClient.Create(context.Background(), model)).To(Succeed())
+		model.Status.Phase = PhaseReady
+		model.Status.CacheKey = "abc123def456"
+		Expect(k8sClient.Status().Update(context.Background(), model)).To(Succeed())
+		replicas := int32(1)
+		isvc := &inferencev1alpha1.InferenceService{
+			ObjectMeta: metav1.ObjectMeta{Name: isvcName, Namespace: namespace},
+			Spec:       inferencev1alpha1.InferenceServiceSpec{ModelRef: modelName, Replicas: &replicas},
+		}
+		Expect(k8sClient.Create(context.Background(), isvc)).To(Succeed())
+		perServicePVC := isvcName + "-model-cache"
+		DeferCleanup(func() {
+			_ = k8sClient.Delete(context.Background(), &corev1.PersistentVolumeClaim{
+				ObjectMeta: metav1.ObjectMeta{Name: perServicePVC, Namespace: namespace}})
+		})
+
+		reconciler := newReconciler("/models")
+		reconciler.ModelCacheMode = ModelCacheModePerService
+		reconcileOnce(reconciler)
+
+		pvc := &corev1.PersistentVolumeClaim{}
+		err := k8sClient.Get(context.Background(),
+			types.NamespacedName{Name: perServicePVC, Namespace: namespace}, pvc)
+		Expect(errors.IsNotFound(err)).To(BeTrue())
+	})
+
 	It("warns and does not fail the reconcile when claimName targets an oci:// source with a missing claim", func() {
 		// The user claim is deliberately absent. Provisioning a cache PVC for
 		// this source would make ensureModelCachePVC enforce the claim and fail

@@ -37,6 +37,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	resourcev1 "k8s.io/api/resource/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -99,6 +100,9 @@ const (
 	ReasonPodsCrashLooping     = inferencev1alpha1.ReasonPodsCrashLooping
 
 	ReasonWorkloadResolved = "WorkloadResolved"
+	// ReasonInvalidSource marks a Model whose spec.source cannot be served as
+	// written.
+	ReasonInvalidSource = "InvalidSource"
 
 	// RefreshPolicyIfNotPresent downloads only when the cached file is missing
 	// (the default; preserves historical behavior).
@@ -849,6 +853,12 @@ func (r *ModelReconciler) reconcileBySourceType(
 		result, err = r.reconcileOCISource(ctx, model)
 		return true, result, err
 
+	// Hailo model zoo tags: hailo-ollama on the host agent pulls and stores
+	// the HEF, so there is nothing to download here.
+	case inferencev1alpha1.IsHailoSource(model.Spec.Source):
+		result, err = r.reconcileHailoSource(ctx, model)
+		return true, result, err
+
 	// HuggingFace repo IDs: the runtime container fetches at startup; the
 	// controller marks the model Ready so referencing InferenceServices can
 	// proceed.
@@ -916,6 +926,65 @@ func availableBehindSpec(model *inferencev1alpha1.Model) bool {
 	return written && gen != model.Generation
 }
 
+// reconcileHailoSource fails a hailo:// Model whose tag is malformed or that
+// is not served by the host agent, and otherwise resolves it like any
+// runtime-resolved source.
+func (r *ModelReconciler) reconcileHailoSource(ctx context.Context, model *inferencev1alpha1.Model) (ctrl.Result, error) {
+	msg := ""
+	if _, _, err := inferencev1alpha1.HailoSourceTag(model.Spec.Source); err != nil {
+		msg = err.Error()
+	} else if !isMetalModel(model) {
+		msg = "a hailo:// source is served by hailo-ollama through the host agent's ollama runtime; " +
+			"set spec.hardware.accelerator to metal"
+	}
+	if msg == "" {
+		return r.reconcileRuntimeResolvedSource(ctx, model, "")
+	}
+	model.Status.Phase = PhaseFailed
+	// A Model that was Ready under its previous spec must not stay Available.
+	apimeta.SetStatusCondition(&model.Status.Conditions, metav1.Condition{
+		Type:               ConditionAvailable,
+		Status:             metav1.ConditionFalse,
+		ObservedGeneration: model.Generation,
+		Reason:             ReasonInvalidSource,
+		Message:            msg,
+	})
+	llmkubemetrics.ReconcileTotal.WithLabelValues("model", "error").Inc()
+	if updateErr := r.updateStatus(ctx, model, ConditionDegraded, metav1.ConditionTrue, ReasonInvalidSource, msg); updateErr != nil {
+		return ctrl.Result{}, fmt.Errorf("update status for an invalid hailo:// source: %w", updateErr)
+	}
+	return ctrl.Result{}, nil
+}
+
+// runtimeResolvedReason is the Available reason and message for a Model the
+// controller marks Ready without downloading it.
+func runtimeResolvedReason(model *inferencev1alpha1.Model, cacheKey string) (reason, message string) {
+	isMetal := isMetalModel(model)
+
+	reason = "RuntimeResolved"
+	message = "Source is runtime-resolved (e.g., HuggingFace repo ID); runtime will fetch at startup"
+	if inferencev1alpha1.IsHailoSource(model.Spec.Source) {
+		reason = "MetalAgentManaged"
+		message = "Source is a Hailo model zoo tag; hailo-ollama on the host agent pulls the model directly"
+	} else if cacheKey == "" && isMetal && isLocalSource(model.Spec.Source) {
+		// Local-path model on the Metal node: the host metal-agent loads it
+		// directly. The controller marks it Ready without copying.
+		reason = "MetalAgentManaged"
+		message = "Source is a local path on the Metal node; the host metal-agent loads the model directly"
+	} else if cacheKey != "" {
+		reason = ReasonWorkloadResolved
+		if isMetal {
+			// On the metal accelerator path there is no Pod and no init container.
+			// The host metal-agent fetches the file into its model store when it
+			// reconciles the InferenceService that references this Model.
+			message = "Source is a remote URL; the host metal-agent will fetch the model into its model store when the InferenceService is reconciled"
+		} else {
+			message = "Source is a remote URL; the InferenceService Pod's init container will fetch the model into the per-namespace model cache PVC at startup"
+		}
+	}
+	return reason, message
+}
+
 func (r *ModelReconciler) reconcileRuntimeResolvedSource(ctx context.Context, model *inferencev1alpha1.Model, cacheKey string) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 
@@ -961,26 +1030,7 @@ func (r *ModelReconciler) reconcileRuntimeResolvedSource(ctx context.Context, mo
 		return ctrl.Result{}, nil
 	}
 
-	isMetal := isMetalModel(model)
-
-	reason := "RuntimeResolved"
-	message := "Source is runtime-resolved (e.g., HuggingFace repo ID); runtime will fetch at startup"
-	if cacheKey == "" && isMetal && isLocalSource(model.Spec.Source) {
-		// Local-path model on the Metal node: the host metal-agent loads it
-		// directly. The controller marks it Ready without copying.
-		reason = "MetalAgentManaged"
-		message = "Source is a local path on the Metal node; the host metal-agent loads the model directly"
-	} else if cacheKey != "" {
-		reason = ReasonWorkloadResolved
-		if isMetal {
-			// On the metal accelerator path there is no Pod and no init container.
-			// The host metal-agent fetches the file into its model store when it
-			// reconciles the InferenceService that references this Model.
-			message = "Source is a remote URL; the host metal-agent will fetch the model into its model store when the InferenceService is reconciled"
-		} else {
-			message = "Source is a remote URL; the InferenceService Pod's init container will fetch the model into the per-namespace model cache PVC at startup"
-		}
-	}
+	reason, message := runtimeResolvedReason(model, cacheKey)
 
 	logger.Info("Source is runtime-resolved, skipping controller-side download", "source", model.Spec.Source, "cacheKey", cacheKey)
 
@@ -1404,7 +1454,7 @@ func computeCacheKey(source string) string {
 // is populated at every site by construction; the local and remote paths are
 // pinned by test, the s3 path is covered only by this shared helper.
 func ggufMetadataFromParsed(parsed *gguf.GGUFFile) *inferencev1alpha1.GGUFMetadata {
-	return &inferencev1alpha1.GGUFMetadata{
+	meta := &inferencev1alpha1.GGUFMetadata{
 		Architecture:  parsed.Architecture(),
 		ModelName:     parsed.Name(),
 		Quantization:  parsed.Quantization(),
@@ -1419,6 +1469,13 @@ func ggufMetadataFromParsed(parsed *gguf.GGUFFile) *inferencev1alpha1.GGUFMetada
 		FileVersion:   parsed.Header.Version,
 		License:       license.Normalize(parsed.License()),
 	}
+	// A hybrid keeps a KV cache only on some of its layers, and whether the
+	// header said so is exactly what a first start of a remote source cannot
+	// work out for itself: the file is not on the machine yet. Record it with
+	// the rest of the shape, from whichever read this is (local, http(s) or
+	// s3), so the agent sizes that first start from the real layout.
+	meta.KVHeadLayers, meta.RecurrentStatePerSeq = gguf.KVLayout(parsed)
+	return meta
 }
 
 func (r *ModelReconciler) parseGGUFMetadata(path string) (*inferencev1alpha1.GGUFMetadata, error) {

@@ -1,20 +1,29 @@
 apiVersion: v2
 name: llmkube
 description: >-
-  A Helm chart for LLMKube - Kubernetes operator for GPU-accelerated LLM
-  inference
+  The Kubernetes operator for self-hosted LLM inference. Run models across
+  NVIDIA, Apple Silicon, and AMD from one spec.
 type: application
-version: 0.10.17
-appVersion: 0.10.17
+version: 0.10.19
+appVersion: 0.10.19
 keywords:
   - llm
   - kubernetes
   - operator
   - gpu
   - inference
+  - self-hosted
+  - llama-cpp
+  - vllm
+  - apple-silicon
+  - metal
+  - nvidia
+  - amd
+  - openai-compatible
   - ai
   - machine-learning
-home: https://github.com/defilantech/LLMKube
+home: https://llmkube.com
+icon: https://llmkube.com/favicon-192.png
 sources:
   - https://github.com/defilantech/LLMKube
 maintainers:
@@ -22,3 +31,80 @@ maintainers:
     email: contact@defilan.com
 annotations:
   helm.sh/resource-policy: keep
+  # Artifact Hub listing metadata: https://artifacthub.io/docs/topics/annotations/helm/
+  artifacthub.io/category: ai-machine-learning
+  artifacthub.io/license: Apache-2.0
+  artifacthub.io/operator: "true"
+  artifacthub.io/operatorCapabilities: Seamless Upgrades
+  artifacthub.io/links: |
+    - name: Documentation
+      url: https://llmkube.com/docs
+    - name: Issues
+      url: https://github.com/defilantech/LLMKube/issues
+  artifacthub.io/crds: |
+    - kind: Model
+      version: v1alpha1
+      name: models.inference.llmkube.dev
+      displayName: Model
+      description: A model to download and cache (GGUF or safetensors), with its source, format, quantization and target hardware.
+    - kind: InferenceService
+      version: v1alpha1
+      name: inferenceservices.inference.llmkube.dev
+      displayName: InferenceService
+      description: Serves a Model behind an OpenAI-compatible endpoint, with its runtime, replicas, resources and engine settings.
+    - kind: ModelRouter
+      version: v1alpha1
+      name: modelrouters.inference.llmkube.dev
+      displayName: ModelRouter
+      description: One OpenAI-compatible endpoint that routes requests across InferenceServices and external providers by declarative rules.
+    - kind: ModelPool
+      version: v1alpha1
+      name: modelpools.inference.llmkube.dev
+      displayName: ModelPool
+      description: Models that share one GPU slot, swapped in on demand when a request needs a different member.
+    - kind: MetalNode
+      version: v1alpha1
+      name: metalnodes.inference.llmkube.dev
+      displayName: MetalNode
+      description: A Mac running the metal-agent, joined to the cluster to serve models natively on Apple Silicon.
+    - kind: GPUQuota
+      version: v1alpha1
+      name: gpuquotas.inference.llmkube.dev
+      displayName: GPUQuota
+      description: A multi-tenant GPU budget enforced at admission against InferenceService pods.
+    - kind: LoRAAdapter
+      version: v1alpha1
+      name: loraadapters.inference.llmkube.dev
+      displayName: LoRAAdapter
+      description: A LoRA adapter loaded into a running SGLang InferenceService.
+    - kind: FederatedCluster
+      version: v1alpha1
+      name: federatedclusters.federation.llmkube.dev
+      displayName: FederatedCluster
+      description: Registers one edge site on the datacenter cluster.
+  artifacthub.io/crdsExamples: |
+    - apiVersion: inference.llmkube.dev/v1alpha1
+      kind: Model
+      metadata:
+        name: phi-3-mini
+      spec:
+        source: https://huggingface.co/microsoft/Phi-3-mini-4k-instruct-gguf/resolve/main/Phi-3-mini-4k-instruct-q4.gguf
+        format: gguf
+        quantization: Q4_K_M
+        hardware:
+          accelerator: cuda
+          gpu:
+            enabled: true
+            count: 1
+    - apiVersion: inference.llmkube.dev/v1alpha1
+      kind: InferenceService
+      metadata:
+        name: phi-3-inference
+      spec:
+        modelRef: phi-3-mini
+        replicas: 1
+        contextSize: 8192
+        resources:
+          gpu: 1
+          cpu: "2"
+          memory: 4Gi

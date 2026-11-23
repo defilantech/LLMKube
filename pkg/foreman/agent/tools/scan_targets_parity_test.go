@@ -18,6 +18,8 @@ package tools
 
 import (
 	"os"
+	"os/exec"
+	"path/filepath"
 	"reflect"
 	"regexp"
 	"strings"
@@ -292,4 +294,162 @@ func TestDefaultScanTargetIDsReturnsCopy(t *testing.T) {
 	if !reflect.DeepEqual(second, want) {
 		t.Errorf("DefaultScanTargetIDs leaked a mutable view: %v", second)
 	}
+}
+
+// TestScanJobStagesEveryDockerfileCopy pins the scan Job's build contexts to
+// the GoReleaser Dockerfiles: every path a release Dockerfile COPYs (other
+// than the per-platform artifact) must be generated in the clone and staged
+// into /work/<id>/. A COPY whose source is absent fails the image build, and
+// the gate then reports a SCAN FAIL unrelated to any CVE (#2564).
+func TestScanJobStagesEveryDockerfileCopy(t *testing.T) {
+	job := scanRenderJob(t, func(*scanRendererInput) {})
+	initArgs := strings.Join(job.Spec.Template.Spec.InitContainers[0].Args, "\n")
+	if !strings.Contains(initArgs, "make third-party-licenses") {
+		t.Errorf("initContainer does not run make third-party-licenses; "+
+			"the license tree must come from the clone:\n%s", initArgs)
+	}
+	for _, target := range builtInScanTargets {
+		sources := append([]string{"LICENSE", "third_party_licenses"}, dockerfileCopySources(t, target.Dockerfile)...)
+		for _, src := range sources {
+			if !strings.Contains(initArgs, "/work/repo/"+src) {
+				t.Errorf("scan Job does not stage %s from the clone for %s", src, target.ID)
+			}
+			if !strings.Contains(initArgs, `"/work/`+target.ID+`/`+src+`"`) {
+				t.Errorf("scan Job does not stage %s into /work/%s", src, target.ID)
+			}
+		}
+	}
+}
+
+// TestScanJobInitScriptScansATreeWithoutTheLicenseTarget runs the rendered
+// initContainer script against a clone that predates `make
+// third-party-licenses`: the scan still stages every binary, as it did
+// before the license tree existed (#2564).
+func TestScanJobInitScriptScansATreeWithoutTheLicenseTarget(t *testing.T) {
+	job := scanRenderJob(t, func(*scanRendererInput) {})
+	script := strings.Join(job.Spec.Template.Spec.InitContainers[0].Args, "\n")
+
+	cases := []struct {
+		name     string
+		makefile string
+		makeFail bool
+		wantMake bool
+	}{
+		{"target present", "third-party-licenses:\n\t@true\n", false, true},
+		{"target absent", "build:\n\t@true\n", false, false},
+		{"generation fails", "third-party-licenses:\n\t@false\n", true, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			work := t.TempDir()
+			repo := filepath.Join(work, "repo")
+			if err := os.MkdirAll(repo, 0o755); err != nil {
+				t.Fatalf("mkdir %s: %v", repo, err)
+			}
+			if err := os.WriteFile(filepath.Join(repo, "Makefile"), []byte(tc.makefile), 0o644); err != nil {
+				t.Fatalf("write Makefile: %v", err)
+			}
+			if err := os.WriteFile(filepath.Join(repo, "LICENSE"), []byte("license\n"), 0o644); err != nil {
+				t.Fatalf("write LICENSE: %v", err)
+			}
+
+			bin := filepath.Join(work, "bin")
+			if err := os.MkdirAll(bin, 0o755); err != nil {
+				t.Fatalf("mkdir %s: %v", bin, err)
+			}
+			writeScanStub(t, bin, "git", "exit 0\n")
+			writeScanStub(t, bin, "make", `
+echo "make $*" >>"$MAKE_LOG"
+if [ -n "${MAKE_FAIL:-}" ]; then exit 2; fi
+mkdir -p third_party_licenses/github.com/example/dep
+cp LICENSE third_party_licenses/github.com/example/dep/LICENSE
+`)
+			writeScanStub(t, bin, "go", `
+while [ $# -gt 0 ]; do
+	if [ "$1" = "-o" ]; then shift; touch "$1"; fi
+	shift
+done
+`)
+
+			makeLog := filepath.Join(work, "make.log")
+			cmd := exec.Command("bash", "-c", strings.ReplaceAll(script, "/work", work))
+			cmd.Env = append(os.Environ(),
+				"PATH="+bin+":"+os.Getenv("PATH"),
+				"MAKE_LOG="+makeLog,
+			)
+			if tc.makeFail {
+				cmd.Env = append(cmd.Env, "MAKE_FAIL=1")
+			}
+			out, err := cmd.CombinedOutput()
+			if tc.makeFail {
+				if err == nil {
+					t.Fatalf("init script passed although generation failed:\n%s", out)
+				}
+				if !strings.Contains(string(out), "SCAN FAIL: third-party licenses") {
+					t.Errorf("init script did not name the license failure:\n%s", out)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("init script failed: %v\n%s", err, out)
+			}
+			for _, target := range builtInScanTargets {
+				binary := filepath.Join(work, target.ID, "linux", "amd64", target.Binary)
+				if _, err := os.Stat(binary); err != nil {
+					t.Errorf("%s did not stage its binary: %v", target.ID, err)
+				}
+				staged := filepath.Join(work, target.ID, "third_party_licenses", "github.com", "example", "dep", "LICENSE")
+				_, err := os.Stat(staged)
+				if tc.wantMake && err != nil {
+					t.Errorf("%s did not stage the license tree: %v", target.ID, err)
+				}
+				if !tc.wantMake && err == nil {
+					t.Errorf("%s staged a license tree from a clone that has none", target.ID)
+				}
+			}
+			log, err := os.ReadFile(makeLog)
+			called := err == nil && strings.Contains(string(log), "third-party-licenses")
+			if tc.wantMake && !called {
+				t.Errorf("init script did not run make third-party-licenses (log %q)", log)
+			}
+			if !tc.wantMake && called {
+				t.Errorf("init script ran make third-party-licenses in a clone without the target (log %q)", log)
+			}
+		})
+	}
+}
+
+// writeScanStub writes an executable /bin/sh stub named name into dir.
+func writeScanStub(t *testing.T, dir, name, body string) {
+	t.Helper()
+	path := filepath.Join(dir, name)
+	if err := os.WriteFile(path, []byte("#!/bin/sh\n"+body), 0o755); err != nil {
+		t.Fatalf("write stub %s: %v", name, err)
+	}
+}
+
+// dockerfileCopySources returns the source paths of the single-source COPY
+// instructions in dockerfile, skipping the per-platform artifact dockers_v2
+// stages at $TARGETPLATFORM/.
+func dockerfileCopySources(t *testing.T, dockerfile string) []string {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join("../../../..", dockerfile))
+	if err != nil {
+		t.Fatalf("read %s: %v", dockerfile, err)
+	}
+	var sources []string
+	for _, line := range strings.Split(string(raw), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) == 0 || !strings.EqualFold(fields[0], "COPY") {
+			continue
+		}
+		if len(fields) != 3 {
+			t.Fatalf("%s: cannot parse COPY instruction %q; want one source and one destination", dockerfile, line)
+		}
+		if strings.HasPrefix(fields[1], "$TARGETPLATFORM/") {
+			continue
+		}
+		sources = append(sources, fields[1])
+	}
+	return sources
 }

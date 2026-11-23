@@ -146,6 +146,9 @@ func (v *ModelRouterValidator) validate(mr *inferencev1alpha1.ModelRouter) error
 func gatewayModeViolations(mr *inferencev1alpha1.ModelRouter, specPath *field.Path) field.ErrorList {
 	var errs field.ErrorList
 
+	if msg := backendSelectorUnsupportedMessage(mr); msg != "" {
+		errs = append(errs, field.Forbidden(specPath.Child("backendSelector"), msg))
+	}
 	if msg := unsupportedMatchMessage(mr); msg != "" {
 		errs = append(errs, field.Invalid(specPath.Child("rules"), nil, msg))
 	}
@@ -177,6 +180,9 @@ func gatewayModeViolations(mr *inferencev1alpha1.ModelRouter, specPath *field.Pa
 func agentGatewayModeViolations(mr *inferencev1alpha1.ModelRouter, specPath *field.Path) field.ErrorList {
 	var errs field.ErrorList
 
+	if msg := backendSelectorUnsupportedMessage(mr); msg != "" {
+		errs = append(errs, field.Forbidden(specPath.Child("backendSelector"), msg))
+	}
 	if mr.Spec.AgentGatewayRef == nil {
 		errs = append(errs, field.Required(specPath.Child("agentGatewayRef"),
 			"dataPlane is AgentGateway but spec.agentGatewayRef is unset; cannot attach a pool or route"))

@@ -377,7 +377,84 @@ type MultiNodeSpec struct {
 	// +kubebuilder:validation:Minimum=1024
 	// +kubebuilder:validation:Maximum=65535
 	RendezvousPort *int32 `json:"rendezvousPort,omitempty"`
+
+	// Memory looks after each member node's memory: it can prepare it right
+	// before the member's runtime starts (a page-cache drop and vm sysctls)
+	// and watch it for as long as the member runs (a sidecar that flushes the
+	// page cache and can suspend the group). Unset adds nothing to the member
+	// pods.
+	// +optional
+	Memory *MultiNodeMemory `json:"memory,omitempty"`
 }
+
+// MultiNodeMemory is the node memory preparation of a multi-node group. On a
+// unified-memory host (DGX Spark, GB10) host RAM is GPU memory, and a runtime
+// whose KV cache is pinned (vLLM --kv-cache-memory-bytes) skips its own memory
+// profiling, so a page cache left by staging the weights takes memory the
+// model needs and nothing else notices. DropPageCacheBeforeBoot or Sysctls make
+// the operator add one privileged init container to every member pod, after
+// the init containers that stage the weights; FlushBelowMemFree or
+// SuspendBelowMemFree add a privileged sidecar that runs beside the runtime
+// (a native sidecar, so the cluster needs Kubernetes 1.29 or newer). Either
+// way the namespace's Pod Security level must allow privileged pods. What
+// they write is node-wide and outlives the pod.
+type MultiNodeMemory struct {
+	// DropPageCacheBeforeBoot syncs and drops the node's page cache after the
+	// member has staged its weights and before its runtime container starts.
+	// +optional
+	DropPageCacheBeforeBoot bool `json:"dropPageCacheBeforeBoot,omitempty"`
+
+	// Sysctls are kernel memory settings written on the member's node before
+	// the drop, each logged with its value before and after. Keys are vm.*
+	// names (vm.min_free_kbytes, vm.watermark_scale_factor); values are
+	// non-negative integers. They are not restored when the group goes away.
+	// +optional
+	// +kubebuilder:validation:MaxProperties=16
+	// +kubebuilder:validation:XValidation:rule="self.all(k, k.matches('^vm[.][a-z0-9_]+$'))",message="sysctls keys must be vm.<name> (lowercase letters, digits, '_')"
+	Sysctls map[string]MultiNodeSysctlValue `json:"sysctls,omitempty"`
+
+	// FlushBelowMemFree drops the node's page cache while the member runs
+	// whenever MemFree falls below it and there is page cache to drop (more
+	// than 512Mi of Cached that is not Shmem), with at least 5 seconds between
+	// two drops.
+	// Page cache that regrows while serving (row reads from weights on disk)
+	// is the memory a unified-memory GPU then cannot allocate. Setting it, or
+	// SuspendBelowMemFree, adds a privileged sidecar, multinode-memory-guard,
+	// to every member pod.
+	// A quantity of at least 1Mi, e.g. "4Gi". Omit the field to turn the
+	// flusher off: the API server rejects "0" and anything under 1Mi.
+	// +kubebuilder:validation:MaxLength=32
+	// +kubebuilder:validation:Pattern=`^([+-]?[0-9.]+)([eEinumkKMGTP]*[-+]?[0-9]*)$`
+	// +kubebuilder:validation:XValidation:rule="isQuantity(self) && quantity(self).compareTo(quantity('1Mi')) >= 0",message="flushBelowMemFree must be a quantity of at least 1Mi; omit it to turn the flusher off"
+	// +optional
+	FlushBelowMemFree string `json:"flushBelowMemFree,omitempty"`
+
+	// SuspendBelowMemFree suspends the group once when a member's MemFree
+	// stays below it for 10 seconds, even after a last page-cache drop: the
+	// operator sets spec.suspend to true and records a Warning event, so the
+	// members are deleted cleanly instead of starving the GPU allocator.
+	// Setting spec.suspend back to false starts the group again and re-arms
+	// the guard. The guard is armed from the moment every member's runtime
+	// container is running, so it also watches the weight load. Set it well
+	// above the kernel's high watermark: a node with nothing left to reclaim
+	// stalls near that mark, and a lower floor fires too late.
+	// A floor above what the node can ever have free suspends the group
+	// shortly after every start.
+	// A quantity of at least 1Mi, e.g. "8Gi". Omit the field to turn the
+	// guard off: the API server rejects "0" and anything under 1Mi.
+	// +kubebuilder:validation:MaxLength=32
+	// +kubebuilder:validation:Pattern=`^([+-]?[0-9.]+)([eEinumkKMGTP]*[-+]?[0-9]*)$`
+	// +kubebuilder:validation:XValidation:rule="isQuantity(self) && quantity(self).compareTo(quantity('1Mi')) >= 0",message="suspendBelowMemFree must be a quantity of at least 1Mi; omit it to turn the guard off"
+	// +optional
+	SuspendBelowMemFree string `json:"suspendBelowMemFree,omitempty"`
+}
+
+// MultiNodeSysctlValue is the value written for one sysctl: a non-negative
+// integer. It is a type of its own so the schema can bound it; the key rule
+// above is CEL, whose cost budget an unbounded value would exceed.
+// +kubebuilder:validation:Pattern=`^[0-9]+$`
+// +kubebuilder:validation:MaxLength=20
+type MultiNodeSysctlValue string
 
 // RendezvousPortOrDefault returns the configured rendezvous port or the
 // default. Safe on a nil receiver.
@@ -452,6 +529,7 @@ type MultiNodeRecreateStatus struct {
 	PodUID string `json:"podUID,omitempty"`
 }
 
+// +kubebuilder:validation:XValidation:rule="!has(self.parallelSlots) || self.parallelSlots <= 64 || (has(self.runtime) && self.runtime in ['vllm','vllm-swift'])",message="parallelSlots above 64 is supported for runtime vllm and vllm-swift only"
 // +kubebuilder:validation:XValidation:rule="!has(self.multiNode) || !has(self.replicas) || self.replicas <= 1",message="multiNode serves one group: replicas must be 1 or unset"
 // +kubebuilder:validation:XValidation:rule="!has(self.multiNode) || (has(self.runtime) && self.runtime == 'vllm')",message="multiNode is supported for runtime vllm in this release"
 // +kubebuilder:validation:XValidation:rule="!(has(self.stageModel) && self.stageModel && has(self.skipModelInit) && self.skipModelInit)",message="stageModel and skipModelInit cannot both be true: one asks the operator to stage the Model, the other declines staging"
@@ -617,6 +695,23 @@ type InferenceServiceSpec struct {
 	// +optional
 	RuntimeClassName *string `json:"runtimeClassName,omitempty"`
 
+	// SchedulerName names the scheduler that places the inference Pods, in the
+	// same form as a Pod's spec.schedulerName (for example "kai-scheduler");
+	// unset leaves the default scheduler in charge. A non-empty value must be a
+	// DNS-1123 subdomain, which is stricter than the API server's own rule for
+	// a Pod: it accepts any string there and leaves a Pod whose scheduler does
+	// not exist Pending, so the check fails on the InferenceService instead.
+	//
+	// It is set on the serving Pod template, so spec.multiNode member Pods
+	// carry it too; each member is pinned to its node with spec.nodeName,
+	// which bypasses the scheduler. The model prefetch and file-listing Jobs,
+	// the ModelRouter proxy and the metal relay Deployment stay on the default
+	// scheduler, and a Metal service's inference process runs outside any Pod.
+	// +kubebuilder:validation:MaxLength=253
+	// +kubebuilder:validation:Pattern=`^$|^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$`
+	// +optional
+	SchedulerName string `json:"schedulerName,omitempty"`
+
 	// ContextSize sets the context window size for the llama.cpp server (-c flag).
 	// Larger values allow processing longer inputs but require more memory.
 	// If not specified, llama.cpp uses its default (typically 512 or 2048).
@@ -637,12 +732,14 @@ type InferenceServiceSpec struct {
 	// +optional
 	RopeScaling *RopeScalingSpec `json:"ropeScaling,omitempty"`
 
-	// ParallelSlots sets the number of concurrent request slots for the llama.cpp
-	// server (--parallel flag). Each slot processes one request independently;
-	// higher values use more KV cache memory. If not specified, the operator
-	// omits --parallel and llama.cpp picks an auto value (currently 4).
+	// ParallelSlots sets how many requests one replica serves concurrently:
+	// llama.cpp --parallel, vLLM and vllm-swift --max-num-seqs, mlx-server
+	// --max-slots. More slots use more KV cache memory. If not specified, the
+	// operator omits the flag and the runtime picks its own default (llama.cpp:
+	// auto, currently 4). Values above 64 are accepted for vllm and vllm-swift
+	// only, whose batch schedulers are sized in the hundreds.
 	// +kubebuilder:validation:Minimum=1
-	// +kubebuilder:validation:Maximum=64
+	// +kubebuilder:validation:Maximum=1024
 	// +optional
 	ParallelSlots *int32 `json:"parallelSlots,omitempty"`
 

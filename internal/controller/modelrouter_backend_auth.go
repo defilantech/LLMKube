@@ -44,20 +44,25 @@ const ModelRouterReasonBackendAPIKeyUnsupported = "BackendAPIKeyUnsupported"
 // LoRAAdapter load refusal and unload gate use, so all consumers agree on
 // what keyed means. A backend whose InferenceService does not exist is not
 // keyed; the resolver reports it.
-func keyedBackends(ctx context.Context, c client.Reader, mr *inferencev1alpha1.ModelRouter) ([]string, error) {
+func keyedBackends(
+	ctx context.Context,
+	c client.Reader,
+	namespace string,
+	backends []inferencev1alpha1.RouterBackend,
+) ([]string, error) {
 	var names []string
-	for i := range mr.Spec.Backends {
-		b := &mr.Spec.Backends[i]
+	for i := range backends {
+		b := &backends[i]
 		if b.InferenceServiceRef == nil {
 			continue
 		}
 		isvc := &inferencev1alpha1.InferenceService{}
-		err := c.Get(ctx, types.NamespacedName{Namespace: mr.Namespace, Name: b.InferenceServiceRef.Name}, isvc)
+		err := c.Get(ctx, types.NamespacedName{Namespace: namespace, Name: b.InferenceServiceRef.Name}, isvc)
 		if apierrors.IsNotFound(err) {
 			continue
 		}
 		if err != nil {
-			return nil, fmt.Errorf("get InferenceService %s/%s: %w", mr.Namespace, b.InferenceServiceRef.Name, err)
+			return nil, fmt.Errorf("get InferenceService %s/%s: %w", namespace, b.InferenceServiceRef.Name, err)
 		}
 		if inferenceServiceRequiresAPIKey(isvc) {
 			names = append(names, b.Name)

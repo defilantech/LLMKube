@@ -53,15 +53,19 @@ import (
 // reasons are valid" (that question is answered once, by
 // inferencev1alpha1.MetalAgentRefusalReasons).
 var knownReasonConstants = map[string]string{
-	"EventReasonEndpointNameConflict":   EventReasonEndpointNameConflict,
-	"EventReasonModelSourceNotAllowed":  EventReasonModelSourceNotAllowed,
-	"EventReasonExtraArgsRejected":      EventReasonExtraArgsRejected,
-	"EventReasonServiceNameTooLong":     EventReasonServiceNameTooLong,
-	"EventReasonModelDigestMismatch":    EventReasonModelDigestMismatch,
-	"EventReasonModelDownloadTooLarge":  EventReasonModelDownloadTooLarge,
-	"EventReasonSourceSecretNotAllowed": EventReasonSourceSecretNotAllowed,
-	"EventReasonMemoryCheckFailed":      EventReasonMemoryCheckFailed,
-	"EventReasonInsufficientMemory":     EventReasonInsufficientMemory,
+	"EventReasonEndpointNameConflict":     EventReasonEndpointNameConflict,
+	"EventReasonModelSourceNotAllowed":    EventReasonModelSourceNotAllowed,
+	"EventReasonExtraArgsRejected":        EventReasonExtraArgsRejected,
+	"EventReasonServiceNameTooLong":       EventReasonServiceNameTooLong,
+	"EventReasonModelDigestMismatch":      EventReasonModelDigestMismatch,
+	"EventReasonModelDownloadTooLarge":    EventReasonModelDownloadTooLarge,
+	"EventReasonModelDownloadNoSpace":     EventReasonModelDownloadNoSpace,
+	"EventReasonSourceSecretNotAllowed":   EventReasonSourceSecretNotAllowed,
+	"EventReasonRuntimeNotAvailable":      EventReasonRuntimeNotAvailable,
+	"EventReasonRuntimeCannotServeSource": EventReasonRuntimeCannotServeSource,
+	"EventReasonMemoryCheckFailed":        EventReasonMemoryCheckFailed,
+	"EventReasonInsufficientMemory":       EventReasonInsufficientMemory,
+	"EventReasonStartFailed":              EventReasonStartFailed,
 }
 
 // emptyStringLit is the source text go/ast.BasicLit.Value carries for the

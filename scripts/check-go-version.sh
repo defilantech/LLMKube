@@ -11,7 +11,7 @@
 #
 # Checked: the FROM lines of every tracked Dockerfile, and the devcontainer
 # image. A tag passes when its version, before any "-variant" suffix, equals
-# go.mod's go line exactly ("1.27.3", "1.27.3-alpine"). Go source that names
+# go.mod's go line exactly ("1.27.4", "1.27.4-alpine"). Go source that names
 # a golang image for other repos (the Foreman gate and scan presets) is not
 # a builder of this repo and is not checked.
 set -euo pipefail

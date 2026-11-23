@@ -21,6 +21,7 @@ import (
 	"errors"
 	"net"
 	"reflect"
+	"runtime"
 	"testing"
 
 	"github.com/defilantech/llmkube/pkg/metalnode"
@@ -67,6 +68,27 @@ func TestBuildMetalNodeCandidates(t *testing.T) {
 				mnCand("10.20.0.5", metalnode.SourceLAN),
 				mnCand("100.64.0.2", metalnode.SourceTailnet),
 				mnCand("10.200.0.9", metalnode.SourceTailnet),
+			},
+		},
+		{
+			name: "co-located on Linux: LAN first, Docker Desktop's host address last",
+			env: candidateEnv{serverIP: net.ParseIP("127.0.0.1"), sourceIP: net.ParseIP("127.0.0.1"),
+				ifaces: macInterfaces(), goos: "linux"},
+			want: []metalnode.Candidate{
+				mnCand("192.168.1.47", metalnode.SourceLAN),
+				mnCand("10.20.0.5", metalnode.SourceLAN),
+				mnCand("100.64.0.2", metalnode.SourceTailnet),
+				mnCand("10.200.0.9", metalnode.SourceTailnet),
+				mnCand("192.168.65.254", metalnode.SourceDockerHost),
+			},
+		},
+		{
+			name: "co-located on macOS: goos darwin keeps Docker Desktop's host address first",
+			env: candidateEnv{serverIP: net.ParseIP("127.0.0.1"), sourceIP: net.ParseIP("127.0.0.1"),
+				ifaces: macInterfaces()[:1], goos: "darwin"},
+			want: []metalnode.Candidate{
+				mnCand("192.168.65.254", metalnode.SourceDockerHost),
+				mnCand("192.168.1.47", metalnode.SourceLAN),
 			},
 		},
 		{
@@ -181,6 +203,13 @@ func TestGatherCandidateEnv(t *testing.T) {
 	}
 	if env.override != "10.9.9.9" || len(env.ifaces) != len(macInterfaces()) {
 		t.Errorf("env = %+v, want the override and the host interfaces", env)
+	}
+	g.goos = "linux"
+	if env = g.gather(context.Background(), "", "https://kubernetes.docker.internal:6443"); env.goos != "linux" {
+		t.Errorf("env.goos = %q, want the gatherer's linux", env.goos)
+	}
+	if got := newCandidateGatherer().goos; got != runtime.GOOS {
+		t.Errorf("newCandidateGatherer().goos = %q, want runtime.GOOS %q", got, runtime.GOOS)
 	}
 
 	g.lookupIP = func(context.Context, string, string) ([]net.IP, error) {

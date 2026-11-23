@@ -40,7 +40,7 @@ func TestEstimateModelMemory_FileSchemeSizedFromDisk(t *testing.T) {
 			agent := newAdmissionTestAgent(t, nil, MetalAgentConfig{})
 			model := newAdmissionTestModel(source, "1.0 GiB")
 
-			estimate, err := agent.estimateModelMemory(context.Background(), model, 2048, "", "")
+			estimate, err := agent.estimateModelMemory(context.Background(), model, 2048, "", "", 0)
 			if err != nil {
 				t.Fatalf("estimateModelMemory: %v", err)
 			}
@@ -70,7 +70,7 @@ func TestEstimateModelMemory_FileSchemeDirectorySizedFromDisk(t *testing.T) {
 			agent := newAdmissionTestAgent(t, nil, MetalAgentConfig{})
 			model := newAdmissionTestModel(source, "")
 
-			estimate, err := agent.estimateModelMemory(context.Background(), model, 2048, "", "")
+			estimate, err := agent.estimateModelMemory(context.Background(), model, 2048, "", "", 0)
 			if err != nil {
 				t.Fatalf("estimateModelMemory: %v", err)
 			}
@@ -96,7 +96,7 @@ func TestEstimateModelMemory_StoreDirectorySizedFromContents(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	estimate, err := agent.estimateModelMemory(context.Background(), model, 2048, "", "")
+	estimate, err := agent.estimateModelMemory(context.Background(), model, 2048, "", "", 0)
 	if err != nil {
 		t.Fatalf("estimateModelMemory: %v", err)
 	}
@@ -116,7 +116,7 @@ func TestEstimateModelMemory_FileSchemeMissingPathFallsBack(t *testing.T) {
 			agent := newAdmissionTestAgent(t, nil, MetalAgentConfig{})
 			model := newAdmissionTestModel(source, "1.0 GiB")
 
-			estimate, err := agent.estimateModelMemory(context.Background(), model, 2048, "", "")
+			estimate, err := agent.estimateModelMemory(context.Background(), model, 2048, "", "", 0)
 			if err != nil {
 				t.Fatalf("estimateModelMemory errored for a missing path: %v", err)
 			}
@@ -135,7 +135,7 @@ func TestEstimateModelMemory_FileSchemeMissingPathNoStatus(t *testing.T) {
 	agent := newAdmissionTestAgent(t, nil, MetalAgentConfig{})
 	model := newAdmissionTestModel(missing, "")
 
-	_, err := agent.estimateModelMemory(context.Background(), model, 2048, "", "")
+	_, err := agent.estimateModelMemory(context.Background(), model, 2048, "", "", 0)
 	if err == nil {
 		t.Fatal("expected an error when no size source is available, got nil")
 	}
@@ -152,7 +152,7 @@ func TestEstimateModelMemory_FileSchemeRelativePathNotSized(t *testing.T) {
 	agent := newAdmissionTestAgent(t, nil, MetalAgentConfig{})
 	model := newAdmissionTestModel("file://agent.go", "1.0 GiB")
 
-	estimate, err := agent.estimateModelMemory(context.Background(), model, 2048, "", "")
+	estimate, err := agent.estimateModelMemory(context.Background(), model, 2048, "", "", 0)
 	if err != nil {
 		t.Fatalf("estimateModelMemory: %v", err)
 	}

@@ -96,11 +96,11 @@ models:
 
   llama-3.1-8b:
     name: "Llama 3.1 8B Instruct"
-    description: "Most popular open model (5M+ downloads). Reliable, proven workhorse."
+    description: "Reliable, proven workhorse. Defaults to 8K context; use --context for longer windows with more VRAM."
     size: "8B"
     quantization: "Q5_K_M"
     source: "https://huggingface.co/bartowski/Meta-Llama-3.1-8B-Instruct-GGUF/resolve/main/Meta-Llama-3.1-8B-Instruct-Q5_K_M.gguf"
-    context_size: 131072
+    context_size: 8192
     gpu_layers: 33
     use_cases:
       - "general-purpose"
@@ -110,7 +110,8 @@ models:
       cpu: "4"
       memory: "8Gi"
       gpu_memory: "8Gi"
-    vram_estimate: "5-8GB"
+    # Q5_K_M weights (~5.73 GB) + 8K f16 KV cache (1 GiB) + runtime overhead.
+    vram_estimate: "7-8GB"
     tags:
       - "meta"
       - "llama"
@@ -148,8 +149,8 @@ models:
     size: "7B"
     quantization: "Q5_K_M"
     source: "https://huggingface.co/bartowski/Qwen2.5-Coder-7B-Instruct-GGUF/resolve/main/Qwen2.5-Coder-7B-Instruct-Q5_K_M.gguf"
-    context_size: 131072
-    gpu_layers: 33
+    context_size: 32768
+    gpu_layers: 28
     use_cases:
       - "code-generation"
       - "debugging"
@@ -158,7 +159,8 @@ models:
       cpu: "4"
       memory: "8Gi"
       gpu_memory: "8Gi"
-    vram_estimate: "5-8GB"
+    # Q5_K_M weights (~5.44 GB) + 32K f16 KV cache (1.75 GiB) + runtime overhead.
+    vram_estimate: "7-8GB"
     tags:
       - "qwen"
       - "code"
@@ -166,6 +168,11 @@ models:
       - "long-context"
       - "recommended"
     homepage: "https://huggingface.co/Qwen/Qwen2.5-Coder-7B-Instruct"
+    # 32,768 is this model's trained window (context_length and max_position_embeddings
+    # agree, with no rope_scaling). Without RoPE flags llama-server caps each slot at
+    # that window, so a larger --context allocates cache it never uses; 128K needs
+    # YaRN, which the catalog does not set.
+    notes: "Trained context is 32,768 tokens; 128K needs YaRN, which the catalog does not set"
 
   deepseek-r1-7b:
     name: "DeepSeek R1 Distill Qwen 7B"

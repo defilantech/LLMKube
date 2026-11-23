@@ -246,17 +246,12 @@ func probeLocalSource(source string) (sourceFingerprint, bool) {
 }
 
 // setSourceDrifted sets or clears the SourceDrifted condition in place. It is a
-// no-op when the condition is already in the desired state, so it does not
-// churn the condition's LastTransitionTime on every reconcile.
+// no-op when the condition already says what this pass would write, so it does
+// not churn the condition's LastTransitionTime on every reconcile. A condition
+// in the right state but worded differently, such as one an older operator
+// wrote, is reworded and keeps its LastTransitionTime.
 func (r *ModelReconciler) setSourceDrifted(model *inferencev1alpha1.Model, drifted bool) {
-	want := metav1.ConditionFalse
-	reason := "InSync"
-	message := "Cached model matches the upstream source"
-	if drifted {
-		want = metav1.ConditionTrue
-		reason = "UpstreamChanged"
-		message = fmt.Sprintf("Upstream source %q differs from the cached copy", model.Spec.Source)
-	}
+	want, reason, message := sourceDriftedWording(model, drifted)
 
 	condition := metav1.Condition{
 		Type:               ConditionSourceDrifted,
@@ -269,13 +264,41 @@ func (r *ModelReconciler) setSourceDrifted(model *inferencev1alpha1.Model, drift
 	for i, c := range model.Status.Conditions {
 		if c.Type == ConditionSourceDrifted {
 			if c.Status == want {
-				return
+				if c.Reason == reason && c.Message == message {
+					return
+				}
+				condition.LastTransitionTime = c.LastTransitionTime
 			}
 			model.Status.Conditions[i] = condition
 			return
 		}
 	}
 	model.Status.Conditions = append(model.Status.Conditions, condition)
+}
+
+// sourceDriftedWording words the SourceDrifted condition for whoever holds the
+// model's bytes. The controller copies only local sources into its own cache.
+// A remote source is fetched by the serving pod's model-downloader init
+// container, or by the metal agent, which the controller never observes; for it
+// the controller can say only whether the upstream still matches the
+// fingerprint it recorded. Claiming a cached copy there was false until the
+// first download finished, which can be long after the Model went Ready (#2415).
+func sourceDriftedWording(model *inferencev1alpha1.Model, drifted bool) (metav1.ConditionStatus, string, string) {
+	controllerCached := isLocalSource(model.Spec.Source) && !isMetalModel(model)
+	switch {
+	case drifted && controllerCached:
+		return metav1.ConditionTrue, "UpstreamChanged",
+			fmt.Sprintf("Upstream source %q differs from the cached copy", model.Spec.Source)
+	case drifted:
+		return metav1.ConditionTrue, "UpstreamChanged",
+			fmt.Sprintf("Upstream source %q changed since the controller recorded its fingerprint", model.Spec.Source)
+	case controllerCached:
+		return metav1.ConditionFalse, "InSync", "Cached model matches the upstream source"
+	default:
+		return metav1.ConditionFalse, "UpstreamUnchanged",
+			"Upstream source matches the fingerprint the controller recorded. " +
+				"The controller does not cache this source, so this says nothing about whether it has been downloaded"
+	}
 }
 
 // handleRevalidation runs a cadence-gated drift check against the upstream

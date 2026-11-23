@@ -65,7 +65,9 @@ var (
 	memoryBudgetBytes = prometheus.NewGauge(
 		prometheus.GaugeOpts{
 			Name: "llmkube_metal_agent_memory_budget_bytes",
-			Help: "Total memory budget available for model serving in bytes.",
+			Help: "Host-wide memory budget available for model serving in bytes (total memory times " +
+				"--memory-fraction). Under a cgroup memory limit on Linux, engines the agent starts are " +
+				"admitted against the cgroup's budget instead, which this gauge does not report.",
 		},
 	)
 
@@ -143,7 +145,9 @@ var (
 				"Reasons: 'disabled' (eviction CLI flag off), 'below_guard' (LLMKube " +
 				"not responsible for >50% of system RSS), 'floor' (would have left " +
 				"zero managed processes), 'all_protected' (every candidate has " +
-				"EvictionProtection=true), 'empty' (no managed processes).",
+				"EvictionProtection=true), 'empty' (no managed processes), " +
+				"'runtime_ineligible' (every managed process is on a shared daemon, " +
+				"such as oMLX or Ollama, that the agent does not own).",
 		},
 		[]string{"reason"},
 	)
@@ -236,45 +240,60 @@ var (
 	)
 )
 
-// clientProxyRequests counts host-side client-proxy requests by outcome
-// (no_backend, 2xx, 3xx, 4xx, 5xx, other). See ClientProxy / #406.
+// clientProxyRequests counts host-side client-proxy requests by outcome: a
+// refusal the proxy answers itself (bad_host, no_backend, path_forbidden,
+// and with several engines running bad_request, request_too_large,
+// model_required, model_not_found, model_ambiguous) or the status class of
+// the response (2xx, 3xx, 4xx, 5xx, other). See ClientProxy, #406 and #2412.
 var clientProxyRequests = prometheus.NewCounterVec(
 	prometheus.CounterOpts{
 		Name: "llmkube_metal_agent_client_proxy_requests_total",
-		Help: "Total host-side client-proxy requests, labeled by outcome.",
+		Help: "Total host-side client-proxy requests, labeled by outcome: a refusal the proxy answers itself " +
+			"(bad_host, no_backend, path_forbidden, bad_request, request_too_large, model_required, " +
+			"model_not_found, model_ambiguous) or the response's status class.",
 	},
 	[]string{"outcome"},
 )
 
+// AgentCollectors are the llmkube_* collectors the agent records; init
+// registers them in AgentRegistry. They are exported, as internal/metrics'
+// lists are, so cmd/gen-reference-docs can document every family, including a
+// vector that has no series yet and so is invisible to AgentRegistry.Gather.
+var AgentCollectors = []prometheus.Collector{
+	clientProxyRequests,
+	ingress.RequestsTotal,
+	managedProcesses,
+	processHealthy,
+	processRestarts,
+	healthCheckDuration,
+	memoryBudgetBytes,
+	memoryCommittedBytes,
+	memoryEstimatedBytes,
+	systemMemoryAvailableBytes,
+	systemMemoryWiredBytes,
+	processRSSBytes,
+	memoryPressureLevelGauge,
+	evictionsTotal,
+	engineRecordErrorsTotal,
+	engineAdoptionsTotal,
+	evictionsSkippedTotal,
+	watchConsecutiveFailures,
+	watchAPIUnreachable,
+	watchLocalNetworkBlocked,
+	watchModelLookupFailingServices,
+	fatalExitsTotal,
+	applePowerCombinedWatts,
+	applePowerGPUWatts,
+	applePowerCPUWatts,
+	applePowerANEWatts,
+	modelStoreUsedBytes,
+	modelStoreFreeBytes,
+}
+
 func init() {
+	AgentRegistry.MustRegister(AgentCollectors...)
 	AgentRegistry.MustRegister(
-		clientProxyRequests,
-		ingress.RequestsTotal,
 		collectors.NewGoCollector(),
 		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
-		managedProcesses,
-		processHealthy,
-		processRestarts,
-		healthCheckDuration,
-		memoryBudgetBytes,
-		memoryCommittedBytes,
-		memoryEstimatedBytes,
-		systemMemoryAvailableBytes,
-		systemMemoryWiredBytes,
-		processRSSBytes,
-		memoryPressureLevelGauge,
-		evictionsTotal,
-		engineRecordErrorsTotal,
-		engineAdoptionsTotal,
-		evictionsSkippedTotal,
-		watchConsecutiveFailures,
-		watchAPIUnreachable,
-		watchLocalNetworkBlocked,
-		watchModelLookupFailingServices,
-		fatalExitsTotal,
-		applePowerCombinedWatts,
-		applePowerGPUWatts,
-		applePowerCPUWatts,
-		applePowerANEWatts,
 	)
 }

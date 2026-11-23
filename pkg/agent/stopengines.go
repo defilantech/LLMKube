@@ -57,7 +57,8 @@ func RunStopEngines(ctx context.Context, cfg StopEnginesConfig) error {
 	inspect := newProcessInspector()
 	store := newEngineRecordStore(filepath.Join(stateDir, "engines"), "", inspect, nil)
 	recs, listErrs := store.List()
-	logger.Infow("stopping recorded engines", "records", store.Dir(), "count", len(recs), "namespace", cfg.Namespace)
+	logger.Infow("stopping recorded engines", "stateDir", stateDir, "engineRecords", store.Dir(),
+		"count", len(recs), "namespace", cfg.Namespace)
 	errs := listErrs
 	var registry *ServiceRegistry
 	if cfg.K8sClient != nil {

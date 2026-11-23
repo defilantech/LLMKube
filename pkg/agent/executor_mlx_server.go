@@ -132,6 +132,8 @@ func (e *MLXServerExecutor) StartProcess(_ context.Context, config ExecutorConfi
 		ModelID:   filepath.Base(modelPath),
 		StartedAt: time.Now(),
 		Healthy:   false,
+		exit:      exit,
+		logPath:   logPath,
 	}
 
 	if err := waitForChildHealthy(e.port, e.startupTimeout, exit.done); err != nil {

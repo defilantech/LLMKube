@@ -25,6 +25,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	goruntime "runtime"
 	"strings"
 	"syscall"
 	"time"
@@ -48,6 +49,7 @@ import (
 	"github.com/defilantech/llmkube/internal/platform"
 	"github.com/defilantech/llmkube/pkg/agent"
 	"github.com/defilantech/llmkube/pkg/agent/policy"
+	"github.com/defilantech/llmkube/pkg/datadir"
 	"github.com/defilantech/llmkube/pkg/metaljoin"
 	"github.com/defilantech/llmkube/pkg/metalnode"
 )
@@ -68,6 +70,8 @@ type AgentConfig struct {
 	OMLXBin                   string
 	OMLXPort                  int
 	OllamaPort                int
+	HailoManifestsDir         string
+	HailoLibraryURL           string
 	VLLMSwiftBin              string
 	MLXServerBin              string
 	MLXServerPort             int
@@ -96,6 +100,7 @@ type AgentConfig struct {
 	AllowedModelRoots         string
 	AllowedDownloadHosts      string
 	MaxDownloadSize           string
+	DownloadFreeSpaceHeadroom string
 	AllowUnsafeExtraArgs      bool
 	EngineEnvPassthrough      string
 	IngressPort               int
@@ -248,11 +253,12 @@ func newLogger(level string) (*zap.Logger, error) {
 }
 
 // defaultLlamaServerPaths is the list of paths to search for llama-server,
-// in order of preference. Apple Silicon Homebrew installs to /opt/homebrew/bin,
-// Intel Homebrew installs to /usr/local/bin.
+// in order of preference: Apple Silicon Homebrew, Intel Homebrew or a source
+// install, then a Linux distribution package.
 var defaultLlamaServerPaths = []string{
 	"/opt/homebrew/bin/llama-server",
 	"/usr/local/bin/llama-server",
+	"/usr/bin/llama-server",
 }
 
 // statFunc is the function used to check file existence (overridden in tests).
@@ -271,9 +277,8 @@ func resolveLlamaServerBin(override string) (string, error) {
 		}
 	}
 	return "", fmt.Errorf(
-		"llama-server not found in default paths (%v); "+
-			"install with: brew install llama.cpp, or pass --llama-server=/path/to/binary",
-		defaultLlamaServerPaths)
+		"llama-server not found in default paths (%v); install with: %s, or pass --llama-server=/path/to/binary",
+		defaultLlamaServerPaths, llamaServerInstallHint(hostGOOS))
 }
 
 // defaultOMLXPaths is the list of paths to search for the omlx binary.
@@ -348,21 +353,20 @@ var defaultTensorFoldPaths = []string{
 // userHomeDir is os.UserHomeDir, overridden in tests.
 var userHomeDir = os.UserHomeDir
 
-// resolveModelStorePath returns the absolute model store path: the default
-// "~/Library/Application Support/llmkube/models" under the agent user's home
-// when the flag is empty (beside the --state-dir default, out of the
-// world-writable /tmp the store used to default to), otherwise the flag with
-// a leading "~" or "~/" resolved against home exactly as --state-dir does
-// (launchd passes "~" literally). "~user" is not expanded. Anything still
-// relative is refused: it would resolve against the agent's working
-// directory rather than a directory the operator chose.
+// resolveModelStorePath returns the absolute model store path: the models
+// directory under datadir.Dir when the flag is empty (beside the
+// --state-dir default, out of the world-writable /tmp the store used to
+// default to), otherwise the flag with a leading "~" or "~/" resolved against
+// home exactly as --state-dir does (launchd passes "~" literally). "~user" is
+// not expanded. Anything still relative is refused: it would resolve against
+// the agent's working directory rather than a directory the operator chose.
 func resolveModelStorePath(flagValue string) (string, error) {
 	if flagValue == "" {
 		home, err := modelStoreHome("--model-store is not set")
 		if err != nil {
 			return "", err
 		}
-		return filepath.Join(home, "Library", "Application Support", "llmkube", "models"), nil
+		return filepath.Join(datadir.Dir(home), "models"), nil
 	}
 	path := flagValue
 	if path == "~" || strings.HasPrefix(path, "~/") {
@@ -456,6 +460,32 @@ func resolveMaxDownloadBytes(flagValue string, totalMemory func() (uint64, error
 	return n, nil
 }
 
+// resolveDownloadLimits resolves --max-download-size and
+// --download-free-space-headroom. Each error names its flag.
+func resolveDownloadLimits(cfg *AgentConfig, totalMemory func() (uint64, error)) (maxBytes, headroom int64, err error) {
+	if maxBytes, err = resolveMaxDownloadBytes(cfg.MaxDownloadSize, totalMemory); err != nil {
+		return 0, 0, err
+	}
+	if headroom, err = parseByteQuantity("--download-free-space-headroom", cfg.DownloadFreeSpaceHeadroom); err != nil {
+		return 0, 0, err
+	}
+	return maxBytes, headroom, nil
+}
+
+// parseByteQuantity parses a flag holding a byte count or a Kubernetes quantity
+// (10Gi, 500M, 1073741824) into a whole, non-negative number of bytes.
+func parseByteQuantity(flagName, value string) (int64, error) {
+	qty, err := resource.ParseQuantity(value)
+	if err != nil {
+		return 0, fmt.Errorf("%s %q is not a byte count or a quantity such as 10Gi: %w", flagName, value, err)
+	}
+	n, ok := qty.AsInt64()
+	if !ok || n < 0 {
+		return 0, fmt.Errorf("%s %q must be a whole, non-negative number of bytes", flagName, value)
+	}
+	return n, nil
+}
+
 // resolveTensorFoldBin returns the tensorfold binary path. If override is
 // non-empty it is returned as-is. Otherwise the function searches
 // defaultTensorFoldPaths.
@@ -498,6 +528,104 @@ func resolveOMLXBin(override string) (string, error) {
 		"omlx binary not found in default paths (%v); "+
 			"install with: brew install jundot/omlx/omlx, or pass --omlx-bin=/path/to/binary",
 		defaultOMLXPaths)
+}
+
+// resolveDefaultLlamaServerBin sets cfg.LlamaServerBin. A missing binary is
+// an error only when --runtime selects llama.cpp; with another runtime the
+// agent starts without the llama.cpp executor and only services that select
+// llama.cpp are refused.
+func resolveDefaultLlamaServerBin(cfg *AgentConfig, override string, logger *zap.SugaredLogger) error {
+	resolvedBin, err := resolveLlamaServerBin(override)
+	switch {
+	case err == nil:
+		cfg.LlamaServerBin = resolvedBin
+		return nil
+	case inferencev1alpha1.IsMetalOnlyRuntime(cfg.Runtime):
+		logger.Warnw("llama-server binary not found; services that select llama.cpp will be refused",
+			"runtime", cfg.Runtime, "error", err)
+		return nil
+	default:
+		return err
+	}
+}
+
+// llamaServerInstallHint names how to install llama-server on goos.
+func llamaServerInstallHint(goos string) string {
+	if goos == "darwin" {
+		return "brew install llama.cpp"
+	}
+	return "your distribution's llama.cpp package or a source build of llama-server"
+}
+
+// Host probes checkHostPlatform uses, replaced in tests.
+var (
+	detectCapabilities = platform.DetectMetal
+	hostGOOS           = goruntime.GOOS
+)
+
+// checkHostPlatform returns an error unless the host has Metal or is Linux,
+// where support is experimental and the engine brings its own accelerator. On
+// Linux it logs the accelerator devices it finds.
+func checkHostPlatform(logger *zap.SugaredLogger) (platform.Capabilities, error) {
+	logger.Infow("checking Metal support")
+	caps := detectCapabilities()
+	switch {
+	case caps.Metal:
+		logger.Infow("Metal support detected",
+			"gpuName", caps.GPUName,
+			"gpuCores", caps.GPUCores,
+			"metalVersion", caps.MetalVersion,
+		)
+	case hostGOOS == "linux":
+		logger.Warnw("Metal not available; Linux host support is experimental", "arch", caps.Arch)
+		logHailoDevices(logger)
+	default:
+		return caps, fmt.Errorf("metal support not detected on %s: the agent needs macOS with Apple Silicon, "+
+			"or Linux (experimental)", hostGOOS)
+	}
+	return caps, nil
+}
+
+// checkHostRuntimes refuses, off macOS, a --runtime or binary flag that
+// selects a macOS-only engine (inferencev1alpha1.IsMacOSOnlyRuntime), naming
+// the runtimes the agent serves there.
+func checkHostRuntimes(cfg *AgentConfig, goos string) error {
+	if goos == "darwin" {
+		return nil
+	}
+	var refused []string
+	if inferencev1alpha1.IsMacOSOnlyRuntime(cfg.Runtime) {
+		refused = append(refused, "--runtime "+cfg.Runtime)
+	}
+	for _, b := range []struct{ flag, runtime, value string }{
+		{"--mlx-server-bin", inferencev1alpha1.RuntimeMLXServer, cfg.MLXServerBin},
+		{"--omlx-bin", inferencev1alpha1.RuntimeOMLX, cfg.OMLXBin},
+		{"--vllm-swift-bin", inferencev1alpha1.RuntimeVLLMSwift, cfg.VLLMSwiftBin},
+		{"--tensorfold-bin", inferencev1alpha1.RuntimeTensorFold, cfg.TensorFoldBin},
+	} {
+		if b.value != "" && b.runtime != cfg.Runtime {
+			refused = append(refused, b.flag+" ("+b.runtime+")")
+		}
+	}
+	if len(refused) == 0 {
+		return nil
+	}
+	return fmt.Errorf("%s: only on macOS with Apple Silicon; on %s the agent serves --runtime llama-server "+
+		"(llama.cpp) and --runtime ollama", strings.Join(refused, ", "), goos)
+}
+
+// resolveRuntimes refuses runtimes this host cannot serve, then resolves the
+// binaries of the ones selected. A fatal error exits.
+func resolveRuntimes(cfg *AgentConfig, llamaServerFlag string, logger *zap.SugaredLogger) {
+	if err := checkHostRuntimes(cfg, hostGOOS); err != nil {
+		logger.Errorw("runtime not supported on this host", "error", err)
+		os.Exit(1)
+	}
+	if err := resolveDefaultLlamaServerBin(cfg, llamaServerFlag, logger); err != nil {
+		logger.Errorw("llama-server binary not found", "error", err)
+		os.Exit(1)
+	}
+	resolveOptionalRuntimeBins(cfg, logger)
 }
 
 // resolveOptionalRuntimeBins resolves the binaries of the non-default
@@ -577,7 +705,8 @@ func main() {
 	flag.StringVar(&cfg.Namespace, "namespace", "default", "Kubernetes namespace to watch")
 	flag.StringVar(&cfg.ModelStorePath, "model-store", "",
 		"Path to store downloaded models: absolute, or starting with ~/. "+
-			"Default: ~/Library/Application Support/llmkube/models. The agent refuses a store it does "+
+			"Default: ~/Library/Application Support/llmkube/models on macOS, "+
+			"$XDG_DATA_HOME/llmkube/models (~/.local/share/llmkube/models) elsewhere. The agent refuses a store it does "+
 			"not own, that other users can write, or that sits under a directory other users can write.")
 	flag.StringVar(&llamaServerFlag, "llama-server", "", "Path to llama-server binary (auto-detected if not set)")
 	flag.IntVar(&cfg.LlamaServerPort, "llama-server-port", 0,
@@ -589,6 +718,10 @@ func main() {
 	flag.StringVar(&cfg.OMLXBin, "omlx-bin", "", "Path to omlx binary (auto-detected if not set)")
 	flag.IntVar(&cfg.OMLXPort, "omlx-port", 8000, "Port for oMLX server")
 	flag.IntVar(&cfg.OllamaPort, "ollama-port", 11434, "Port for Ollama server")
+	flag.StringVar(&cfg.HailoManifestsDir, "hailo-manifests-dir", "",
+		"hailo-ollama's model manifest directory (default: the directories hailo-ollama reads)")
+	flag.StringVar(&cfg.HailoLibraryURL, "hailo-library-url", agent.DefaultHailoLibraryURL,
+		"Host hailo-ollama pulls HEFs from, HEADed to size hailo:// sources")
 	flag.StringVar(&cfg.VLLMSwiftBin, "vllm-swift-bin", "", "Path to vllm-swift binary (auto-detected if not set)")
 	flag.StringVar(&cfg.MLXServerBin, "mlx-server-bin", "", "Path to mlx-server binary (auto-detected if not set)")
 	flag.IntVar(&cfg.MLXServerPort, "mlx-server-port", 8080, "Fixed port for the mlx-server runtime")
@@ -599,14 +732,15 @@ func main() {
 		"Stable host-side listener (127.0.0.1:<port>) that forwards /v1/* to the current inference child; 0 disables")
 	flag.IntVar(&cfg.IngressPort, "ingress-port", 9443,
 		"TLS port of the authenticated ingress that in-cluster relays use to reach engines (engines listen on "+
-			"127.0.0.1 only). Open this port, not engine ports, in the macOS firewall.")
+			"127.0.0.1 only). Open this port, not engine ports, in the host's firewall.")
 	flag.StringVar(&cfg.StateDir, "state-dir", "",
-		"Directory for agent state (the ingress TLS key). Default: ~/Library/Application Support/llmkube/metal-agent.")
+		"Directory for agent state (the ingress TLS key). Default: ~/Library/Application Support/llmkube/metal-agent "+
+			"on macOS, $XDG_DATA_HOME/llmkube/metal-agent (~/.local/share/llmkube/metal-agent) elsewhere.")
 	flag.BoolVar(&cfg.LegacyDirectEndpoints, "legacy-direct-endpoints", false,
 		"DEPRECATED, removed in a future release: bind engines on all interfaces without authentication and "+
 			"register them directly, as before the ingress. Only for a controller that predates relay support.")
 	flag.StringVar(&cfg.MetalNode, "metal-node", "",
-		"Name of this Mac's MetalNode in --namespace. When set, the agent renews the MetalNode's Lease every 15s "+
+		"Name of this host's MetalNode in --namespace. When set, the agent renews the MetalNode's Lease every 15s "+
 			"and reports its version, hardware, ingress pin and candidate addresses on it; it never writes the "+
 			"MetalNode itself. The Lease must already exist (llmkube metal token create). Empty (default) disables "+
 			"MetalNode reporting.")
@@ -624,7 +758,7 @@ func main() {
 		"What to do when the pre-flight memory check cannot be completed: "+
 			"\"enforce\" refuses to start the process (fail closed), \"warn\" logs and starts it anyway")
 	flag.BoolVar(&cfg.AllowModelMemoryBudgetOverride, "allow-model-memory-budget-override", false,
-		"Let a Model's spec.hardware.memoryBudget or memoryFraction exceed this Mac's budget "+
+		"Let a Model's spec.hardware.memoryBudget or memoryFraction exceed this host's budget "+
 			"(total * memory-fraction); by default such a budget is clamped to it with a Warning event")
 	flag.DurationVar(&cfg.WatchdogInterval, "memory-watchdog-interval", 10*time.Second,
 		"How often to check memory pressure (0 to disable)")
@@ -646,8 +780,8 @@ func main() {
 	flag.StringVar(&cfg.InferenceServiceAllowlist, "inference-service-allowlist", "",
 		"Comma-separated list of InferenceService names this agent is permitted to claim. "+
 			"Empty (default) claims every metal-accelerator InferenceService in --namespace "+
-			"(v0.1 behavior). Set on multi-Mac fleets that share one Kubernetes cluster so "+
-			"each node claims only its own InferenceServices instead of racing with peers (#524).")
+			"(v0.1 behavior). Set on every host that shares one Kubernetes cluster and namespace so "+
+			"each host claims only its own InferenceServices instead of racing with peers (#524).")
 	flag.DurationVar(&cfg.LlamaServerStartupTimeout, "llama-server-startup-timeout",
 		agent.DefaultLlamaServerStartupTimeout,
 		"How long to wait for a freshly-spawned llama-server to respond on /health. "+
@@ -692,9 +826,13 @@ func main() {
 			"such as 128Gi. A download over it is stopped, its partial removed, and the start refused with "+
 			"ModelDownloadTooLarge. Default: the host's total memory (a model file larger than RAM cannot be "+
 			"wired). 0 disables the cap.")
+	flag.StringVar(&cfg.DownloadFreeSpaceHeadroom, "download-free-space-headroom", "10Gi",
+		"Free space a Model download must leave on the model store's filesystem, as a byte count or a "+
+			"quantity such as 10Gi. A download that would leave less is refused with ModelDownloadNoSpace "+
+			"before it starts, and retried on the refusal re-check. 0 still refuses a download that does not fit.")
 	flag.BoolVar(&cfg.AllowUnsafeExtraArgs, "allow-unsafe-extra-args", false,
 		"Relax the extraArgs policy (unknown flags, stray tokens, refused non-listener flags, path checks, "+
-			"vllm-swift code-loading) for Macs whose InferenceService authors are fully trusted; flags that "+
+			"vllm-swift code-loading) for hosts whose InferenceService authors are fully trusted; flags that "+
 			"set or move the engine's listener or registration, or start multi-node or distributed backends, stay refused.")
 	flag.BoolVar(&cfg.AllowUnlabeledSourceSecrets, "allow-unlabeled-source-secrets", false,
 		"DEPRECATED, removed in a future release: let a Model's spec.sourceSecretRef name a Secret without the "+
@@ -767,23 +905,12 @@ func main() {
 	// Kubernetes client/controller-runtime logs share the same configuration.
 
 	// Resolve runtime-specific binary paths. llama-server is always resolved
-	// because it is the default fallback runtime. Other runtimes are resolved
+	// because it is the default fallback runtime; it is fatal only when
+	// --runtime selects llama.cpp. Other runtimes are resolved
 	// when their binary path flag is set or when the agent's --runtime flag
 	// selects them, so the agent can host multiple runtimes concurrently
 	// (#525).
-	{
-		resolvedBin, err := resolveLlamaServerBin(llamaServerFlag)
-		if err != nil {
-			logger.Errorw("llama-server binary not found",
-				"searchPaths", defaultLlamaServerPaths,
-				"installHint", "brew install llama.cpp",
-				"error", err,
-			)
-			os.Exit(1)
-		}
-		cfg.LlamaServerBin = resolvedBin
-	}
-	resolveOptionalRuntimeBins(cfg, logger)
+	resolveRuntimes(cfg, llamaServerFlag, logger)
 
 	hostIP := cfg.HostIP
 	if hostIP == "" {
@@ -794,9 +921,6 @@ func main() {
 		"namespace", cfg.Namespace,
 		"modelStore", cfg.ModelStorePath,
 		"runtime", cfg.Runtime,
-		"llamaServerBin", cfg.LlamaServerBin,
-		"omlxBin", cfg.OMLXBin,
-		"vllmSwiftBin", cfg.VLLMSwiftBin,
 		"agentPort", cfg.Port,
 		"ingressPort", cfg.IngressPort,
 		"legacyDirectEndpoints", cfg.LegacyDirectEndpoints,
@@ -805,35 +929,25 @@ func main() {
 		"engineEnvPassthrough", engineEnvPassthrough,
 	)
 
-	// Verify Metal support
-	logger.Infow("checking Metal support")
-	caps := platform.DetectCapabilities()
-	if !caps.Metal {
-		logger.Errorw("Metal support not detected",
-			"requirement", "macOS with Apple Silicon (M1/M2/M3/M4)",
-		)
-		os.Exit(1)
-	}
-	logger.Infow("Metal support detected",
-		"gpuName", caps.GPUName,
-		"gpuCores", caps.GPUCores,
-		"metalVersion", caps.MetalVersion,
-	)
-
-	// Resolved after the Metal check: its default reads the host's memory
-	// through the darwin provider, which is a stub elsewhere, so a non-Mac
-	// host should fail on Metal first.
-	maxDownloadBytes, err := resolveMaxDownloadBytes(cfg.MaxDownloadSize, (&agent.DarwinMemoryProvider{}).TotalMemory)
+	caps, err := checkHostPlatform(logger)
 	if err != nil {
-		logger.Errorw("invalid --max-download-size", "error", err)
+		logger.Errorw("unsupported host", "error", err)
 		os.Exit(1)
 	}
-	logger.Infow("model download cap", "maxDownloadBytes", maxDownloadBytes)
 
-	// Log which runtimes are available. llama-server is always available
-	// (resolved above). Other runtimes are available when their binary
-	// path was resolved successfully.
-	logger.Infow("llama-server binary found", "path", cfg.LlamaServerBin)
+	maxDownloadBytes, downloadFreeSpaceHeadroom, err := resolveDownloadLimits(cfg,
+		agent.NewHostMemoryProvider().TotalMemory)
+	if err != nil {
+		logger.Errorw("invalid download limit", "error", err)
+		os.Exit(1)
+	}
+	logger.Infow("model download cap", "maxDownloadBytes", maxDownloadBytes,
+		"downloadFreeSpaceHeadroom", downloadFreeSpaceHeadroom)
+
+	// Log which runtimes are available: each one whose binary path resolved.
+	if cfg.LlamaServerBin != "" {
+		logger.Infow("llama-server binary found", "path", cfg.LlamaServerBin)
+	}
 	if cfg.OMLXBin != "" {
 		logger.Infow("omlx binary found", "path", cfg.OMLXBin)
 	}
@@ -909,6 +1023,8 @@ func main() {
 		OMLXBin:                   cfg.OMLXBin,
 		OMLXPort:                  cfg.OMLXPort,
 		OllamaPort:                cfg.OllamaPort,
+		HailoManifestsDir:         cfg.HailoManifestsDir,
+		HailoLibraryURL:           cfg.HailoLibraryURL,
 		VLLMSwiftBin:              cfg.VLLMSwiftBin,
 		MLXServerBin:              cfg.MLXServerBin,
 		MLXServerPort:             cfg.MLXServerPort,
@@ -935,6 +1051,7 @@ func main() {
 		AllowedModelRoots:         allowedModelRoots,
 		AllowedDownloadHosts:      splitCSV(cfg.AllowedDownloadHosts),
 		MaxDownloadBytes:          maxDownloadBytes,
+		DownloadFreeSpaceHeadroom: downloadFreeSpaceHeadroom,
 		AllowUnsafeExtraArgs:      cfg.AllowUnsafeExtraArgs,
 		EngineEnvPassthrough:      engineEnvPassthrough,
 		IngressPort:               cfg.IngressPort,

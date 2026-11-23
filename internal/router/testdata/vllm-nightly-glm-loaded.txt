@@ -1,0 +1,13 @@
+# HELP vllm:num_requests_running Number of requests in model execution batches.
+# TYPE vllm:num_requests_running gauge
+vllm:num_requests_running{engine="0",model_name="glm-5-3-flash"} 3.0
+# HELP vllm:num_requests_waiting Number of requests waiting to be processed.
+# TYPE vllm:num_requests_waiting gauge
+vllm:num_requests_waiting{engine="0",model_name="glm-5-3-flash"} 0.0
+# HELP vllm:num_requests_waiting_by_reason Number of waiting requests by reason. Reason labels: 'capacity' = waiting for scheduling capacity; 'deferred' = deferred by transient constraints (LoRA budget, KV transfer, blocked status). Sum of all reasons equals vllm:num_requests_waiting.
+# TYPE vllm:num_requests_waiting_by_reason gauge
+vllm:num_requests_waiting_by_reason{engine="0",model_name="glm-5-3-flash",reason="capacity"} 0.0
+vllm:num_requests_waiting_by_reason{engine="0",model_name="glm-5-3-flash",reason="deferred"} 0.0
+# HELP vllm:kv_cache_usage_perc KV-cache usage. 1 means 100 percent usage.
+# TYPE vllm:kv_cache_usage_perc gauge
+vllm:kv_cache_usage_perc{engine="0",model_name="glm-5-3-flash"} 0.02488184598276344

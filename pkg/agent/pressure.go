@@ -54,7 +54,7 @@ const (
 	EventReasonEvictionSkipped            = "EvictionSkipped"
 	EventReasonRespawnBlocked             = "RespawnBlocked"
 	// EventReasonMemoryBudgetClamped marks a Model memory budget lowered to
-	// this Mac's budget at admission. It is a warning, not a refusal, so it is
+	// this host's budget at admission. It is a warning, not a refusal, so it is
 	// not one of the SchedulingStatus reasons.
 	EventReasonMemoryBudgetClamped = "MemoryBudgetClamped"
 	EventReasonEngineRecordFailed  = "EngineRecordFailed"
@@ -125,8 +125,9 @@ func (a *MetalAgent) emitInferenceEvent(
 //     in the evictions_skipped_total counter so operators can debug why
 //     no eviction happened.
 func (a *MetalAgent) handleMemoryPressure(ctx context.Context, level MemoryPressureLevel, stats MemoryStats) {
-	// Snapshot the candidate set under the lock. The values themselves are
-	// pointers; we don't mutate them here, so a shallow copy is fine.
+	// Snapshot the candidate set under the lock. Each process is copied, since
+	// its priority and eviction protection can change under a.mu while the
+	// rest of this tick reads them unlocked (refreshEvictionPolicy).
 	a.mu.Lock()
 	previous := a.lastPressureLevel
 	a.lastPressureLevel = level
@@ -141,7 +142,8 @@ func (a *MetalAgent) handleMemoryPressure(ctx context.Context, level MemoryPress
 	}
 	snapshot := make(map[string]*ManagedProcess, len(a.processes))
 	for k, p := range a.processes {
-		snapshot[k] = p
+		cp := *p
+		snapshot[k] = &cp
 	}
 	// Determine which keys still need a condition patch at this level.
 	// New keys (added since the last tick) and unchanged keys at a new

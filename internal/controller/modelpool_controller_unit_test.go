@@ -214,6 +214,134 @@ func TestResolveSlotOwnerReactivatedResident(t *testing.T) {
 	}
 }
 
+// replicasWrittenBy records manager as the writer of the member's current
+// spec.replicas, the way the API server does for a merge patch that changed it.
+func replicasWrittenBy(isvc *inferencev1alpha1.InferenceService, manager string) *inferencev1alpha1.InferenceService {
+	return replicasWrittenAt(isvc, manager, nil)
+}
+
+// replicasWrittenAt is replicasWrittenBy with the entry's time, which the API
+// server records to the second.
+func replicasWrittenAt(isvc *inferencev1alpha1.InferenceService, manager string, at *metav1.Time) *inferencev1alpha1.InferenceService {
+	isvc.ManagedFields = append(isvc.ManagedFields, metav1.ManagedFieldsEntry{
+		Manager:   manager,
+		Operation: metav1.ManagedFieldsOperationUpdate,
+		Time:      at,
+		FieldsV1:  metav1.NewFieldsV1(`{"f:spec":{"f:replicas":{}}}`),
+	})
+	return isvc
+}
+
+// The router's ownership of spec.replicas outlives its request: when the pool
+// needs no hold, it never writes the member's replicas, so the member it loaded
+// still reads as the router's. The router can see it Ready and move on to the
+// next member before the pool records the residency, and then two members read
+// as router requests with the old one still pending. The router writes one
+// target at a time, so its latest write is the request it is holding now; the
+// older target is drained only if it is idle, like any incumbent (#2533).
+func TestResolveSlotOwnerLatestRouterRequestWins(t *testing.T) {
+	router := inferencev1alpha1.RouterProxyFieldManager
+	t0 := metav1.NewTime(time.Unix(1_800_000_000, 0))
+	later := metav1.NewTime(t0.Add(90 * time.Second))
+
+	p := mpoolFor("judge", "coder", "", "judge", "glimmer", "coder")
+	members := membersMap(map[string]int32{"judge": 1, "glimmer": 1, "coder": 1})
+	replicasWrittenAt(members["coder"], router, &t0)
+	replicasWrittenAt(members["glimmer"], router, &later)
+	if got := resolveSlotOwner(p, members); got != "glimmer" {
+		t.Errorf("router moved on to glimmer: resolveSlotOwner = %q, want glimmer", got)
+	}
+
+	// Writes within the same second cannot be ordered: the pending one keeps it.
+	members = membersMap(map[string]int32{"judge": 1, "glimmer": 1, "coder": 1})
+	replicasWrittenAt(members["coder"], router, &t0)
+	replicasWrittenAt(members["glimmer"], router, &t0)
+	if got := resolveSlotOwner(p, members); got != "coder" {
+		t.Errorf("same-second router writes: resolveSlotOwner = %q, want the pending coder", got)
+	}
+
+	// The same tie with the pending member first in declaration order.
+	p = mpoolFor("judge", "glimmer", "", "judge", "glimmer", "coder")
+	if got := resolveSlotOwner(p, members); got != "glimmer" {
+		t.Errorf("same-second router writes, pending first: resolveSlotOwner = %q, want the pending glimmer", got)
+	}
+}
+
+// A request the router is holding open names the member it scaled up. The pool
+// used to prefer any pending owner over it, including one the controller chose
+// by itself: spec.default warming a cold pool, or a reclaim back to the
+// default. The router never scales its target up again, so the drained target
+// waited out spec.swapBudget while the member nobody asked for loaded into the
+// slot (#2533). A member whose replicas the router wrote, and the pool has not
+// touched since, is the router's current target; it beats such a pending owner.
+func TestResolveSlotOwnerRouterRequestBeatsPoolChoice(t *testing.T) {
+	const pool, router = inferencev1alpha1.ModelPoolFieldManager, inferencev1alpha1.RouterProxyFieldManager
+	tests := []struct {
+		name     string
+		resident string
+		pending  string
+		def      string
+		writers  map[string]string // member at replicas 1 -> writer of its replicas
+		want     string
+	}{
+		{
+			name:    "cold pool warming spec.default, the router asks for another member",
+			pending: "glimmer", def: "glimmer",
+			writers: map[string]string{"glimmer": pool, "coder": router},
+			want:    "coder",
+		},
+		{
+			name:     "reclaim to spec.default loading, the router asks for another member",
+			resident: "judge", pending: "glimmer", def: "glimmer",
+			writers: map[string]string{"glimmer": pool, "coder": router},
+			want:    "coder",
+		},
+		{
+			name:    "a router from before #2302 is the router too",
+			pending: "glimmer", def: "glimmer",
+			writers: map[string]string{"glimmer": pool, "coder": "router-proxy"},
+			want:    "coder",
+		},
+		{
+			name:    "cold pool warming spec.default, a GitOps write is not a held request",
+			pending: "glimmer", def: "glimmer",
+			writers: map[string]string{"glimmer": pool, "coder": "kustomize-controller"},
+			want:    "glimmer",
+		},
+		{
+			name:     "two router requests: the pending one keeps the slot",
+			resident: "judge", pending: "coder",
+			writers: map[string]string{"glimmer": router, "coder": router},
+			want:    "coder",
+		},
+		{
+			name:     "two router requests, neither pending: declaration order",
+			resident: "judge",
+			writers:  map[string]string{"glimmer": router, "coder": router},
+			want:     "glimmer",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			p := mpoolFor(tc.resident, tc.pending, tc.def, "judge", "glimmer", "coder")
+			scaled := map[string]int32{"judge": 0, "glimmer": 0, "coder": 0}
+			if tc.resident != "" {
+				scaled[tc.resident] = 1
+			}
+			for name := range tc.writers {
+				scaled[name] = 1
+			}
+			members := membersMap(scaled)
+			for name, writer := range tc.writers {
+				replicasWrittenBy(members[name], writer)
+			}
+			if got := resolveSlotOwner(p, members); got != tc.want {
+				t.Errorf("resolveSlotOwner = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestReplicasOf(t *testing.T) {
 	if got := replicasOf(&inferencev1alpha1.InferenceService{}); got != 1 {
 		t.Errorf("replicasOf(nil replicas) = %d, want 1 (apiserver default)", got)
@@ -429,6 +557,114 @@ func TestApplyReclaimOwnerRejectsUnsettledPool(t *testing.T) {
 		owner, requeue := r.applyReclaimOwner(context.Background(), pool, members, "coder")
 		if owner != "coder" || requeue != 0 || pool.Status.ResidentIdleSince != nil {
 			t.Fatalf("default-not-member: owner=%q requeue=%v idleSince=%v", owner, requeue, pool.Status.ResidentIdleSince)
+		}
+	})
+}
+
+// reclaimDownPool builds a reclaim-down pool (no spec.default) with the given
+// resident and idle-since instant. members are all Ready.
+func reclaimDownPool(resident string, idleSince *metav1.Time, reclaimAfter time.Duration, names ...string) (*inferencev1alpha1.ModelPool, map[string]*inferencev1alpha1.InferenceService) {
+	pool, members := reclaimPool(resident, idleSince, reclaimAfter, names...)
+	pool.Spec.Default = ""
+	pool.Spec.SwapPolicy = inferencev1alpha1.ModelPoolSwapPolicyReclaimDown
+	return pool, members
+}
+
+func TestApplyReclaimOwnerReclaimDown(t *testing.T) {
+	longAgo := metav1.NewTime(time.Now().Add(-time.Hour))
+	justNow := metav1.NewTime(time.Now())
+	idle := func(context.Context, *inferencev1alpha1.InferenceService) (bool, error) { return true, nil }
+
+	t.Run("idle beyond the window releases the slot", func(t *testing.T) {
+		pool, members := reclaimDownPool("coder", &longAgo, time.Minute, "coder", "glimmer")
+		r := &ModelPoolReconciler{IdleCheck: idle}
+		owner, requeue := r.applyReclaimOwner(context.Background(), pool, members, "coder")
+		if owner != "" || requeue != 0 {
+			t.Fatalf("release: owner=%q requeue=%v, want no owner so every member drains", owner, requeue)
+		}
+	})
+
+	t.Run("idle within the window keeps the resident", func(t *testing.T) {
+		pool, members := reclaimDownPool("coder", &justNow, 10*time.Minute, "coder", "glimmer")
+		r := &ModelPoolReconciler{IdleCheck: idle}
+		owner, requeue := r.applyReclaimOwner(context.Background(), pool, members, "coder")
+		if owner != "coder" || pool.Status.ResidentIdleSince == nil || requeue != modelPoolReclaimPoll {
+			t.Fatalf("within-window: owner=%q requeue=%v idleSince=%v", owner, requeue, pool.Status.ResidentIdleSince)
+		}
+	})
+
+	t.Run("first idle observation starts the clock without releasing", func(t *testing.T) {
+		pool, members := reclaimDownPool("coder", nil, 10*time.Minute, "coder", "glimmer")
+		r := &ModelPoolReconciler{IdleCheck: idle}
+		owner, _ := r.applyReclaimOwner(context.Background(), pool, members, "coder")
+		if owner != "coder" || pool.Status.ResidentIdleSince == nil {
+			t.Fatalf("clock-start: owner=%q idleSince=%v", owner, pool.Status.ResidentIdleSince)
+		}
+	})
+
+	t.Run("busy resident is never released", func(t *testing.T) {
+		pool, members := reclaimDownPool("coder", &longAgo, time.Minute, "coder", "glimmer")
+		r := &ModelPoolReconciler{IdleCheck: func(context.Context, *inferencev1alpha1.InferenceService) (bool, error) { return false, nil }}
+		owner, requeue := r.applyReclaimOwner(context.Background(), pool, members, "coder")
+		if owner != "coder" || pool.Status.ResidentIdleSince != nil || requeue != modelPoolReclaimPoll {
+			t.Fatalf("busy: owner=%q requeue=%v idleSince=%v", owner, requeue, pool.Status.ResidentIdleSince)
+		}
+	})
+
+	t.Run("idle probe failure fails closed", func(t *testing.T) {
+		pool, members := reclaimDownPool("coder", &longAgo, time.Minute, "coder", "glimmer")
+		r := &ModelPoolReconciler{IdleCheck: func(context.Context, *inferencev1alpha1.InferenceService) (bool, error) {
+			return false, errIdleUnsupported
+		}}
+		owner, requeue := r.applyReclaimOwner(context.Background(), pool, members, "coder")
+		if owner != "coder" || requeue != modelPoolReclaimPoll {
+			t.Fatalf("probe-fail: owner=%q requeue=%v", owner, requeue)
+		}
+	})
+
+	t.Run("a cross-model activation in flight is not preempted", func(t *testing.T) {
+		pool, members := reclaimDownPool("glimmer", &longAgo, time.Minute, "coder", "glimmer")
+		r := &ModelPoolReconciler{IdleCheck: idle}
+		owner, _ := r.applyReclaimOwner(context.Background(), pool, members, "coder")
+		if owner != "coder" || pool.Status.ResidentIdleSince != nil {
+			t.Fatalf("activation-in-flight: owner=%q idleSince=%v", owner, pool.Status.ResidentIdleSince)
+		}
+	})
+
+	t.Run("a resident the pool already drained keeps releasing", func(t *testing.T) {
+		// Status still names coder (the release pass's status write was lost),
+		// coder is at zero with the drained mark and no longer Ready.
+		pool, members := reclaimDownPool("coder", nil, time.Minute, "coder", "glimmer")
+		members["coder"].Spec.Replicas = ptr.To(int32(0))
+		members["coder"].Annotations = map[string]string{annotationModelPoolDrained: "true"}
+		members["coder"].Status.Phase = ""
+		r := &ModelPoolReconciler{IdleCheck: idle}
+		owner, requeue := r.applyReclaimOwner(context.Background(), pool, members, "coder")
+		if owner != "" || requeue != 0 {
+			t.Fatalf("drained-resident: owner=%q requeue=%v, want the release to continue", owner, requeue)
+		}
+	})
+
+	t.Run("a drained resident the router re-activated is not released", func(t *testing.T) {
+		pool, members := reclaimDownPool("coder", nil, time.Minute, "coder", "glimmer")
+		members["coder"].Annotations = map[string]string{annotationModelPoolDrained: "true"}
+		members["coder"].Status.Phase = ""
+		r := &ModelPoolReconciler{IdleCheck: idle}
+		owner, _ := r.applyReclaimOwner(context.Background(), pool, members, "coder")
+		if owner != "coder" {
+			t.Fatalf("re-activated: owner=%q want coder", owner)
+		}
+	})
+
+	t.Run("reclaim-down with a default reclaims to the default", func(t *testing.T) {
+		// Admission rejects this shape; an object that predates the rule must
+		// not release a slot the cold-pool default would warm straight back up.
+		pool, members := reclaimDownPool("coder", &longAgo, time.Minute, "coder", "glimmer")
+		pool.Spec.Default = reclaimDefault
+		r := &ModelPoolReconciler{IdleCheck: idle}
+		owner, _ := r.applyReclaimOwner(context.Background(), pool, members, "coder")
+		if owner != reclaimDefault {
+			t.Fatalf("with-default: owner=%q want %q", owner, reclaimDefault)
 		}
 	})
 }

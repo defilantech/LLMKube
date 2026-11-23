@@ -147,6 +147,17 @@ const (
 	RuntimeTensorFold = "tensorfold"
 )
 
+// IsMacOSOnlyRuntime reports whether runtime's engine needs Apple Silicon
+// (MLX or Metal), so a metal-agent on another OS cannot serve it.
+func IsMacOSOnlyRuntime(runtime string) bool {
+	switch runtime {
+	case RuntimeMLXServer, RuntimeOMLX, RuntimeVLLMSwift, RuntimeTensorFold:
+		return true
+	default:
+		return false
+	}
+}
+
 // IsMetalOnlyRuntime reports whether runtime is served only by the
 // metal-agent. The empty runtime is not: it means llama.cpp in-cluster and the
 // agent's --runtime flag on a Mac.
@@ -220,10 +231,10 @@ const (
 	ReasonIdleCheckUnsupported string = "IdleCheckUnsupported"
 
 	// ReasonPodsCrashLooping is set when RolloutDeferred=True because some
-	// old-generation pods are crashlooping (not Ready) while others are Ready
-	// and serving. The rollout is deferred to protect in-flight work on the
-	// Ready pods; when ALL old pods are unready the rollout proceeds instead
-	// (no work to protect).
+	// old-generation pods are running their serving container while others are
+	// not. The rollout is deferred to protect in-flight work on the running
+	// pods; a pod whose serving container is not running holds nothing, and
+	// when no old pod is running the rollout proceeds instead (#2553).
 	ReasonPodsCrashLooping string = "PodsCrashLooping"
 
 	// DefaultIdleCheckInterval is how often the controller re-checks pod
@@ -279,12 +290,37 @@ const (
 	// it streamed.
 	ReasonModelDownloadTooLarge string = "ModelDownloadTooLarge"
 
+	// ReasonModelDownloadNoSpace is set when the model store's filesystem
+	// does not have room for a model download plus the agent's
+	// --download-free-space-headroom, checked before the download, or ran out
+	// of space during it (#2409).
+	ReasonModelDownloadNoSpace string = "ModelDownloadNoSpace"
+
 	// ReasonSourceSecretNotAllowed is set when a Model's spec.sourceSecretRef
 	// names a Secret the agent will not read: one without the
 	// LabelModelSourceCredentials marker, one that does not exist or that
 	// the agent's RBAC does not let it read, or the relay token Secret
 	// (MetalRelaySecretName).
 	ReasonSourceSecretNotAllowed string = "SourceSecretNotAllowed"
+
+	// ReasonRuntimeNotAvailable is set when the service's resolved runtime
+	// has no executor on the agent: its binary was not found or not
+	// configured when the agent started.
+	ReasonRuntimeNotAvailable string = "RuntimeNotAvailable"
+
+	// ReasonRuntimeCannotServeSource is set when the service's resolved
+	// runtime cannot serve its Model's source: a hailo:// source on a runtime
+	// other than ollama.
+	ReasonRuntimeCannotServeSource string = "RuntimeCannotServeSource"
+
+	// ReasonStartFailed is set when a start the agent did not refuse failed
+	// anyway: the engine exited while loading, the download failed (a full
+	// disk, say), or the engine did not answer its health check in time. The
+	// agent retries the start on its restart backoff and clears the reason
+	// once an engine runs. It is not a refusal, but it is listed with them so
+	// the controller keeps it instead of writing "WaitingForMetalAgent", which
+	// would claim the agent is still fetching the model.
+	ReasonStartFailed string = "StartFailed"
 )
 
 // ReasonModelAttestationRejected is set on a Model the attestation policy
@@ -293,7 +329,8 @@ const (
 const ReasonModelAttestationRejected = "ModelAttestationRejected"
 
 // MetalAgentRefusalReasons lists every SchedulingStatus value the metal agent
-// writes when it refuses to start a service. internal/controller/scheduling.go
+// writes when it refuses to start a service, plus ReasonStartFailed for a start
+// that failed after it was not refused. internal/controller/scheduling.go
 // builds its agentRefusalReasons set from this list rather than maintaining a
 // second, independent copy; pkg/agent/refusal.go and pkg/agent/pressure.go's
 // EventReason constants for these reasons are defined equal to the constants
@@ -308,7 +345,11 @@ var MetalAgentRefusalReasons = []string{
 	ReasonServiceNameTooLong,
 	ReasonModelDigestMismatch,
 	ReasonModelDownloadTooLarge,
+	ReasonModelDownloadNoSpace,
 	ReasonSourceSecretNotAllowed,
+	ReasonRuntimeNotAvailable,
+	ReasonRuntimeCannotServeSource,
+	ReasonStartFailed,
 }
 
 // ReasonRelaySecretNotManaged is the Status.SchedulingStatus (and Warning
@@ -317,7 +358,8 @@ var MetalAgentRefusalReasons = []string{
 // controller's managed-by label. The controller did not create that Secret,
 // so it neither uses it nor creates or updates the relay Deployment until the
 // Secret is deleted (#1957). It is controller-written, so it is deliberately
-// not in MetalAgentRefusalReasons, which lists only agent refusals.
+// not in MetalAgentRefusalReasons, which lists only the statuses the agent
+// writes and clears itself.
 const ReasonRelaySecretNotManaged string = "RelaySecretNotManaged"
 
 // ReasonDeploymentNameTaken is the Status.SchedulingStatus (and Warning Event
@@ -325,7 +367,8 @@ const ReasonRelaySecretNotManaged string = "RelaySecretNotManaged"
 // InferenceService generates and this service does not control it. The
 // controller refuses to overwrite, adopt, or delete that Deployment (#2011).
 // It is controller-written, so it is deliberately not in
-// MetalAgentRefusalReasons, which lists only agent refusals.
+// MetalAgentRefusalReasons, which lists only the statuses the agent writes and
+// clears itself.
 const ReasonDeploymentNameTaken string = "DeploymentNameTaken"
 
 // ReasonServiceNameTaken is the Status.SchedulingStatus (and Warning Event

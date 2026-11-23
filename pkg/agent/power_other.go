@@ -34,9 +34,8 @@ const DefaultPowermetricsBin = "/usr/bin/powermetrics"
 // flag defaults. powermetrics doesn't exist outside macOS.
 const DefaultApplePowerInterval = time.Second
 
-// ApplePowerSampler is a no-op stub for non-Darwin builds. The Metal agent
-// only runs in production on macOS, but the package compiles cross-platform
-// so unit tests can run in CI on Linux.
+// ApplePowerSampler is a no-op stub for non-Darwin builds: powermetrics, its
+// only source, exists only on macOS.
 type ApplePowerSampler struct{}
 
 // NewApplePowerSampler returns a no-op sampler on non-Darwin.

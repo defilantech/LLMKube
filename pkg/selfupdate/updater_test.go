@@ -24,6 +24,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"testing"
@@ -837,17 +838,33 @@ func TestPruneOldVersions_NonFatalOnError(t *testing.T) {
 	}
 }
 
-// TestResolveInstallRoot checks the platform-specific default.
 func TestResolveInstallRoot(t *testing.T) {
-	root, err := selfupdate.ResolveInstallRoot("foreman-agent")
-	if err != nil {
-		t.Fatalf("ResolveInstallRoot: %v", err)
-	}
-	if root == "" {
-		t.Fatal("ResolveInstallRoot returned empty string")
-	}
-	// Must contain the binary name.
-	if !strings.Contains(root, "foreman-agent") {
-		t.Errorf("install root %q does not contain binary name", root)
+	const darwinRoot = "/home/u/Library/Application Support/llmkube/foreman-agent"
+	for _, tc := range []struct {
+		home, xdg string
+		offDarwin string // "" means an error
+		darwin    string
+	}{
+		{"/home/u", "", "/home/u/.local/share/llmkube/foreman-agent", darwinRoot},
+		{"/home/u", "/xdg", "/xdg/llmkube/foreman-agent", darwinRoot},
+		{"/home/u", "relative", "/home/u/.local/share/llmkube/foreman-agent", darwinRoot},
+		{"", "/xdg", "/xdg/llmkube/foreman-agent", ""},
+	} {
+		t.Setenv("HOME", tc.home)
+		t.Setenv("XDG_DATA_HOME", tc.xdg)
+		want := tc.offDarwin
+		if runtime.GOOS == "darwin" {
+			want = tc.darwin
+		}
+		got, err := selfupdate.ResolveInstallRoot("foreman-agent")
+		if want == "" {
+			if err == nil {
+				t.Errorf("HOME=%q XDG_DATA_HOME=%q: ResolveInstallRoot = %q, want an error", tc.home, tc.xdg, got)
+			}
+			continue
+		}
+		if err != nil || got != want {
+			t.Errorf("HOME=%q XDG_DATA_HOME=%q: ResolveInstallRoot = %q, %v; want %q", tc.home, tc.xdg, got, err, want)
+		}
 	}
 }

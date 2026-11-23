@@ -25,6 +25,8 @@ import (
 	"time"
 
 	"go.uber.org/zap"
+
+	inferencev1alpha1 "github.com/defilantech/llmkube/api/v1alpha1"
 )
 
 // OllamaExecutor manages models via a shared Ollama daemon. Unlike MetalExecutor
@@ -34,7 +36,15 @@ type OllamaExecutor struct {
 	port       int
 	logger     *zap.SugaredLogger
 	httpClient *http.Client
+	// pullTimeout bounds one POST /api/pull (ollamaPullTimeout).
+	pullTimeout time.Duration
 }
+
+// ollamaPullTimeout bounds a pull, which the daemon answers only once the
+// whole model is on disk (stream: false): a 4.3 GB HEF at 10 Mbit/s takes
+// about an hour. The agent's own model downloads have no overall bound
+// either; the reconcile context still cancels a pull.
+const ollamaPullTimeout = 2 * time.Hour
 
 // NewOllamaExecutor creates an executor that manages models via the Ollama daemon.
 func NewOllamaExecutor(port int, logger *zap.SugaredLogger) *OllamaExecutor {
@@ -44,6 +54,7 @@ func NewOllamaExecutor(port int, logger *zap.SugaredLogger) *OllamaExecutor {
 		httpClient: &http.Client{
 			Timeout: 10 * time.Second,
 		},
+		pullTimeout: ollamaPullTimeout,
 	}
 }
 
@@ -82,10 +93,58 @@ type ollamaPullRequest struct {
 	Stream bool   `json:"stream"`
 }
 
+// ollamaGenerateRequest is a load or unload: no prompt field at all. An empty
+// "prompt" still generates on hailo-ollama, which treats only an absent prompt
+// as a load or unload; Ollama accepts either.
 type ollamaGenerateRequest struct {
 	Model     string `json:"model"`
-	Prompt    string `json:"prompt"`
 	KeepAlive *int   `json:"keep_alive,omitempty"`
+}
+
+// ollamaTag is the tag StartProcess pulls: the tag of a hailo:// source
+// (hailo is then true), else the Model name mapped through ollamaModelMap.
+func ollamaTag(config ExecutorConfig) (tag string, hailo bool, err error) {
+	if tag, ok, err := inferencev1alpha1.HailoSourceTag(config.ModelSource); ok {
+		return tag, true, err
+	}
+	return resolveOllamaModel(config.ModelName), false, nil
+}
+
+// hailoListResponse is GET /hailo/v1/list, which only hailo-ollama serves.
+type hailoListResponse struct {
+	Models []string `json:"models"`
+}
+
+// requireHailoModel checks that the daemon is hailo-ollama and lists tag. A
+// stock Ollama daemon would pull a different artifact under the same tag from
+// its own registry, so a hailo:// source is refused there.
+func (e *OllamaExecutor) requireHailoModel(ctx context.Context, tag string) error {
+	url := fmt.Sprintf("http://127.0.0.1:%d/hailo/v1/list", e.port)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return err
+	}
+	resp, err := e.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("list hailo models on port %d: %w", e.port, err)
+	}
+	defer drainAndClose(resp)
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("the daemon on port %d is not hailo-ollama (GET /hailo/v1/list returned %d); "+
+			"a hailo:// source is served only by hailo-ollama", e.port, resp.StatusCode)
+	}
+	var list hailoListResponse
+	if err := json.NewDecoder(resp.Body).Decode(&list); err != nil {
+		return fmt.Errorf("the daemon on port %d is not hailo-ollama (GET /hailo/v1/list is not a model list: %v); "+
+			"a hailo:// source is served only by hailo-ollama", e.port, err)
+	}
+	for _, m := range list.Models {
+		if m == tag {
+			return nil
+		}
+	}
+	return fmt.Errorf("hailo-ollama on port %d does not list %q; it lists %s",
+		e.port, tag, strings.Join(list.Models, ", "))
 }
 
 // resolveOllamaModel maps a LLMKube model name to an Ollama model tag.
@@ -104,7 +163,10 @@ func resolveOllamaModel(modelName string) string {
 func (e *OllamaExecutor) StartProcess(
 	ctx context.Context, config ExecutorConfig,
 ) (*ManagedProcess, error) {
-	ollamaModel := resolveOllamaModel(config.ModelName)
+	ollamaModel, hailo, err := ollamaTag(config)
+	if err != nil {
+		return nil, err
+	}
 
 	e.logger.Infow("starting Ollama model",
 		"llmkubeModel", config.ModelName, "ollamaModel", ollamaModel)
@@ -113,6 +175,12 @@ func (e *OllamaExecutor) StartProcess(
 	if !e.isHealthy(ctx) {
 		return nil, fmt.Errorf(
 			"ollama is not running on port %d; start with: ollama serve", e.port)
+	}
+
+	if hailo {
+		if err := e.requireHailoModel(ctx, ollamaModel); err != nil {
+			return nil, err
+		}
 	}
 
 	// 2. Pull model (handles download if not already cached)
@@ -165,7 +233,6 @@ func (e *OllamaExecutor) UnloadModel(ctx context.Context, modelID string) error 
 	keepAlive := 0
 	payload := ollamaGenerateRequest{
 		Model:     modelID,
-		Prompt:    "",
 		KeepAlive: &keepAlive,
 	}
 
@@ -203,16 +270,15 @@ func (e *OllamaExecutor) isHealthy(ctx context.Context) bool {
 	return resp.StatusCode == http.StatusOK
 }
 
-// pullModel sends POST /api/pull to download the model if not already cached.
-// Uses a 5-minute timeout since model downloads can be large.
+// pullModel sends POST /api/pull to download the model if not already cached,
+// bounded by e.pullTimeout.
 func (e *OllamaExecutor) pullModel(ctx context.Context, ollamaModel string) error {
 	payload := ollamaPullRequest{
 		Model:  ollamaModel,
 		Stream: false,
 	}
 
-	// Use a longer timeout for pulls since downloads can take minutes
-	pullClient := &http.Client{Timeout: 5 * time.Minute}
+	pullClient := &http.Client{Timeout: e.pullTimeout}
 
 	e.logger.Infow("pulling Ollama model (this may take a while)",
 		"model", ollamaModel)
@@ -233,13 +299,13 @@ func (e *OllamaExecutor) pullModel(ctx context.Context, ollamaModel string) erro
 	return nil
 }
 
-// loadModel sends POST /api/generate with an empty prompt to pre-load the
-// model into Ollama's memory. Uses a 2-minute timeout since model loading
-// can take time on large models.
+// loadModel sends POST /api/generate with no prompt field to pre-load the
+// model into the daemon's memory; hailo-ollama treats even an empty prompt as
+// a generation. Uses a 2-minute timeout since model loading can take time on
+// large models.
 func (e *OllamaExecutor) loadModel(ctx context.Context, ollamaModel string) error {
 	payload := ollamaGenerateRequest{
-		Model:  ollamaModel,
-		Prompt: "",
+		Model: ollamaModel,
 	}
 
 	// Use a 2-minute timeout for model loading

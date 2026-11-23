@@ -1,0 +1,406 @@
+---
+title: "GPU setup"
+description: "Prepare an NVIDIA GPU cluster for LLMKube: check the device plugin and nvidia.com/gpu capacity, when to set a runtime class, and how to verify GPU inference end to end."
+---
+
+# GPU setup
+
+This guide walks you through verifying NVIDIA GPU setup and deploying your first CUDA-accelerated LLM.
+
+For Intel GPU setup and SYCL-backed deployments, use [docs/intel-gpu-quickstart.md](https://github.com/defilantech/LLMKube/blob/main/docs/intel-gpu-quickstart.md).
+
+## Prerequisites
+
+- A Kubernetes cluster with NVIDIA GPU nodes. The commands below were written
+  against GKE, deployed with `terraform/gke/quick-start.sh`.
+- kubectl configured and connected
+
+## Step 1: Verify GPU Setup
+
+### Check Cluster and GPU Nodes
+
+```bash
+# Check all nodes
+kubectl get nodes -o wide
+
+# Check GPU nodes specifically (may be 0 if auto-scaled down)
+kubectl get nodes -l cloud.google.com/gke-accelerator=nvidia-tesla-t4
+
+# Check GPU allocatable resources
+kubectl get nodes -o custom-columns=NAME:.metadata.name,GPU:.status.allocatable."nvidia\.com/gpu"
+```
+
+### Verify NVIDIA Device Plugin
+
+```bash
+# Check device plugin daemonset
+kubectl get daemonset -n kube-system | grep nvidia
+
+# Check device plugin pods (only runs on GPU nodes)
+kubectl get pods -n kube-system -l name=nvidia-device-plugin-ds -o wide
+
+# Check logs
+kubectl logs -n kube-system -l name=nvidia-device-plugin-ds --tail=50
+```
+
+### Test GPU with Simple Workload
+
+```bash
+# Deploy test pod
+kubectl apply -f - <<EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  name: gpu-test
+spec:
+  restartPolicy: OnFailure
+  containers:
+  - name: cuda-test
+    image: nvidia/cuda:12.2.0-base-ubuntu22.04
+    command: ["nvidia-smi"]
+    resources:
+      limits:
+        nvidia.com/gpu: 1
+  tolerations:
+  - key: nvidia.com/gpu
+    operator: Exists
+    effect: NoSchedule
+  nodeSelector:
+    cloud.google.com/gke-accelerator: nvidia-tesla-t4
+EOF
+
+# Wait for pod (may take 2-3 min if node scaling from 0)
+kubectl wait --for=condition=Ready pod/gpu-test --timeout=300s || echo "Pod may still be pending..."
+
+# Check status
+kubectl get pod gpu-test -o wide
+
+# View GPU info
+kubectl logs gpu-test
+
+# Expected output: nvidia-smi showing 1x Tesla T4, ~15GB memory
+
+# Clean up
+kubectl delete pod gpu-test
+```
+
+**Troubleshooting:**
+- If pod stays Pending: Check `kubectl describe pod gpu-test` for events
+- If "Insufficient nvidia.com/gpu": GPU nodes may be scaling up (wait 2-3 min)
+- If node selector doesn't match: Verify GPU node labels with `kubectl get nodes --show-labels`
+
+## Step 2: Install the operator
+
+```bash
+helm repo add llmkube https://defilantech.github.io/LLMKube
+helm repo update
+helm install llmkube llmkube/llmkube -n llmkube-system --create-namespace
+
+# Verify controller is running
+kubectl get pods -n llmkube-system
+kubectl logs -n llmkube-system deployment/llmkube-controller-manager --tail=50
+```
+
+A Model with `hardware.gpu` set gets an `nvidia.com/gpu` resource request
+and `--n-gpu-layers` on the llama.cpp server, as Step 3 shows.
+
+## Step 3: Benchmark llama.cpp CUDA Backend
+
+### Deploy a 7B Model with GPU
+
+```bash
+# Create a GPU-accelerated model
+kubectl apply -f - <<EOF
+apiVersion: inference.llmkube.dev/v1alpha1
+kind: Model
+metadata:
+  name: phi-3-7b-gpu
+  namespace: default
+spec:
+  source: https://huggingface.co/microsoft/Phi-3-mini-4k-instruct-gguf/resolve/main/Phi-3-mini-4k-instruct-q4.gguf
+  format: gguf
+  quantization: Q4
+  hardware:
+    accelerator: cuda
+    gpu:
+      enabled: true
+      count: 1
+      vendor: nvidia
+      layers: -1  # Offload all layers to GPU
+  resources:
+    cpu: "4"
+    memory: "8Gi"
+EOF
+
+# Create GPU inference service
+kubectl apply -f - <<EOF
+apiVersion: inference.llmkube.dev/v1alpha1
+kind: InferenceService
+metadata:
+  name: phi-3-7b-gpu-service
+  namespace: default
+spec:
+  modelRef: phi-3-7b-gpu
+  replicas: 1
+  resources:
+    gpu: 1
+    gpuMemory: "16Gi"
+    cpu: "2"
+    memory: "4Gi"
+  endpoint:
+    port: 8080
+    type: ClusterIP
+EOF
+```
+
+### Monitor Deployment
+
+```bash
+# Watch model status
+kubectl get model phi-3-7b-gpu -w
+
+# Watch service status
+kubectl get inferenceservice phi-3-7b-gpu-service -w
+
+# Check pod scheduling (should land on GPU node)
+kubectl get pods -l app=phi-3-7b-gpu-service -o wide
+
+# View init container logs (model download)
+POD=$(kubectl get pod -l app=phi-3-7b-gpu-service -o jsonpath='{.items[0].metadata.name}')
+kubectl logs $POD -c model-downloader -f
+
+# View main container logs (GPU detection)
+kubectl logs $POD -c llama-server -f
+```
+
+**Expected GPU Logs:**
+```
+llama_model_load: loaded meta data with XX key-value pairs and XX tensors
+llama_model_load: using CUDA backend
+llm_load_tensors: offloading XX repeating layers to GPU
+llm_load_tensors: offloaded XX/XX layers to GPU
+llama_new_context_with_model: CUDA buffer size = 4096.00 MiB
+```
+
+### Run Benchmark Tests
+
+```bash
+# Port forward to service
+kubectl port-forward svc/phi-3-7b-gpu-service 8080:8080 &
+
+# Run benchmark script
+curl -X POST http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "phi-3-7b-gpu",
+    "messages": [
+      {"role": "user", "content": "Explain quantum computing in 100 words"}
+    ],
+    "max_tokens": 100,
+    "stream": false
+  }' | jq .
+
+# Check response time and tokens/sec in logs
+kubectl logs $POD -c llama-server --tail=20
+```
+
+**Benchmark Targets (T4 GPU):**
+- **Prompt Processing**: >50 tok/s (vs ~29 CPU)
+- **Token Generation**: >100 tok/s (vs ~18.5 CPU)
+- **Latency P99**: under 1s for simple queries
+- **GPU Utilization**: Should see >80% during inference
+
+### Monitor GPU Utilization
+
+```bash
+# SSH into GPU node (for debugging)
+NODE=$(kubectl get pod $POD -o jsonpath='{.spec.nodeName}')
+echo "Pod is running on node: $NODE"
+
+# Deploy monitoring pod on same node
+kubectl run gpu-monitor --rm -it --image=nvidia/cuda:12.2.0-base-ubuntu22.04 \
+  --overrides='{"spec": {"nodeSelector": {"kubernetes.io/hostname": "'$NODE'"}, "tolerations": [{"key": "nvidia.com/gpu", "operator": "Exists"}]}}' \
+  -- watch -n 1 nvidia-smi
+```
+
+## Step 4: Performance Comparison
+
+### CPU Baseline (for comparison)
+
+```bash
+# Deploy same model on CPU
+kubectl apply -f - <<EOF
+apiVersion: inference.llmkube.dev/v1alpha1
+kind: InferenceService
+metadata:
+  name: phi-3-7b-cpu-service
+spec:
+  modelRef: phi-3-7b-gpu  # Same model, different service
+  replicas: 1
+  resources:
+    cpu: "4"
+    memory: "8Gi"
+  endpoint:
+    type: ClusterIP
+EOF
+
+# Test CPU performance
+kubectl port-forward svc/phi-3-7b-cpu-service 8081:8080 &
+time curl -X POST http://localhost:8081/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"messages": [{"role": "user", "content": "Hello"}], "max_tokens": 50}'
+```
+
+### Expected Performance Improvements
+
+| Metric | CPU (n2-standard-4) | GPU (T4) | Speedup |
+|--------|---------------------|----------|---------|
+| Prompt Processing | ~29 tok/s | >100 tok/s | 3-5x |
+| Token Generation | ~18.5 tok/s | >100 tok/s | 5-10x |
+| Cold Start | ~5s | ~8s | -1.6x |
+| Latency P99 | ~2s | under 1s | 2x |
+| Cost/1K tokens | $0.002 | $0.008 | 4x more expensive |
+
+**Cost Analysis:**
+- GPU is 4x more expensive but 5-10x faster
+- For production workloads with latency SLOs, GPU is cost-effective
+- For batch/async workloads, CPU may be sufficient
+
+## Step 5: Clean Up
+
+```bash
+# Delete inference services
+kubectl delete inferenceservice phi-3-7b-gpu-service phi-3-7b-cpu-service
+
+# Delete model
+kubectl delete model phi-3-7b-gpu
+
+# Stop port forwards
+killall kubectl
+
+# Optionally: Scale GPU nodes to 0 to save money
+kubectl scale deployment -n kube-system --replicas=0 $(kubectl get deploy -n kube-system -o name | grep gpu)
+```
+
+## Next Steps
+
+1. **Set up monitoring**: Prometheus, Grafana, and DCGM exporter for GPU metrics. Enable the stack with the chart's [Prometheus integration](https://github.com/defilantech/LLMKube/blob/main/charts/llmkube/README.md#install-with-prometheus-integration); Grafana dashboards live in [docs/grafana](https://github.com/defilantech/LLMKube/blob/main/docs/grafana/README.md).
+2. **Use the CLI**: `llmkube deploy <model> --gpu` provisions a GPU-backed InferenceService in one command. `--gpu` is a boolean, so it takes no value; use `--gpu-count N` to request more than one GPU.
+3. **Try multi-GPU**: shard 13B-70B+ models across multiple GPUs on a single node. See [MULTI-GPU-DEPLOYMENT.md](/docs/guides/multi-gpu).
+4. **Optimize costs**: on the InferenceService, `nodeSelector` and `tolerations` place a service on a spot or preemptible node pool, and `priority` (`critical` to `batch`) orders services that wait for GPUs. Scale a service to zero by hand with `kubectl scale isvc <name> --replicas=0`, or with KEDA through the scale subresource; there is no automatic idle scale-to-zero.
+
+## Troubleshooting
+
+### Pod stuck in Pending
+```bash
+kubectl describe pod $POD
+# Check for:
+# - "Insufficient nvidia.com/gpu": Wait for node to scale up
+# - "node(s) didn't match Pod's node affinity": GPU nodes not available
+# - "taint node.kubernetes.io/not-ready": Node still initializing
+```
+
+### GPU not detected in llama.cpp
+```bash
+kubectl logs $POD -c llama-server | grep -i cuda
+# Should see: "using CUDA backend"
+# If not: Image may not have CUDA support, check image tag
+```
+
+### Crash at startup: "driver on your system is too old" / "CUDA driver version is insufficient"
+
+The image's CUDA userspace is newer than what the node's kernel driver supports.
+When the error appears in the crashed container's termination message (the log
+tail on error), the operator diagnoses it and reports it on the
+InferenceService, so start there instead of the pod logs:
+
+```bash
+kubectl get inferenceservice $NAME -o jsonpath='{.status.conditions[?(@.type=="DriverCompatible")]}'
+# status: "False", reason: CUDADriverInsufficient; the message names the node,
+# its supported CUDA version (from GPU feature labels, when present), and the
+# runtime's own error line.
+kubectl get events --field-selector reason=CUDADriverInsufficient
+```
+
+The compatibility rule: the node driver's supported CUDA **major** version must
+be >= the image's CUDA major (a CUDA 12.9 image runs on a 12.4 driver; a CUDA
+13.x image does not). Minor versions within a major are compatible per
+[NVIDIA's minor version compatibility](https://docs.nvidia.com/deploy/cuda-compatibility/minor-version-compatibility.html),
+with two exceptions: PTX JIT compilation, and APIs introduced in a newer minor
+that need a matching driver. Fix: use an image built for the node's CUDA
+major, or move the workload to nodes with a newer driver. Check what a node
+supports with (older gpu-feature-discovery releases publish the same value
+under the deprecated `nvidia.com/cuda.runtime.major`):
+
+```bash
+kubectl get node $NODE -o jsonpath='{.metadata.labels.nvidia\.com/cuda\.runtime-version\.major}'
+```
+
+### Poor GPU performance
+```bash
+# Check GPU utilization
+kubectl exec -it $POD -- nvidia-smi
+# Should show >80% GPU-Util during inference
+# If low: Increase batch size or concurrent requests
+```
+
+### Out of GPU memory
+```bash
+kubectl logs $POD -c llama-server | grep -i "out of memory"
+# Solution: Reduce layers offloaded or use smaller quantization
+# Example: Set gpu.layers: 20 instead of -1 in Model spec
+```
+
+## Verified on GKE with NVIDIA L4
+
+The setup above was checked end to end on GKE on 2025-11-16, with this shape:
+
+| | |
+| --- | --- |
+| GPU node pool | `g2-standard-4` (one NVIDIA L4, 23 GB), autoscaling 0 to 2 nodes, spot |
+| Driver | NVIDIA 535.261.03, CUDA 12.2 |
+| Device plugin | GKE's `nvidia-gpu-device-plugin` DaemonSet in `kube-system` |
+| Node labels | `cloud.google.com/gke-accelerator=nvidia-l4`, `cloud.google.com/gke-gpu=true` |
+| Node taint | `nvidia.com/gpu=present:NoSchedule` |
+| Scale from zero | about 90 seconds for the first GPU pod |
+
+On that pool, any pod that needs the GPU asks for it, tolerates the taint,
+and selects the accelerator:
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: my-gpu-workload
+spec:
+  containers:
+  - name: gpu-container
+    image: nvidia/cuda:12.2.0-base-ubuntu22.04
+    command: ["nvidia-smi"]
+    resources:
+      limits:
+        nvidia.com/gpu: 1
+  tolerations:
+  - key: nvidia.com/gpu
+    operator: Exists
+    effect: NoSchedule
+  nodeSelector:
+    cloud.google.com/gke-accelerator: nvidia-l4
+```
+
+Commands that help on a pool like this:
+
+```bash
+# GPU nodes in the pool
+kubectl get nodes -l cloud.google.com/gke-nodepool=gpu-pool
+
+# GPUs a node offers the scheduler
+kubectl get node <node-name> -o json | jq '.status.allocatable["nvidia.com/gpu"]'
+
+# Device plugin logs
+kubectl logs -n kube-system -l name=nvidia-gpu-device-plugin
+```
+
+Spot `g2-standard-4` capacity cost about $0.21 an hour against $0.70 on
+demand at the time; an autoscaled pool with a minimum of 0 stops billing for
+the GPU node about 10 minutes after the last GPU pod leaves.

@@ -133,13 +133,18 @@ curl http://localhost:8080/v1/chat/completions \
 
 That's it. The operator creates the Deployment and the Service, the pod's init container downloads the model, and llama.cpp serves an OpenAI-compatible API. Works with the OpenAI Python/Node/Go SDKs, LangChain, and LlamaIndex out of the box.
 
-The first deploy downloads the weights (about 2.8 GB for phi-4-mini) into a `llmkube-model-cache` PersistentVolumeClaim that the operator creates in your namespace (100Gi request by default). That claim is not removed with the model or by `helm uninstall`. On a slow link the download takes several minutes; `llmkube deploy` waits up to 10 minutes by default (`--timeout`).
+The first deploy downloads the weights (about 2.8 GB for phi-4-mini) into a `llmkube-model-cache` PersistentVolumeClaim that the operator creates in your namespace (100Gi request by default). That claim is not removed with the model or by `helm uninstall`. On a slow link the download takes several minutes. `llmkube deploy` prints the download's progress while it waits, up to 10 minutes by default; pass a longer `--timeout` for a large model or a slow link. A timeout only stops the wait: the deployment keeps going, and `llmkube status phi-4-mini` follows it.
 
 **Want GPU acceleration?** Add `--gpu`:
 
 ```bash
 llmkube deploy llama-3.1-8b --gpu --gpu-count 1
 ```
+
+This catalog entry defaults to 8,192 context tokens, with an estimated 7–8 GB
+VRAM footprint. Use `--context 16384` for a longer window if memory allows;
+the model's 131,072-token maximum needs about 16 GiB for the f16 KV cache alone.
+See [catalog memory estimates](catalog/README.md#context-and-memory-estimates).
 
 On a Mac that has the Metal Agent installed, `--gpu` picks Metal; add `--accelerator cuda` to target NVIDIA nodes.
 
@@ -172,7 +177,7 @@ kubectl apply -f model.yaml
 ```
 </details>
 
-**Full setup guides:** [Minikube Quickstart](docs/minikube-quickstart.md) | [GKE with GPUs](docs/gpu-setup-guide.md) | [Intel GPU Quickstart](docs/intel-gpu-quickstart.md) | [DGX Spark (MicroK8s)](docs/dgx-spark-microk8s.md) | [Air-Gapped Deployment](docs/air-gapped-quickstart.md) | [OpenShift](#troubleshooting)
+**Full setup guides:** [Minikube Quickstart](https://llmkube.com/docs/quickstart-minikube) | [GKE with GPUs](https://llmkube.com/docs/guides/gpu-setup) | [Intel GPU Quickstart](docs/intel-gpu-quickstart.md) | [DGX Spark (MicroK8s)](docs/dgx-spark-microk8s.md) | [Air-Gapped Deployment](docs/air-gapped-quickstart.md) | [OpenShift](#troubleshooting)
 
 ---
 
@@ -180,7 +185,7 @@ kubectl apply -f model.yaml
 
 - **Pre-1.0 API:** every CRD is `v1alpha1`. Fields can change between minor releases; breaking changes are listed under "BREAKING CHANGES" in the [CHANGELOG](CHANGELOG.md) (0.9.0 and 0.10.0 are recent examples).
 - **What CI covers:** on every pull request the default end-to-end job deploys the operator to a kind cluster and checks `Model` and `InferenceService` reconciliation, the CLI catalog, and ModelRouter proxy routing against a stub backend. It runs no real model and no GPU. GPU paths are exercised on lab hardware, and the [lab builds](https://llmkube.com/docs/labs) record what ran, on which machines, and when. No component carries a formal stability level yet. Newer features state their limits in their guides: for example, [multi-node inference](docs/site/guides/multi-node-inference.md) is vLLM only, and the ModelRouter Gateway and AgentGateway data planes support a subset of the proxy's routing strategies.
-- **Kubernetes versions:** CI runs kind from its `latest` download link with kind's default node image, neither pinned (Kubernetes v1.37.0 in November 2026), plus a best-effort MicroShift job. Older versions are not tested in CI. Some features need newer clusters: DRA needs 1.34+, and `oci://` model sources need 1.36+.
+- **Kubernetes versions:** CI runs kind from its `latest` download link with kind's default node image, neither pinned (Kubernetes v1.37.0 in November 2026), plus a best-effort MicroShift job. Older versions are not tested in CI. Some features need newer clusters: the multi-node memory guard needs 1.29+ (native sidecars), DRA needs 1.34+, and `oci://` model sources need 1.36+.
 - **Releases ship often**, sometimes several a week, and new features land in patch releases (0.10.x). See the [latest release](https://github.com/defilantech/LLMKube/releases/latest) for what is current.
 - **First-time contributors have landed real features:** Intel oneAPI / SYCL GPU support arrived as PR [#557](https://github.com/defilantech/LLMKube/pull/557) from a first-time contributor, and configurable GPU resource names for AMD/Vulkan/Intel scheduling as [#709](https://github.com/defilantech/LLMKube/pull/709) from a contributor new to the repo, who followed with vendor-neutral DRA scheduling in [#750](https://github.com/defilantech/LLMKube/pull/750).
 - **Foreman, the agentic harness, contributes code to this repository:** its first two merged PRs landed in May 2026 ([#508](https://github.com/defilantech/LLMKube/pull/508), [#588](https://github.com/defilantech/LLMKube/pull/588)), with more Foreman-authored PRs merging since.
@@ -382,7 +387,7 @@ One machine with two RTX 5060 Ti GPUs, 10 iterations of 256 max tokens per model
 - AMD GPUs with llama.cpp Vulkan or ROCm images, including Strix Halo ([guide](docs/amd-rocm-quickstart.md))
 - Intel GPU (i915 or xe plugin resources) with llama.cpp SYCL backend
 - Apple Silicon (M-series) Metal via [Metal Agent](deployment/macos/)
-- Multi-GPU inference for 13B-70B+ models ([guide](docs/MULTI-GPU-DEPLOYMENT.md))
+- Multi-GPU inference for 13B-70B+ models ([guide](https://llmkube.com/docs/guides/multi-gpu))
 - Multi-node inference: one model across several nodes with `spec.multiNode` (vLLM) ([guide](docs/site/guides/multi-node-inference.md))
 - Automatic layer offloading and tensor splitting
 - GPU queue management with priority classes
@@ -391,7 +396,7 @@ One machine with two RTX 5060 Ti GPUs, 10 iterations of 256 max tokens per model
 **Operations:**
 - Full CLI: `llmkube deploy/list/status/delete/catalog/cache/queue`
 - Model catalog of pre-configured GGUF models for llama.cpp (`llmkube catalog list`)
-- Prometheus metrics + OpenTelemetry tracing of ModelRouter proxy requests ([details](docs/observability/tracing.md))
+- Prometheus metrics + OpenTelemetry tracing of ModelRouter proxy requests ([details](https://llmkube.com/docs/operations/observability#tracing))
 - For an existing Prometheus Operator or kube-prometheus-stack: Grafana dashboards (inference, llama.cpp, vLLM, SGLang, ModelRouter, GPU quota, SLOs, AMD GPU), PodMonitors, a ServiceMonitor and PrometheusRule alerts. All of them are off by default (`prometheus.*.enabled`, `grafana.dashboards.enabled`), and Prometheus and Grafana themselves are not bundled
 - GPU alert rules on DCGM exporter metrics (utilization, temperature, power, memory, Xid faults)
 - Per-service SLOs through Pyrra (`spec.slo`; needs Pyrra installed and `pyrra.enabled`)
@@ -447,7 +452,7 @@ curl -sSL https://raw.githubusercontent.com/defilantech/LLMKube/main/install.sh 
 
 ### From Source
 
-Needs Go 1.27.3 or later (the version `go.mod` pins).
+Needs Go 1.27.4 or later (the version `go.mod` pins).
 
 ```bash
 git clone https://github.com/defilantech/LLMKube.git && cd LLMKube
@@ -455,7 +460,7 @@ make install  # Install CRDs
 make run      # Run controller locally
 ```
 
-[Helm Chart docs](charts/llmkube/README.md) | [Minikube Quickstart](docs/minikube-quickstart.md) | [GKE GPU Setup](docs/gpu-setup-guide.md)
+[Helm Chart docs](charts/llmkube/README.md) | [Minikube Quickstart](https://llmkube.com/docs/quickstart-minikube) | [GKE GPU Setup](https://llmkube.com/docs/guides/gpu-setup)
 
 ---
 

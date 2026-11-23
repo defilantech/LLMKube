@@ -200,6 +200,8 @@ func TestEnsureProcess_FormatIncompatibleWithdrawsInheritedEndpoint(t *testing.T
 
 // TestEnsureProcess_StartFailureWithdrawsThenRecovers covers a spawn error
 // from the executor, then a successful start flipping the same slice back.
+// The successful start is the failed start's retry (#2404): a watch event for
+// the same spec is left to it, like a pending health restart.
 func TestEnsureProcess_StartFailureWithdrawsThenRecovers(t *testing.T) {
 	const name = "spawn-fails"
 	model := ggufModel(t, name)
@@ -209,6 +211,8 @@ func TestEnsureProcess_StartFailureWithdrawsThenRecovers(t *testing.T) {
 	}
 	svc, slice := inheritedEndpoint(name)
 	agent, c := newWithdrawTestAgent(t, []string{filepath.Dir(model.Spec.Source)}, model, isvc, svc, slice)
+	clk := &fakeClock{t: time.Now()}
+	agent.now = clk.now
 	exec := &switchableExecutor{err: errors.New("llama-server exited during startup")}
 	agent.executors[runtimeLlamaServer] = exec
 
@@ -220,8 +224,10 @@ func TestEnsureProcess_StartFailureWithdrawsThenRecovers(t *testing.T) {
 	}
 
 	exec.err = nil
-	if err := agent.ensureProcess(context.Background(), isvc); err != nil {
-		t.Fatalf("ensureProcess after recovery: %v", err)
+	clk.t = clk.t.Add(healthRestartInitialBackoff)
+	agent.runDueRestarts(context.Background())
+	if p := agent.processes["default/"+name]; p == nil {
+		t.Fatal("the retry after the backoff did not start the engine")
 	}
 	ready, got := endpointReady(t, c, name)
 	if !ready {
@@ -366,5 +372,66 @@ func TestWithdrawEndpointIfPresent_SkipsRecentWithdrawalAndForeignSlices(t *test
 	}
 	if ready, _ := endpointReady(t, c, "foreign"); !ready {
 		t.Errorf("a slice not managed by the metal-agent was withdrawn")
+	}
+}
+
+// TestWithdrawEndpointIfPresent_RestampsOnlyItsOwnStaleSlice pins which stale
+// slices a refusal gives a fresh heartbeat: only the one the agent registers
+// itself (its name for the agent's mode, its managed-by label, a recorded
+// port). Any other slice listed for the service stays stale while the agent
+// refuses, which is what kept the controller replacing the refusal (#2457).
+func TestWithdrawEndpointIfPresent_RestampsOnlyItsOwnStaleSlice(t *testing.T) {
+	now := time.Date(2026, 11, 15, 12, 0, 0, 0, time.UTC)
+	stale := now.Add(-10 * time.Minute).Format(time.RFC3339)
+
+	_, own := inheritedEndpoint("own")
+	_, renamed := inheritedEndpoint("renamed")
+	renamed.Name = "renamed-x7k2p"
+	_, noPort := inheritedEndpoint("no-port")
+	noPort.Ports = nil
+	_, unlabeled := inheritedEndpoint("unlabeled")
+	delete(unlabeled.Labels, managedByLabel)
+	_, legacy := inheritedEndpoint("legacy")
+	seeded := []*discoveryv1.EndpointSlice{own, renamed, noPort, unlabeled, legacy}
+	objs := make([]client.Object, 0, len(seeded))
+	for _, s := range seeded {
+		s.Annotations[inferencev1alpha1.AnnotationAgentHeartbeat] = stale
+		objs = append(objs, s)
+	}
+	c := newRegistryTestClient(t, objs...)
+	legacyReg := NewServiceRegistry(c, "10.0.0.1", newNopLogger(), "")
+	relayReg := newRelayRegistry(c)
+	legacyReg.now = func() time.Time { return now }
+	relayReg.now = func() time.Time { return now }
+
+	cases := []struct {
+		isvc, slice string
+		reg         *ServiceRegistry
+		restamped   bool
+	}{
+		{"own", "own", legacyReg, true},
+		{"renamed", "renamed-x7k2p", legacyReg, false},
+		{"no-port", "no-port", legacyReg, false},
+		{"unlabeled", "unlabeled", legacyReg, false},
+		// A relay-mode agent looks for "legacy-agent", not its old slice.
+		{"legacy", "legacy", relayReg, false},
+	}
+	for _, tc := range cases {
+		isvc := &inferencev1alpha1.InferenceService{ObjectMeta: metav1.ObjectMeta{Name: tc.isvc, Namespace: "default"}}
+		wrote, err := tc.reg.WithdrawEndpointIfPresent(context.Background(), isvc)
+		if err != nil {
+			t.Fatalf("%s: WithdrawEndpointIfPresent: %v", tc.isvc, err)
+		}
+		got := &discoveryv1.EndpointSlice{}
+		if err := c.Get(context.Background(), types.NamespacedName{Namespace: "default", Name: tc.slice}, got); err != nil {
+			t.Fatalf("%s: get slice %s: %v", tc.isvc, tc.slice, err)
+		}
+		want := stale
+		if tc.restamped {
+			want = now.Format(time.RFC3339)
+		}
+		if hb := got.Annotations[inferencev1alpha1.AnnotationAgentHeartbeat]; wrote != tc.restamped || hb != want {
+			t.Errorf("%s: wrote = %v, heartbeat = %s; want wrote = %v, heartbeat = %s", tc.isvc, wrote, hb, tc.restamped, want)
+		}
 	}
 }

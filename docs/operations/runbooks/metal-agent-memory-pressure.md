@@ -155,7 +155,7 @@ If memory pressure is recurring on this host:
    `--allow-model-memory-budget-override`. The metal-agent enforces the
    resolved budget at spawn time and refuses to start a process whose
    estimate exceeds it, or whose estimate does not fit next to the services
-   already running on the Mac (the agent's budget is shared), which heads off
+   already running on the host (the agent's budget is shared), which heads off
    the failure mode upstream of the watchdog. If the pre-flight estimate
    cannot be computed at all, `--memory-check-mode` decides what happens:
    `enforce` (the default) fails closed, `warn` starts the process anyway.

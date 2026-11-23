@@ -20,6 +20,7 @@ import (
 	"math"
 	"net/http"
 	"net/netip"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -216,14 +217,13 @@ func compileBudgetRules(budgets []Budget) []BudgetRule {
 // Mount wires up the OpenAI-compatible endpoints plus /health and /readyz on the
 // given mux. Callers attach the mux to an http.Server.
 func (p *Proxy) Mount(mux *http.ServeMux) {
-	mux.HandleFunc("POST /v1/chat/completions", p.handleCompletion("/v1/chat/completions"))
-	mux.HandleFunc("POST /v1/completions", p.handleCompletion("/v1/completions"))
-	mux.HandleFunc("POST /v1/embeddings", p.handleCompletion("/v1/embeddings"))
-	mux.HandleFunc("POST /v1/rerank", p.handleCompletion("/v1/rerank"))
-	// The Anthropic Messages API carries model and stream where chat
-	// completions does, so the same handler places and streams it.
-	mux.HandleFunc("POST /v1/messages", p.handleCompletion("/v1/messages"))
-	mux.HandleFunc("POST /v1/messages/count_tokens", p.handleCompletion("/v1/messages/count_tokens"))
+	for _, path := range namedPaths {
+		mux.HandleFunc("POST "+path, p.handleCompletion(path))
+	}
+	// Every other POST /v1 path goes to the model the request names, on the
+	// same path (#2470): the runtimes serve more /v1 endpoints than the
+	// router names, and handleCompletion reads only model and stream.
+	mux.HandleFunc("POST /v1/", p.handleOtherV1)
 	mux.HandleFunc("GET /v1/models", p.handleModels)
 	mux.HandleFunc("GET /health", p.handleHealth)
 	mux.HandleFunc("GET /healthz", p.handleHealth)
@@ -284,6 +284,9 @@ func (p *Proxy) handleModels(w http.ResponseWriter, _ *http.Request) {
 	models := make([]model, 0, len(p.cfg.Backends))
 	for i := range p.cfg.Backends {
 		b := &p.cfg.Backends[i]
+		if b.Hidden {
+			continue
+		}
 		owned := "llmkube"
 		if b.Provider != "" {
 			owned = b.Provider
@@ -317,6 +320,55 @@ func (p *Proxy) handleModels(w http.ResponseWriter, _ *http.Request) {
 // endpoint must pass its own path: the surface the proxy fronts is not just
 // chat completions, and a hardcoded path silently turns an embeddings request
 // into a chat request at the upstream.
+// namedPaths are the POST paths the router names, each forwarded to any
+// backend a rule picks. The Anthropic Messages API carries model and stream
+// where chat completions does, so the same handler places and streams it.
+var namedPaths = []string{
+	"/v1/chat/completions",
+	"/v1/completions",
+	"/v1/embeddings",
+	"/v1/rerank",
+	"/v1/messages",
+	"/v1/messages/count_tokens",
+}
+
+// isNamedPath reports whether path is one of namedPaths.
+func isNamedPath(path string) bool {
+	return slices.Contains(namedPaths, path)
+}
+
+// reachesBackend reports whether a request on path may be sent to b. A named
+// path reaches every backend. Any other path reaches only local-tier
+// backends: a cloud backend carries the router's provider key, and an unnamed
+// path there (files, batches, fine-tuning) would spend it outside any budget.
+func reachesBackend(b *Backend, path string) bool {
+	return isNamedPath(path) || b.Tier == "local"
+}
+
+// ErrPathLocalOnly is the dispatch error when a request on a path the router
+// does not name has no local-tier backend to go to.
+var ErrPathLocalOnly = errors.New("the router forwards this path only to local-tier backends")
+
+// ErrNotImplemented is the dispatch error when the last backend tried answered
+// 501: it does not implement the request's path or method. The handler passes
+// that on as a 501 rather than a 502, since nothing failed.
+var ErrNotImplemented = errors.New("not implemented by the backend")
+
+// injectsStreamUsage reports whether a budgeted stream on path gets
+// stream_options.include_usage added: only chat completions and completions
+// define it. An Anthropic stream always reports usage, and the Responses API
+// rejects a parameter it does not know.
+func injectsStreamUsage(path string) bool {
+	return path == "/v1/chat/completions" || path == "/v1/completions"
+}
+
+// handleOtherV1 serves a POST to a /v1 path the router does not name. The
+// path goes upstream as the client escaped it, so an encoded character (a
+// "%3F") stays part of the path instead of turning into a query string.
+func (p *Proxy) handleOtherV1(w http.ResponseWriter, r *http.Request) {
+	p.handleCompletion(r.URL.EscapedPath())(w, r)
+}
+
 func (p *Proxy) handleCompletion(upstreamPath string) http.HandlerFunc {
 	anthropic := isAnthropicPath(upstreamPath)
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -382,7 +434,9 @@ func (p *Proxy) handleCompletion(upstreamPath string) http.HandlerFunc {
 		// is charged zero. The rewrite is gated on a budget applying to this
 		// request; unbudgeted traffic dispatches untouched.
 		// An Anthropic stream always reports usage and has no stream_options.
-		if isStream && len(scopeKeys) > 0 && !anthropic {
+		// Only chat completions and completions define stream_options; the
+		// Responses API, for one, rejects a parameter it does not know.
+		if isStream && len(scopeKeys) > 0 && injectsStreamUsage(upstreamPath) {
 			if injected, changed := InjectStreamUsage(body); changed {
 				body = injected
 			}
@@ -543,6 +597,29 @@ func (p *Proxy) writeDispatchError(
 		p.audit(*features, *decision, nil, http.StatusServiceUnavailable,
 			"pool_incumbent_busy", elapsed, budgetAudit{})
 		p.observeRequest(features, decision, last, "pool_incumbent_busy", elapsed)
+		return
+	}
+	// The request's path is one the router forwards only to local-tier
+	// backends, and its route has none: the path is not available through
+	// this route, which is what a 404 says. It comes before the fail-closed
+	// case: no backend was tried, so nothing failed and nothing egressed.
+	// The client is not told the backends' names; the audit line carries
+	// them in the error.
+	if errors.Is(err, ErrPathLocalOnly) {
+		writeErrorFor(anthropic, w, http.StatusNotFound, ErrPathLocalOnly.Error()+", and this request's route has none")
+		p.audit(*features, *decision, nil, http.StatusNotFound, "path_local_only", elapsed, budgetAudit{},
+			"error", err.Error())
+		p.observeRequest(features, decision, last, "path_local_only", elapsed)
+		return
+	}
+	// The last backend tried does not implement this path or method (a 501).
+	// Nothing failed, so it is a 501 to the client, not a 502 outage, and it
+	// comes before the fail-closed case for the same reason.
+	if errors.Is(err, ErrNotImplemented) {
+		writeErrorFor(anthropic, w, http.StatusNotImplemented, err.Error())
+		p.audit(*features, *decision, nil, http.StatusNotImplemented, "not_implemented", elapsed, budgetAudit{},
+			"error", err.Error())
+		p.observeRequest(features, decision, last, "not_implemented", elapsed)
 		return
 	}
 	// Runtime fail-closed: when every backend in a fail-closed
@@ -838,6 +915,12 @@ func (p *Proxy) dispatchOrder(dec *MatchResult) []string {
 // catches one that goes silent). The deadline is applied per attempt, not
 // once for the whole loop, so a slow primary that timed out does NOT eat the
 // fallback's budget.
+//
+// Per-backend retry: a pooled backend whose connection attempt failed before
+// the first request byte was written (a member the controller drained inside
+// the resident-resync window, a Pod that is gone) has the request held for that
+// member as a cold request is held, bounded by swapBudget, and dispatched once
+// more. A failure after any part of the request was written is never retried.
 func (p *Proxy) dispatchWithFallback(
 	ctx context.Context,
 	dec *MatchResult,
@@ -867,6 +950,14 @@ func (p *Proxy) dispatchWithFallback(
 			allIncumbentBusy = false
 			continue
 		}
+		if !reachesBackend(b, path) {
+			// Keep a real failure of an earlier backend as the cause.
+			if lastErr == nil {
+				lastErr = fmt.Errorf("%w; backend %q is %s-tier", ErrPathLocalOnly, name, b.Tier)
+			}
+			allIncumbentBusy = false
+			continue
+		}
 		last = b
 		if !p.disp.IsHealthy(name) {
 			p.updateBackendHealthMetrics(name, false)
@@ -875,104 +966,44 @@ func (p *Proxy) dispatchWithFallback(
 			continue
 		}
 
-		// ModelPool activation: make this member resident (scale it up, drain
-		// the incumbent) before dispatch. The swap hold has its own budget
-		// (pool.SwapBudget), decoupled from the dispatch/response-header timeout
-		// so a large cold model load can take minutes without loosening the
-		// per-request generation cap. The swap runs under the activator's
-		// baseCtx, so cancelling holdCtx once Acquire returns never aborts an
-		// in-progress load. The dispatch clock (attemptCtx below) starts only
-		// after the member is resident, so the swap wait never eats the
-		// generation budget.
-		var poolRelease func()
-		if b.Pool != nil && p.activator != nil {
-			holdCtx, holdCancel := context.WithTimeout(ctx,
-				resolveSwapBudget(b.Pool, p.disp.ResponseHeaderTimeout()))
-			rel, aerr := p.activator.AcquireWithMode(holdCtx, b.Pool, dec.PoolActivation)
-			holdCancel()
-			if aerr != nil {
-				p.refreshBackendHealth(name)
-				lastErr = aerr
-				if !errors.Is(aerr, ErrIncumbentBusy) {
-					allIncumbentBusy = false
-				}
-				continue
-			}
-			poolRelease = rel
-		}
-
-		attemptCtx, cancel := context.WithCancel(ctx)
-		var headerTimedOut atomic.Bool
-		headerTimer := time.AfterFunc(resolveDispatchTimeout(dec, b, p.disp.ResponseHeaderTimeout()), func() {
-			headerTimedOut.Store(true)
-			cancel()
-		})
-		_, span := tracer.Start(attemptCtx, "backend.request",
-			oteltrace.WithAttributes(
-				otelattribute.String("routing.backend.selected", b.Name),
-				otelattribute.String("routing.backend.provider", b.Provider),
-				otelattribute.String("routing.backend.tier", b.Tier),
-				otelattribute.Int("routing.fallback.depth", i),
-			),
-		)
-		resp, err := p.disp.Dispatch(attemptCtx, b, http.MethodPost, path, headers, body)
-		// Headers arrived (or the attempt failed): the header deadline no
-		// longer applies. If the timer fired anyway, the attempt context is
-		// already cancelled and the response is unusable.
-		if !headerTimer.Stop() && headerTimedOut.Load() {
-			if err == nil {
-				_ = resp.Body.Close()
-				resp = nil
-			}
-			err = fmt.Errorf("%w: waiting for response headers from %s", context.DeadlineExceeded, name)
-		}
+		resp, err, release, cancel := p.attemptBackend(ctx, tracer, dec, b, headers, body, path, i)
 		if err != nil {
-			if b.Pool != nil && p.activator != nil && ctx.Err() == nil {
-				// A connection-level failure to a pooled backend almost always
-				// means its pod is gone (an out-of-band residency change the
-				// activator did not drive). Force the next Acquire to re-verify
-				// residency so the pool self-heals instead of serving stale 502s
-				// until the periodic resync or a proxy restart. A client
-				// cancellation says nothing about the pod.
-				p.activator.InvalidateResident(b.Pool)
-			}
-			if poolRelease != nil {
-				poolRelease()
-			}
-			span.End()
-			cancel()
 			p.refreshBackendHealth(name)
 			lastErr = err
-			allIncumbentBusy = false
+			if !errors.Is(err, ErrIncumbentBusy) {
+				allIncumbentBusy = false
+			}
 			continue
 		}
 		if resp.StatusCode >= 500 {
 			// Drain and close so the connection is reusable.
 			_, _ = io.Copy(io.Discard, resp.Body)
 			_ = resp.Body.Close()
-			if poolRelease != nil {
-				poolRelease()
+			if release != nil {
+				release()
 			}
-			span.End()
 			cancel()
 			p.refreshBackendHealth(name)
-			lastErr = fmt.Errorf("%s returned %d", name, resp.StatusCode)
+			if resp.StatusCode == http.StatusNotImplemented {
+				lastErr = fmt.Errorf("%w: %s returned %d", ErrNotImplemented, name, resp.StatusCode)
+			} else {
+				lastErr = fmt.Errorf("%s returned %d", name, resp.StatusCode)
+			}
 			allIncumbentBusy = false
 			continue
 		}
 		// Successful response: wrap the body so its Close also
 		// cancels the per-attempt context and releases the pool slot.
-		// The caller's existing `defer resp.Body.Close()` is enough — no
+		// The caller's existing `defer resp.Body.Close()` is enough: no
 		// separate cancel plumbing needed, and streaming dispatches keep
 		// the deadline (and the pool residency in-flight count) alive
 		// until the client finishes reading.
 		resp.Body = &cancelOnClose{ReadCloser: resp.Body, cancel: func() {
-			if poolRelease != nil {
-				poolRelease()
+			if release != nil {
+				release()
 			}
 			cancel()
 		}}
-		span.End()
 		return b, resp, nil
 	}
 	if lastErr == nil {
@@ -984,6 +1015,115 @@ func (p *Proxy) dispatchWithFallback(
 		return last, nil, ErrIncumbentBusy
 	}
 	return last, nil, lastErr
+}
+
+// attemptBackend runs one backend turn: it holds the request until a pooled
+// member is resident, dispatches under the per-attempt header deadline, and
+// returns the response with the release/cancel plumbing its caller must run
+// when done. Only a pooled member under the default activation whose first
+// attempt failed before a request byte was written is retried; the retry
+// re-holds the member exactly as a cold member is held, and the deadline shared
+// with the retry keeps the whole wait inside swapBudget.
+func (p *Proxy) attemptBackend(
+	ctx context.Context,
+	tracer oteltrace.Tracer,
+	dec *MatchResult,
+	b *Backend,
+	headers http.Header,
+	body []byte,
+	path string,
+	depth int,
+) (*http.Response, error, func(), context.CancelFunc) {
+	pooled := b.Pool != nil && p.activator != nil
+	var release func()
+	var holdDeadline time.Time
+	if pooled {
+		holdDeadline = time.Now().Add(resolveSwapBudget(b.Pool, p.disp.ResponseHeaderTimeout()))
+	}
+	// The swap hold has its own budget (pool.SwapBudget), decoupled from the
+	// dispatch/response-header timeout so a large cold model load can take
+	// minutes without loosening the per-request generation cap. The swap runs
+	// under the activator's baseCtx, so cancelling holdCtx once Acquire returns
+	// never aborts an in-progress load. The dispatch clock below starts only
+	// after the member is resident, so the swap wait never eats the generation
+	// budget.
+	hold := func() error {
+		if !pooled {
+			return nil
+		}
+		holdCtx, holdCancel := context.WithDeadline(ctx, holdDeadline)
+		defer holdCancel()
+		rel, aerr := p.activator.AcquireWithMode(holdCtx, b.Pool, dec.PoolActivation)
+		if aerr != nil {
+			return aerr
+		}
+		release = rel
+		return nil
+	}
+	if aerr := hold(); aerr != nil {
+		return nil, aerr, nil, nil
+	}
+
+	for attempt := 0; ; attempt++ {
+		attemptCtx, attemptCancel := context.WithCancel(ctx)
+		var headerTimedOut atomic.Bool
+		headerTimer := time.AfterFunc(resolveDispatchTimeout(dec, b, p.disp.ResponseHeaderTimeout()), func() {
+			headerTimedOut.Store(true)
+			attemptCancel()
+		})
+		_, span := tracer.Start(attemptCtx, "backend.request",
+			oteltrace.WithAttributes(
+				otelattribute.String("routing.backend.selected", b.Name),
+				otelattribute.String("routing.backend.provider", b.Provider),
+				otelattribute.String("routing.backend.tier", b.Tier),
+				otelattribute.Int("routing.fallback.depth", depth),
+			),
+		)
+		resp, derr := p.disp.Dispatch(attemptCtx, b, http.MethodPost, path, headers, body)
+		// Headers arrived (or the attempt failed): the header deadline no
+		// longer applies. If the timer fired anyway, the attempt context is
+		// already cancelled and the response is unusable.
+		if !headerTimer.Stop() && headerTimedOut.Load() {
+			if derr == nil {
+				_ = resp.Body.Close()
+				resp = nil
+			}
+			derr = fmt.Errorf("%w: waiting for response headers from %s", context.DeadlineExceeded, b.Name)
+		}
+		span.End()
+		if derr == nil {
+			return resp, nil, release, attemptCancel
+		}
+		attemptCancel()
+		if release != nil {
+			release()
+			release = nil
+		}
+		if b.Pool != nil && p.activator != nil && ctx.Err() == nil {
+			// A connection-level failure to a pooled backend almost always
+			// means its pod is gone (an out-of-band residency change the
+			// activator did not drive). Force the next Acquire to re-verify
+			// residency so the pool self-heals instead of serving stale 502s
+			// until the periodic resync or a proxy restart. A client
+			// cancellation says nothing about the pod.
+			p.activator.InvalidateResident(b.Pool)
+		}
+		if attempt > 0 || !pooled || dec.PoolActivation == PoolActivationIfIdle ||
+			!errors.Is(derr, ErrRequestNotSent) || ctx.Err() != nil {
+			return nil, derr, nil, nil
+		}
+		// The member was drained under the cached belief (the resync window),
+		// so hold the request for it rather than failing it through.
+		p.logger.Info("model pool member refused a dispatch before any request byte; holding the request for it again",
+			"router", p.routerName, "namespace", b.Pool.Namespace, "pool", b.Pool.Name, "member", b.Pool.Member)
+		// The refused dial quarantined the backend; clear it so a request
+		// arriving while this one is held reaches the hold too instead of
+		// being skipped as unhealthy.
+		p.disp.clearQuarantine(b.Name)
+		if aerr := hold(); aerr != nil {
+			return nil, aerr, nil, nil
+		}
+	}
 }
 
 // cancelOnClose pairs a response body with the cancel func of the

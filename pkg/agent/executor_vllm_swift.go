@@ -146,6 +146,8 @@ func (e *VLLMSwiftExecutor) StartProcess(ctx context.Context, config ExecutorCon
 		ModelID:   filepath.Base(modelPath),
 		StartedAt: time.Now(),
 		Healthy:   false,
+		exit:      exit,
+		logPath:   logPath,
 	}
 
 	if err := waitForChildHealthy(port, e.startupTimeout, exit.done); err != nil {

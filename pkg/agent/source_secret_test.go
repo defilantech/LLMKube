@@ -454,7 +454,7 @@ func TestEstimateModelMemory_S3UnmarkedSecretNotProbed(t *testing.T) {
 	a := sourceSecretTestAgent(t, "default", s3CredentialSecret("default", minioRefName, srv.URL, nil))
 	model := sourceSecretTestModel("default", minioRefName)
 
-	_, err := a.estimateModelMemory(t.Context(), model, 2048, "", "")
+	_, err := a.estimateModelMemory(t.Context(), model, 2048, "", "", 0)
 	if err == nil || !strings.Contains(err.Error(), "not marked for model-source credentials") {
 		t.Fatalf("estimateModelMemory = %v, want the size probe refused for an unmarked Secret", err)
 	}

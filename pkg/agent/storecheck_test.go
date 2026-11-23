@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -356,8 +357,7 @@ func tmpDirForTest(t *testing.T) string {
 
 // A store under /tmp is refused even when the agent owns it and it is 0700:
 // /tmp is emptied at boot, so another local user can recreate the path
-// first. 0.10.0 plists pinned --model-store /tmp/llmkube-models, so the
-// error must name the plist re-render.
+// first. The error ends with this OS's way out of /tmp.
 func TestCheckModelStore_RefusesStoreUnderTmp(t *testing.T) {
 	withSystemTempRoots(t)
 	wantAll := func(t *testing.T, err error, path string) {
@@ -365,7 +365,7 @@ func TestCheckModelStore_RefusesStoreUnderTmp(t *testing.T) {
 		if err == nil {
 			t.Fatalf("CheckModelStore(%s) = nil, want a refusal", path)
 		}
-		for _, want := range []string{path, "make install-metal-agent", "outside /tmp"} {
+		for _, want := range []string{path, tmpStoreFix(runtime.GOOS, defaultModelStore())} {
 			if !strings.Contains(err.Error(), want) {
 				t.Errorf("error %q does not mention %q", err, want)
 			}
@@ -582,5 +582,59 @@ func TestEnsureModel_LocalSourceSymlinkInRootResolvesAsBefore(t *testing.T) {
 				t.Errorf("ensureModel = %q, want %q (the pre-change in-place path)", got, link)
 			}
 		})
+	}
+}
+
+func TestTmpStoreFix(t *testing.T) {
+	for _, tc := range []struct {
+		name, goos, store string
+		want, notWant     []string
+	}{
+		{
+			name: "darwin", goos: "darwin", store: "/Users/u/Library/Application Support/llmkube/models",
+			want: []string{"launchctl bootout", "make install-metal-agent", "outside /tmp"},
+		},
+		{
+			name: "linux", goos: "linux", store: "/xdg/llmkube/models",
+			want:    []string{"--model-store", "(/xdg/llmkube/models)", "outside /tmp", "restart the agent"},
+			notWant: []string{"launchctl", "plist", "make install-metal-agent"},
+		},
+		{
+			name: "linux without a home directory", goos: "linux",
+			want: []string{"under $XDG_DATA_HOME/llmkube", "outside /tmp"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := tmpStoreFix(tc.goos, tc.store)
+			for _, w := range tc.want {
+				if !strings.Contains(got, w) {
+					t.Errorf("tmpStoreFix(%q, %q) = %q, want it to contain %q", tc.goos, tc.store, got, w)
+				}
+			}
+			for _, w := range tc.notWant {
+				if strings.Contains(got, w) {
+					t.Errorf("tmpStoreFix(%q, %q) = %q, want no %q", tc.goos, tc.store, got, w)
+				}
+			}
+		})
+	}
+}
+
+// defaultModelStore follows datadir.Dir, which treats a relative
+// XDG_DATA_HOME as unset.
+func TestDefaultModelStore(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("the XDG_DATA_HOME rule applies off macOS; this runs on Linux")
+	}
+	t.Setenv("HOME", "/home/u")
+	for xdg, want := range map[string]string{
+		"/xdg":     "/xdg/llmkube/models",
+		"relative": "/home/u/.local/share/llmkube/models",
+		"":         "/home/u/.local/share/llmkube/models",
+	} {
+		t.Setenv("XDG_DATA_HOME", xdg)
+		if got := defaultModelStore(); got != want {
+			t.Errorf("defaultModelStore() with XDG_DATA_HOME=%q = %q, want %q", xdg, got, want)
+		}
 	}
 }

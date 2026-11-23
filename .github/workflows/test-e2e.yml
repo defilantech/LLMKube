@@ -88,7 +88,7 @@ jobs:
           sudo mv ./kind /usr/local/bin/kind
 
       - name: Install Helm
-        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        uses: azure/setup-helm@2f5e7bc67f1f9972ab16657bb795f36d8f04de0e # v5.1.0
 
       - name: Running GPUQuota webhook e2e
         env:
@@ -141,7 +141,7 @@ jobs:
           sudo mv ./kind /usr/local/bin/kind
 
       - name: Install Helm
-        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        uses: azure/setup-helm@2f5e7bc67f1f9972ab16657bb795f36d8f04de0e # v5.1.0
 
       - name: Running APISIX ai-proxy-multi e2e
         env:
@@ -239,7 +239,7 @@ jobs:
           sudo mv ./kind /usr/local/bin/kind
 
       - name: Install Helm
-        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        uses: azure/setup-helm@2f5e7bc67f1f9972ab16657bb795f36d8f04de0e # v5.1.0
 
       - name: Pre-create kind cluster with Longhorn host mounts
         env:
@@ -345,7 +345,7 @@ jobs:
           kubectl get securitycontextconstraints restricted-v2 -o name
 
       - name: Install Helm
-        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        uses: azure/setup-helm@2f5e7bc67f1f9972ab16657bb795f36d8f04de0e # v5.1.0
 
       - name: Build controller image and side-load into MINC
         env:

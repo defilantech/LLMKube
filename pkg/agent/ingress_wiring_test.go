@@ -24,6 +24,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -196,9 +197,18 @@ func TestPrepareIngress_RelayFailsOnBadIdentity(t *testing.T) {
 }
 
 func TestDefaultStateDir(t *testing.T) {
-	got, err := resolveStateDir("", "/Users/x")
-	if err != nil || got != "/Users/x/Library/Application Support/llmkube/metal-agent" {
-		t.Errorf("resolveStateDir default = %q, %v", got, err)
+	for _, tc := range []struct{ xdg, offDarwin string }{
+		{"", "/Users/x/.local/share/llmkube/metal-agent"},
+		{"/xdg", "/xdg/llmkube/metal-agent"},
+	} {
+		t.Setenv("XDG_DATA_HOME", tc.xdg)
+		want := tc.offDarwin
+		if runtime.GOOS == "darwin" {
+			want = "/Users/x/Library/Application Support/llmkube/metal-agent"
+		}
+		if got, err := resolveStateDir("", "/Users/x"); err != nil || got != want {
+			t.Errorf("resolveStateDir default with XDG_DATA_HOME=%q = %q, %v; want %q", tc.xdg, got, err, want)
+		}
 	}
 	if got, _ := resolveStateDir("/var/state", "/Users/x"); got != "/var/state" {
 		t.Errorf("resolveStateDir explicit = %q, want /var/state", got)

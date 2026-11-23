@@ -900,20 +900,23 @@ func TestWatcher_ModelLookupErrorDoesNotAddUnseenService(t *testing.T) {
 }
 
 // TestPoll_ModelGoneOrNotMetalStillDeletes keeps the #2076 fix from
-// overreaching: a Model that is deleted (NotFound), or that stops being a
-// metal Model, still removes the service from this agent.
+// overreaching: a Model that stays deleted (NotFound), or that stops being a
+// metal Model, still removes the service from this agent. A deleted Model
+// does so once defaultModelGoneGrace has passed (#2411), so a
+// delete-and-recreate keeps the engine; held is that case.
 func TestPoll_ModelGoneOrNotMetalStillDeletes(t *testing.T) {
 	modelKey := client.ObjectKey{Namespace: "default", Name: lookupModelName}
 	cases := []struct {
 		name   string
+		held   bool
 		change func(ctx context.Context, c client.Client) error
 	}{
-		{"model deleted", func(ctx context.Context, c client.Client) error {
+		{"model deleted", true, func(ctx context.Context, c client.Client) error {
 			return c.Delete(ctx, &inferencev1alpha1.Model{
 				ObjectMeta: metav1.ObjectMeta{Name: modelKey.Name, Namespace: modelKey.Namespace},
 			})
 		}},
-		{"accelerator switched to cuda", func(ctx context.Context, c client.Client) error {
+		{"accelerator switched to cuda", false, func(ctx context.Context, c client.Client) error {
 			model := &inferencev1alpha1.Model{}
 			if err := c.Get(ctx, modelKey, model); err != nil {
 				return err
@@ -925,6 +928,7 @@ func TestPoll_ModelGoneOrNotMetalStillDeletes(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newModelLookupFixture(t)
+			advance := f.withClock()
 			seen := map[string]string{}
 			if events := f.pollOnce(t, seen); len(events) != 1 || events[0].Type != EventTypeCreated {
 				t.Fatalf("poll 1 events = %v, want one CREATED", eventSummary(events))
@@ -932,6 +936,12 @@ func TestPoll_ModelGoneOrNotMetalStillDeletes(t *testing.T) {
 
 			if err := tc.change(context.Background(), f.base); err != nil {
 				t.Fatalf("change model: %v", err)
+			}
+			if tc.held {
+				if events := f.pollOnce(t, seen); len(events) != 0 {
+					t.Fatalf("poll inside the grace events = %v, want none", eventSummary(events))
+				}
+				advance(defaultModelGoneGrace)
 			}
 
 			events := f.pollOnce(t, seen)

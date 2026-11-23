@@ -68,7 +68,10 @@ func (d *Dispatcher) sessionsFor(backend string, bal *Balancing) *picker.Session
 	if v, ok := d.sessions.Load(backend); ok {
 		return v.(*picker.Sessions)
 	}
-	v, _ := d.sessions.LoadOrStore(backend, picker.NewSessions(bal.SessionIdleTimeout, picker.MaxSessions))
+	tbl := picker.NewSessions(bal.SessionIdleTimeout, picker.MaxSessions)
+	created := prommetrics.RouterSessionBindingsCreatedTotal.WithLabelValues(d.routerName, backend)
+	tbl.OnBind = created.Inc
+	v, _ := d.sessions.LoadOrStore(backend, tbl)
 	return v.(*picker.Sessions)
 }
 

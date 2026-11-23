@@ -5,9 +5,9 @@ description: Defer pod-template rollouts until all inference replicas are idle, 
 
 # Drain Before Roll
 
-When the controller detects a pod-template change for an `InferenceService`, it normally applies the update immediately. If a replica is mid-generation, that request is dropped. The `waitForIdle` policy gates the rollout behind a per-replica idle check: the controller probes every endpoint — ready and not-ready — and only proceeds when all reachable replicas report idle — or the timeout expires.
+When the controller detects a pod-template change for an `InferenceService`, it normally applies the update immediately. If a replica is mid-generation, that request is dropped. The `waitForIdle` policy gates the rollout behind a per-replica idle check: the controller probes every endpoint, ready and not-ready, and only proceeds when all reachable replicas report idle, or the timeout expires. A replica whose serving container is not running holds nothing. When no old pod is running its serving container, such replicas no longer hold the rollout; when another old pod is running, a not-running replica's endpoint is still probed and a failed probe there still defers with `IdleCheckFailed`, as it did before #2553.
 
-The idle check is **fail-closed**. Any ambiguity (unreachable pod, parse error, unsupported runtime) defers the rollout rather than risking in-flight work. In particular, a pod with `PodReady=False` has been removed from Service endpoints so new requests stop arriving, but generations already accepted keep running, so not-ready replicas are probed directly rather than inferred idle from their readiness.
+The idle check is **fail-closed** for a running replica. Any ambiguity (unreachable pod, parse error, unsupported runtime) defers the rollout rather than risking in-flight work. A pod with `PodReady=False` has been removed from Service endpoints so new requests stop arriving, but generations already accepted keep running, so not-ready replicas with a running container are probed directly rather than inferred idle from their readiness. A container that is not running (`CrashLoopBackOff`, `ContainerCreating`, or terminated) cannot be holding a request, so when every old pod is in that state the rollout proceeds instead of waiting out the timeout (#2553). One not-running replica beside a running one does not settle the rollout on its own: the running replica's answer decides, and the not-running replica's still-probed endpoint can return an error first.
 
 ## Enabling
 
@@ -61,7 +61,7 @@ The controller appends the annotation value to each replica's base URL. A 2xx re
 
 The controller does not probe the load-balanced `Service` URL. Instead, it lists the service's `EndpointSlice` objects and probes **each endpoint address individually — both ready and not-ready**. This ensures a busy replica behind a healthy Service doesn't cause the idle check to pass incorrectly, and that a not-ready replica still processing accepted generations is not silently skipped.
 
-The rollout waits until **every** reachable replica reports idle. If even one is busy or unreachable, the entire rollout defers. When no EndpointSlices exist yet (freshly created Deployment), the controller falls back to a single Service URL probe for backward compatibility. When EndpointSlices exist but contain no reachable addresses at all, the state is treated as **undetermined** and the rollout defers (fail-closed) rather than silently proceeding over possibly in-flight work.
+The rollout waits until **every** reachable replica reports idle. If even one running replica is busy or unreachable, the entire rollout defers. When no EndpointSlices exist yet (freshly created Deployment), the controller falls back to a single Service URL probe for backward compatibility. When EndpointSlices exist but contain no reachable addresses at all, the controller reads the pods: if none of them is running its serving container the rollout proceeds, and if one is running it treats the state as **undetermined** and defers (fail-closed) rather than silently proceeding over possibly in-flight work.
 
 ## Pod replacement strategy
 
@@ -102,12 +102,12 @@ The `RolloutDeferred` condition communicates why a rollout is held:
 | Condition state | Reason | Meaning |
 |---|---|---|
 | `True` | `PodsBusy` | One or more replicas are actively processing requests |
-| `True` | `PodsCrashLooping` | Some old-generation pods are Ready (serving) while others are not; the rollout defers to protect in-flight work on the Ready pods |
-| `True` | `IdleCheckFailed` | The controller could not reach or parse the idle signal (network error, non-200 response) |
-| `True` | `IdleCheckUnsupported` | The selected runtime does not implement idle detection, or `generic` without `idle-endpoint` annotation |
+| `True` | `PodsCrashLooping` | Some old-generation pods are running their serving container while others are not; the rollout defers to protect in-flight work on the running pods |
+| `True` | `IdleCheckFailed` | The controller could not reach or parse the idle signal (network error, non-200 response) for a replica whose serving container is running, or when no old pod is listed and the endpoint is the only evidence, or for a not-running replica's endpoint while another old pod is running |
+| `True` | `IdleCheckUnsupported` | The selected runtime does not implement idle detection, or `generic` without the `idle-endpoint` annotation. The rollout stays held while any old pod's serving container is running, and when no old pod is listed; when old pods exist and none is running its serving container, it proceeds |
 | `False` | `IdleTimeoutExceeded` | The `idleTimeoutSeconds` budget expired; rollout proceeded despite busy pods |
 
-The rollout eventually proceeds in one of three ways: when idle is confirmed, when the `idleTimeoutSeconds` budget expires, or when `force: true` bypasses the check. The timeout is a safety valve — it prevents an endlessly stuck rollout if a runtime hangs in a permanently busy state.
+The rollout eventually proceeds in one of four ways: when idle is confirmed, when no old pod's serving container is running, when the `idleTimeoutSeconds` budget expires, or when `force: true` bypasses the check. The timeout is a safety valve — it prevents an endlessly stuck rollout if a runtime hangs in a permanently busy state.
 
 ## Observability
 

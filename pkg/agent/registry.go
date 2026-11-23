@@ -53,6 +53,11 @@ const labelServiceName = "kubernetes.io/service-name"
 // InferenceService it serves.
 const labelInferenceService = "llmkube.ai/inference-service"
 
+// endpointSliceManager is the endpointslice.kubernetes.io/managed-by value on
+// the agent's slices, so tools that group slices by their manager can tell
+// them apart from slices the EndpointSlice controller owns.
+const endpointSliceManager = "metal-agent.llmkube.ai"
+
 const (
 	managedByLabel = inferencev1alpha1.LabelManagedBy
 	managedByValue = inferencev1alpha1.ManagedByMetalAgent
@@ -308,7 +313,7 @@ func sliceWithdrawnRecently(slice *discoveryv1.EndpointSlice, now time.Time) boo
 // next successful ensureProcess re-registers it Ready (#1918).
 //
 // owns is the agent's ownership predicate (the watcher's allowlist + metal
-// check, #524), so a multi-Mac partition never touches a sibling agent's
+// check, #524), so a multi-host partition never touches a sibling agent's
 // slices. Services whose InferenceService is gone are left to
 // ReconcileOrphanEndpoints. Per-object errors are logged and skipped.
 func (r *ServiceRegistry) WithdrawOwnedEndpoints(
@@ -483,6 +488,7 @@ func (r *ServiceRegistry) upsertEndpoint(
 		}
 		slice.Labels = map[string]string{
 			labelServiceName:               serviceName,
+			discoveryv1.LabelManagedBy:     endpointSliceManager,
 			"app":                          isvc.Name,
 			managedByLabel:                 managedByValue,
 			"llmkube.ai/inference-service": isvc.Name,
@@ -524,13 +530,10 @@ func (r *ServiceRegistry) upsertEndpoint(
 		// host-IP source could return an FQDN, this must branch on the
 		// address shape.
 		slice.AddressType = discoveryv1.AddressTypeIPv4
+		// No TargetRef: the endpoint is the Mac host, not a Pod in the cluster.
 		slice.Endpoints = []discoveryv1.Endpoint{{
 			Addresses:  []string{hostIP},
 			Conditions: discoveryv1.EndpointConditions{Ready: ptr.To(ready)},
-			TargetRef: &corev1.ObjectReference{
-				Kind: "Pod",
-				Name: fmt.Sprintf("%s-metal", isvc.Name),
-			},
 		}}
 		slice.Ports = []discoveryv1.EndpointPort{{
 			Name:     ptr.To(portName),

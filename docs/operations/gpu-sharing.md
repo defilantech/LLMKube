@@ -276,8 +276,9 @@ autoscaled member is fixed. A pool that also has a missing member reports
 
 Removing a member from `spec.members` takes effect on the next reconcile. If the
 member that left was the resident, status stops naming it in that same pass, and
-the slot resolves the way a cold pool resolves it. A swap already in flight
-continues first. Otherwise, when no remaining member is scaled up, `spec.default`
+the slot resolves the way a cold pool resolves it. A member the router is
+holding a request for takes the slot first, then a swap already in flight
+continues. Otherwise, when no remaining member is scaled up, `spec.default`
 warms if it names one, and the pool stays cold if it does not. When members are
 scaled up, `spec.default` takes the slot if it is one of them, else the first
 scaled-up member in declaration order.
@@ -344,6 +345,13 @@ Two edits belong in the same apply:
 `swapPolicy: sticky` (the default) keeps the incumbent until a *different* member
 is requested.
 
+When requests for two members arrive together, the router serves them in turns
+rather than letting them take the slot from each other. A swap away from the
+incumbent starts only when it has no requests in flight and none waiting for
+it, so right after a swap the requests that waited for it are served before the
+slot moves again. Until then a request for the other member is held, or, with
+`poolActivation: IfIdle` (below), sent to the warm member.
+
 One consequence surprises operators, so it is worth stating plainly: **editing
 `spec.default` on a warm sticky pool does not move the slot.** `default` names the
 member to warm on a *cold* pool, before anything has picked an owner. Once a
@@ -385,6 +393,18 @@ A request for the resident can arrive after the reclaim has started draining it,
 before the default is up. The router then scales the resident back up, and that
 cancels the reclaim. The resident keeps the slot, and its idle clock starts over.
 
+A request for another member can arrive while the pool is loading the default,
+after a reclaim or to warm a cold pool. That member takes the slot: the default
+stops loading, and the requested member loads once the default's Pods are gone.
+The pool gives the slot to the member the router last scaled up, which it reads
+from the member's `spec.replicas` field manager: the router writes it as
+`llmkube-router-proxy`, and the pool as `llmkube-modelpool`. A scale-up by any
+other field manager, such as a GitOps tool, does not take the slot from a member
+the pool is already loading; otherwise it is a request for the slot like any
+other (see "GitOps" above). A pooled ModelRouter runs one proxy replica, so its scale-ups
+come one at a time; with several ModelRouters in front of one pool, the latest
+scale-up wins and the other router's request waits out `spec.swapBudget`.
+
 To tell this re-activation apart from the resident simply staying up, the pool
 marks every member it scales to zero with the annotation
 `inference.llmkube.dev/modelpool-drained: "true"`, and removes the mark when it
@@ -420,6 +440,45 @@ would have forwarded to. Those are drained. A member that does not report
 probe failure that could still hide in-flight work, a timeout, a non-200
 response, an absent idle endpoint, or a refusal among two or more running Pods,
 still fails closed and defers the swap, as does a member the probe reports busy.
+
+`reclaim` needs a `default` to return the slot to. With no `default` it behaves
+exactly like `sticky`: the last member to be requested stays resident.
+
+### Releasing the slot when the pool is idle: `swapPolicy: reclaim-down`
+
+On a small or capacity-constrained cluster the pool's GPU is often wanted by
+other workloads between bursts. `swapPolicy: reclaim-down` releases the slot
+once the resident member has been continuously idle for `spec.reclaimAfter`:
+the resident is drained like any displaced incumbent, every member sits at zero
+replicas, and the pool reports `Pending` with no resident. The next request the
+router sends to any member activates it as on a cold pool.
+
+```yaml
+apiVersion: inference.llmkube.dev/v1alpha1
+kind: ModelPool
+spec:
+  swapPolicy: reclaim-down
+  reclaimAfter: 10m         # idle grace before every member is scaled to zero
+  members:
+    - inferenceServiceRef: { name: glimmer }
+    - inferenceServiceRef: { name: coder }
+```
+
+`reclaim-down` is an explicit opt-in. A `reclaim` pool with no `default` is not
+released, so existing pools keep their resident across an upgrade.
+
+`reclaim-down` cannot be combined with `spec.default`, and the API server
+rejects a pool that sets both: the default is warmed on a cold pool, so it would
+load straight back into the slot the pool just released. Use `reclaim` to keep a
+background default resident at rest.
+
+The idle clock, the busy guard, the fail-closed probe and the sizing advice for
+`reclaimAfter` are the same as for `reclaim`. Each release adds one to
+`llmkube_modelpool_reclaims_total` with an empty `to` label, counted when the
+resident is actually drained: a release the drain defers because the resident
+turned busy is not counted until a later pass carries it out. The price of a
+release is a cold load on the next request, so the router holds that request for
+up to `swapBudget` while the member starts.
 
 ### Serving on the warm member instead of waiting: `poolActivation: IfIdle`
 
@@ -457,7 +516,8 @@ basename for oMLX; otherwise the InferenceService name) rather than the alias
 the client asked for, so a runtime that validates the field accepts it instead
 of answering `404 The model ... does not exist`.
 
-"Busy" means requests the proxy itself is tracking. Traffic that reaches a
+"Busy" means requests the proxy itself is tracking: in flight on the member, or
+waiting for it, as right after a swap made it resident. Traffic that reaches a
 member's Service directly, bypassing the router, is invisible to this check
 (the controller's `/slots` drain still protects it at swap time). Route all
 pool traffic through the router if you rely on `IfIdle`. Skips are counted in
@@ -736,6 +796,59 @@ remember that shared-mode services must then declare a matching
 toleration in `spec.tolerations` (the operator's automatic GPU
 toleration covers only the device resource taint, not custom pool
 taints).
+
+## Running under KAI Scheduler
+
+`gpuSharing` decides how a service consumes its GPU; a scheduler decides who
+gets a GPU when demand exceeds what the cluster has. On a cluster that shares
+a GPU fleet between teams with
+[KAI Scheduler](https://github.com/kai-scheduler/KAI-Scheduler), KAI's queues
+do that fair sharing. KAI's documented opt-in is the queue label plus the
+`schedulerName` Pod field, and an InferenceService exposes both:
+
+```yaml
+apiVersion: inference.llmkube.dev/v1alpha1
+kind: InferenceService
+metadata:
+  name: coder
+  namespace: team-a
+spec:
+  modelRef: qwen-coder
+  schedulerName: kai-scheduler
+  podLabels:
+    kai.scheduler/queue: team-a
+  resources:
+    gpu: 1
+```
+
+`spec.schedulerName` is validated when the InferenceService is admitted: a
+value that is not a DNS-1123 subdomain is rejected on the InferenceService
+instead of leaving the serving Pods unschedulable. Unset, the default
+scheduler places the Pods, as before.
+
+The field reaches the serving Pods and nothing else:
+
+- The model download and cache-prep init containers run inside the serving
+  Pod, so they are placed with it.
+- The model prefetch and file-listing Jobs, the ModelRouter proxy and the
+  metal relay Deployment stay on the default scheduler. They are CPU work, and
+  a queue sized for GPUs should not hold them back.
+- A Metal service's inference process runs on the agent, outside any Pod.
+- `spec.multiNode` member Pods carry the field, because they are specialised
+  from the same Pod template, but each member is pinned to its node with
+  `spec.nodeName`, which bypasses the scheduler. Gang scheduling of a member
+  group is not implemented.
+
+### KAI queues and GPUQuota
+
+GPUQuota admission does not defer to KAI. Only the
+`kueue.x-k8s.io/queue-name` label skips it (see
+[GPUQuota and Kueue](../kueue-integration.md#gpuquota-and-kueue));
+`spec.schedulerName` does not. With the GPUQuota webhook enabled
+(`multitenancy.enabled`), a service in a namespace with an applicable GPUQuota
+is admitted against that quota whatever its scheduler, so a GPUQuota can deny
+it even when its KAI queue has room. If you size queues in KAI for GPU quota,
+do not also scope a GPUQuota to the same namespaces.
 
 ## AMD APU (unified-memory iGPU) note
 

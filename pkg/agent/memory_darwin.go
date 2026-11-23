@@ -164,3 +164,6 @@ func parseVMStatValue(line string) uint64 {
 	val, _ := strconv.ParseUint(valStr, 10, 64)
 	return val
 }
+
+// NewHostMemoryProvider returns the MemoryProvider for this OS.
+func NewHostMemoryProvider() MemoryProvider { return &DarwinMemoryProvider{} }

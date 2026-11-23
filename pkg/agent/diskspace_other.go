@@ -1,4 +1,4 @@
-//go:build darwin
+//go:build !unix
 
 /*
 Copyright 2026.
@@ -16,20 +16,12 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package selfupdate
+package agent
 
-import (
-	"fmt"
-	"os"
-	"path/filepath"
-)
+import "errors"
 
-// resolveInstallRoot returns ~/Library/Application Support/llmkube/<binaryName>
-// on macOS. The directory is user-owned; no root access is required.
-func resolveInstallRoot(binaryName string) (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", fmt.Errorf("resolve home dir: %w", err)
-	}
-	return filepath.Join(home, "Library", "Application Support", "llmkube", binaryName), nil
+// filesystemFreeBytes is not implemented off Unix; the download preflight
+// treats the answer as unknown and lets the download proceed.
+func filesystemFreeBytes(string) (uint64, error) {
+	return 0, errors.New("free space is not available on this platform")
 }

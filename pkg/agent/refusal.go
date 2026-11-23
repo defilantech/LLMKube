@@ -39,14 +39,35 @@ import (
 // the controller did not recognize: it cleared the status every poll and the
 // agent refused again every poll, in a loop.
 const (
-	EventReasonEndpointNameConflict   = inferencev1alpha1.ReasonEndpointNameConflict
-	EventReasonModelSourceNotAllowed  = inferencev1alpha1.ReasonModelSourceNotAllowed
-	EventReasonExtraArgsRejected      = inferencev1alpha1.ReasonExtraArgsRejected
-	EventReasonServiceNameTooLong     = inferencev1alpha1.ReasonServiceNameTooLong
-	EventReasonModelDigestMismatch    = inferencev1alpha1.ReasonModelDigestMismatch
-	EventReasonModelDownloadTooLarge  = inferencev1alpha1.ReasonModelDownloadTooLarge
-	EventReasonSourceSecretNotAllowed = inferencev1alpha1.ReasonSourceSecretNotAllowed
+	EventReasonEndpointNameConflict     = inferencev1alpha1.ReasonEndpointNameConflict
+	EventReasonModelSourceNotAllowed    = inferencev1alpha1.ReasonModelSourceNotAllowed
+	EventReasonExtraArgsRejected        = inferencev1alpha1.ReasonExtraArgsRejected
+	EventReasonServiceNameTooLong       = inferencev1alpha1.ReasonServiceNameTooLong
+	EventReasonModelDigestMismatch      = inferencev1alpha1.ReasonModelDigestMismatch
+	EventReasonModelDownloadTooLarge    = inferencev1alpha1.ReasonModelDownloadTooLarge
+	EventReasonModelDownloadNoSpace     = inferencev1alpha1.ReasonModelDownloadNoSpace
+	EventReasonSourceSecretNotAllowed   = inferencev1alpha1.ReasonSourceSecretNotAllowed
+	EventReasonRuntimeNotAvailable      = inferencev1alpha1.ReasonRuntimeNotAvailable
+	EventReasonRuntimeCannotServeSource = inferencev1alpha1.ReasonRuntimeCannotServeSource
 )
+
+// runtimeNotAvailableMessage is the refusal message for an InferenceService
+// whose resolved runtime has no registered executor.
+func runtimeNotAvailableMessage(goos, runtime string) string {
+	if goos != "darwin" && inferencev1alpha1.IsMacOSOnlyRuntime(runtime) {
+		return fmt.Sprintf("no executor registered for runtime %q: it runs only on macOS with Apple Silicon; "+
+			"set spec.runtime to an engine this agent serves on %s (llamacpp or ollama)", runtime, goos)
+	}
+	if runtime == runtimeLlamaServer || runtime == runtimeLlamaCPP {
+		return fmt.Sprintf("no executor registered for runtime %q: this agent has no llama.cpp executor because "+
+			"llama-server was not found when it started; install llama.cpp or pass "+
+			"--llama-server=/path/to/llama-server and restart the agent, or set spec.runtime to an engine "+
+			"this agent serves", runtime)
+	}
+	return fmt.Sprintf("no executor registered for runtime %q: this agent was started without that engine; "+
+		"install it, pass its binary flag or select it with --runtime, and restart the agent, or set "+
+		"spec.runtime to an engine this agent serves", runtime)
+}
 
 // refuseStart records why the agent will not serve an InferenceService: it
 // writes the agent-owned scheduling status fields (the same surface memory
@@ -85,11 +106,17 @@ func (a *MetalAgent) refuseStart(
 // slot that appeared after checkModelCacheSlot ran) is refused the same way
 // as ModelSourceNotAllowed. A *SourceSecretNotAllowedError (a sourceSecretRef
 // Secret that lost its marker or was deleted after checkSourceSecret ran) is
-// refused as SourceSecretNotAllowed. Every other StartProcess failure
-// (network error, bad status, truncated download, health-check timeout, ...)
-// keeps the historical plain-wrapped-error, log-only behavior. Split out of
-// reconcileProcess, rather than inlined as an extra branch there, to keep its
-// cyclomatic complexity from crossing the linter's threshold.
+// refused as SourceSecretNotAllowed. A transient failure to read the
+// sourceSecretRef Secret is retried on the next poll. A
+// *ModelDownloadNoSpaceError (a model store without room for the download,
+// checked before it or hit during it) is refused as ModelDownloadNoSpace and
+// deliberately not memoized: freeing disk writes nothing to the cluster, so
+// the refusal re-check is what retries it (#2409). Every other StartProcess
+// failure (an engine that exits while loading, a download that fails on a bad
+// status, a health-check timeout, ...) is not a refusal: it is reported as
+// StartFailed and retried on the restart backoff (failStart, #2404). Split
+// out of reconcileProcess, rather than inlined as an extra branch there, to
+// keep its cyclomatic complexity from crossing the linter's threshold.
 func (a *MetalAgent) handleStartProcessError(
 	ctx context.Context, isvc *inferencev1alpha1.InferenceService, model *inferencev1alpha1.Model, startErr error,
 ) error {
@@ -109,6 +136,12 @@ func (a *MetalAgent) handleStartProcessError(
 		)
 		return a.refuseStart(ctx, isvc, EventReasonModelDownloadTooLarge, tooLargeErr.Error())
 	}
+	// Not memoized: freeing disk space writes nothing to the cluster, so the
+	// refusal re-check (publishRefusal) is what retries it.
+	var noSpaceErr *ModelDownloadNoSpaceError
+	if errors.As(startErr, &noSpaceErr) {
+		return a.refuseStart(ctx, isvc, EventReasonModelDownloadNoSpace, noSpaceErr.Error())
+	}
 	var slotErr *ModelCacheEntryNotRegularError
 	if errors.As(startErr, &slotErr) {
 		return a.refuseStart(ctx, isvc, EventReasonModelSourceNotAllowed, slotErr.Error())
@@ -117,18 +150,20 @@ func (a *MetalAgent) handleStartProcessError(
 	if errors.As(startErr, &secretErr) {
 		return a.refuseStart(ctx, isvc, EventReasonSourceSecretNotAllowed, secretErr.Error())
 	}
-	if errors.Is(startErr, errEngineRecordWrite) {
-		a.emitInferenceEvent(ctx, &ManagedProcess{Namespace: isvc.Namespace, Name: isvc.Name},
-			corev1.EventTypeWarning, EventReasonEngineRecordFailed, "Start failed: %v", startErr)
-	}
 	// A download that could not read its sourceSecretRef has not fetched
-	// anything yet, so retrying the start costs one more read. Any other
-	// failure is not requeued even when it may be transient: a retry would
-	// download or load the model again every poll.
+	// anything yet, so retrying the start on the next poll costs one more
+	// read. Any other failure is retried on the restart backoff instead: a
+	// retry may download or load the model again.
 	var readErr *sourceSecretReadError
 	if errors.As(startErr, &readErr) {
 		a.requeue(types.NamespacedName{Namespace: isvc.Namespace, Name: isvc.Name}.String())
+		return fmt.Errorf("failed to start process: %w", startErr)
 	}
+	eventReason := EventReasonStartFailed
+	if errors.Is(startErr, errEngineRecordWrite) {
+		eventReason = EventReasonEngineRecordFailed
+	}
+	a.failStart(ctx, isvc, startErr, eventReason)
 	return fmt.Errorf("failed to start process: %w", startErr)
 }
 

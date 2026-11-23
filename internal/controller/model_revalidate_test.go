@@ -106,6 +106,127 @@ var _ = Describe("Model source revalidation", func() {
 		})
 	})
 
+	// The controller never downloads a remote source: the serving pod's
+	// model-downloader init container does, after the Model is already Ready.
+	// The drift check compares the upstream with the fingerprint the
+	// controller recorded, so its condition must not claim a cached copy that
+	// may not exist yet (#2415).
+	Context("workload-resolved remote source", func() {
+		It("reports the recorded fingerprint, not a cached copy", func() {
+			etag := `"v1"`
+			length := 100
+			server := newHeadServer(&etag, &length)
+			defer server.Close()
+
+			tempDir, err := os.MkdirTemp("", "llmkube-test-*")
+			Expect(err).NotTo(HaveOccurred())
+			defer func() { _ = os.RemoveAll(tempDir) }()
+
+			source := server.URL + "/model.gguf"
+			modelName := "revalidate-workload-honest"
+			model := &inferencev1alpha1.Model{
+				ObjectMeta: metav1.ObjectMeta{Name: modelName, Namespace: "default"},
+				Spec:       inferencev1alpha1.ModelSpec{Source: source, RefreshPolicy: RefreshPolicyIfNotPresent},
+			}
+			Expect(k8sClient.Create(ctx, model)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, model) }()
+
+			reconciler := &ModelReconciler{
+				Client: k8sClient, Scheme: k8sClient.Scheme(),
+				StoragePath: tempDir, RevalidateInterval: time.Nanosecond,
+				AllowedHostPathRoots: testLocalRoots,
+				AllowedRemoteHosts:   testRemoteHosts,
+			}
+			req := reconcile.Request{NamespacedName: types.NamespacedName{Name: modelName, Namespace: "default"}}
+
+			// Ready first, then the baseline: the order a first deploy sees,
+			// with the pod's download still to come.
+			_, err = reconciler.Reconcile(ctx, req)
+			Expect(err).NotTo(HaveOccurred())
+			_, err = reconciler.Reconcile(ctx, req)
+			Expect(err).NotTo(HaveOccurred())
+
+			baselined := &inferencev1alpha1.Model{}
+			Expect(k8sClient.Get(ctx, req.NamespacedName, baselined)).To(Succeed())
+			Expect(baselined.Status.Phase).To(Equal(PhaseReady), "the Model must still go Ready before the download")
+			Expect(baselined.Status.Path).To(BeEmpty())
+			inSync := sourceDriftedCondition(baselined)
+			Expect(inSync).NotTo(BeNil())
+			Expect(inSync.Status).To(Equal(metav1.ConditionFalse))
+			Expect(inSync.Reason).To(Equal("UpstreamUnchanged"))
+			Expect(inSync.Message).To(ContainSubstring("does not cache"))
+			Expect(inSync.Message).NotTo(ContainSubstring("Cached model"))
+
+			// An upstream re-upload is drift against the recorded fingerprint;
+			// there is no controller-side copy for it to differ from.
+			etag = `"v2"`
+			_, err = reconciler.Reconcile(ctx, req)
+			Expect(err).NotTo(HaveOccurred())
+			drifted := &inferencev1alpha1.Model{}
+			Expect(k8sClient.Get(ctx, req.NamespacedName, drifted)).To(Succeed())
+			changed := sourceDriftedCondition(drifted)
+			Expect(changed).NotTo(BeNil())
+			Expect(changed.Status).To(Equal(metav1.ConditionTrue))
+			Expect(changed.Reason).To(Equal("UpstreamChanged"))
+			Expect(changed.Message).To(ContainSubstring("fingerprint"))
+			Expect(changed.Message).NotTo(ContainSubstring("cached copy"))
+		})
+
+		It("rewrites a cached-copy claim an older operator wrote", func() {
+			etag := `"v1"`
+			length := 100
+			server := newHeadServer(&etag, &length)
+			defer server.Close()
+
+			tempDir, err := os.MkdirTemp("", "llmkube-test-*")
+			Expect(err).NotTo(HaveOccurred())
+			defer func() { _ = os.RemoveAll(tempDir) }()
+
+			source := server.URL + "/model.gguf"
+			modelName := "revalidate-workload-upgrade"
+			model := &inferencev1alpha1.Model{
+				ObjectMeta: metav1.ObjectMeta{Name: modelName, Namespace: "default"},
+				Spec:       inferencev1alpha1.ModelSpec{Source: source},
+			}
+			Expect(k8sClient.Create(ctx, model)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, model) }()
+
+			// The status an older operator left: Ready, baselined, and
+			// SourceDrifted=False claiming a cached copy.
+			transitioned := metav1.NewTime(time.Now().Add(-time.Hour).Truncate(time.Second))
+			model.Status.Phase = PhaseReady
+			model.Status.CacheKey = computeCacheKey(source)
+			model.Status.SourceETag = `"v1"`
+			model.Status.SourceContentLength = 100
+			model.Status.Conditions = []metav1.Condition{{
+				Type: ConditionSourceDrifted, Status: metav1.ConditionFalse,
+				Reason: "InSync", Message: "Cached model matches the upstream source",
+				LastTransitionTime: transitioned,
+			}}
+			Expect(k8sClient.Status().Update(ctx, model)).To(Succeed())
+
+			reconciler := &ModelReconciler{
+				Client: k8sClient, Scheme: k8sClient.Scheme(),
+				StoragePath: tempDir, RevalidateInterval: time.Nanosecond,
+				AllowedHostPathRoots: testLocalRoots,
+				AllowedRemoteHosts:   testRemoteHosts,
+			}
+			req := reconcile.Request{NamespacedName: types.NamespacedName{Name: modelName, Namespace: "default"}}
+			_, err = reconciler.Reconcile(ctx, req)
+			Expect(err).NotTo(HaveOccurred())
+
+			updated := &inferencev1alpha1.Model{}
+			Expect(k8sClient.Get(ctx, req.NamespacedName, updated)).To(Succeed())
+			cond := sourceDriftedCondition(updated)
+			Expect(cond).NotTo(BeNil())
+			Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+			Expect(cond.Reason).To(Equal("UpstreamUnchanged"))
+			Expect(cond.Message).NotTo(ContainSubstring("Cached model"))
+			// The status did not change, so neither does the transition time.
+			Expect(cond.LastTransitionTime.Time).To(BeTemporally("==", transitioned.Time))
+		})
+	})
+
 	Context("OnChange policy on a controller-managed local source", func() {
 		It("re-downloads (overwrites) when the upstream file changes and clears drift", func() {
 			tempDir, err := os.MkdirTemp("", "llmkube-test-*")
@@ -162,6 +283,9 @@ var _ = Describe("Model source revalidation", func() {
 				"OnChange must overwrite the cached file with the new upstream bytes")
 			Expect(sourceDriftedStatus(updated)).To(Equal(metav1.ConditionFalse),
 				"drift must clear after a successful re-download")
+			// The controller holds this copy itself, so it may say it matches.
+			Expect(sourceDriftedCondition(updated).Reason).To(Equal("InSync"))
+			Expect(sourceDriftedCondition(updated).Message).To(Equal("Cached model matches the upstream source"))
 		})
 	})
 
@@ -327,4 +451,13 @@ func sourceDriftedStatus(model *inferencev1alpha1.Model) metav1.ConditionStatus 
 		}
 	}
 	return metav1.ConditionUnknown
+}
+
+func sourceDriftedCondition(model *inferencev1alpha1.Model) *metav1.Condition {
+	for i := range model.Status.Conditions {
+		if model.Status.Conditions[i].Type == ConditionSourceDrifted {
+			return &model.Status.Conditions[i]
+		}
+	}
+	return nil
 }

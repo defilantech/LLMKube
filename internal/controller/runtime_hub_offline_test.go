@@ -375,7 +375,7 @@ func TestHubOfflineEnvReachesMultiNodeMembers(t *testing.T) {
 	tmpl := r.constructDeploymentForCache(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "").Spec.Template
 	mnb := resolveBackend(isvc).(MultiNodeArgsBuilder)
 	for rank, member := range isvc.Spec.MultiNode.Members {
-		pod := memberPodFromTemplate(tmpl, isvc, member, int32(rank), mnb) //nolint:gosec // G115: two members
+		pod := memberPodFromTemplate(tmpl, isvc, member, int32(rank), mnb, "") //nolint:gosec // G115: two members
 		env := pod.Spec.Containers[0].Env
 		for _, name := range []string{"HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE"} {
 			if got := envValue(env, name); got != "1" {

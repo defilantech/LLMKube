@@ -23,6 +23,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/events"
@@ -57,7 +58,12 @@ const (
 	// SpecInvalid only when that is the spec's sole problem.
 	ModelRouterReasonClassifierNotImplemented = "ClassifierNotImplemented"
 	ModelRouterReasonCompileFailed            = "CompileFailed"
-	ModelRouterReasonReconcileFailed          = "ReconcileFailed"
+	// ModelRouterReasonBackendResolutionFailed marks a router whose backend set
+	// could not be resolved from cluster state: a ref-less spec.backends entry
+	// names no InferenceService spec.backendSelector selects, or the selector
+	// selects nothing while spec.backends is empty.
+	ModelRouterReasonBackendResolutionFailed = "BackendResolutionFailed"
+	ModelRouterReasonReconcileFailed         = "ReconcileFailed"
 	// ModelRouterReasonRouterProxyNameTaken marks a router whose generated
 	// router-proxy name is held by an object LLMKube did not create (any of
 	// the seven proxy objects: ConfigMap, Deployment, both Services,
@@ -171,16 +177,19 @@ func (r *ModelRouterReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 
 	compiled, err := r.compileRouterConfig(ctx, mr)
 	if err != nil {
+		if resErr, ok := err.(*routerResolutionError); ok {
+			return ctrl.Result{}, r.recordResolutionFailure(ctx, mr, resErr.errs)
+		}
 		return ctrl.Result{}, r.recordCompileFailure(ctx, mr, err)
 	}
 
 	if err := r.reconcileRouterConfigMap(ctx, mr, compiled); err != nil {
 		return r.recordReconcileFailure(ctx, mr, compiled, "ConfigMap", err)
 	}
-	if err := r.reconcileRouterActivationRBAC(ctx, mr, compiled.HasPools); err != nil {
+	if err := r.reconcileRouterActivationRBAC(ctx, mr, compiled); err != nil {
 		return r.recordReconcileFailure(ctx, mr, compiled, "ActivationRBAC", err)
 	}
-	if err := r.reconcileRouterDeployment(ctx, mr, compiled.Hash, compiled.HasPools); err != nil {
+	if err := r.reconcileRouterDeployment(ctx, mr, compiled); err != nil {
 		return r.recordReconcileFailure(ctx, mr, compiled, "Deployment", err)
 	}
 	if err := r.reconcileRouterService(ctx, mr); err != nil {
@@ -304,6 +313,38 @@ func (r *ModelRouterReconciler) recordValidationFailure(
 		Status:  metav1.ConditionFalse,
 		Reason:  validationFailureReason(valErrors),
 		Message: formatValidationErrors(valErrors),
+	})
+	desired.Status.Phase = PhaseFailed
+	desired.Status.ActiveRules = 0
+	desired.Status.Backends = nil
+	return r.patchStatus(ctx, mr, desired)
+}
+
+// recordResolutionFailure writes the resolution-failed branch: a backend the
+// selector resolved (or an overlay entry the selector no longer matches)
+// cannot be compiled. Cluster state, not the spec, decides this failure, so
+// it can appear on a router that was Ready; Available is cleared or the status
+// would describe a config that no longer matches the cluster.
+func (r *ModelRouterReconciler) recordResolutionFailure(
+	ctx context.Context,
+	mr *inferencev1alpha1.ModelRouter,
+	errs []ModelRouterValidationError,
+) error {
+	desired := mr.DeepCopy()
+	now := metav1.Now()
+	desired.Status.LastUpdated = &now
+	message := formatValidationErrors(errs)
+	apimeta.SetStatusCondition(&desired.Status.Conditions, metav1.Condition{
+		Type:    ModelRouterConditionValidated,
+		Status:  metav1.ConditionFalse,
+		Reason:  ModelRouterReasonBackendResolutionFailed,
+		Message: message,
+	})
+	apimeta.SetStatusCondition(&desired.Status.Conditions, metav1.Condition{
+		Type:    ConditionAvailable,
+		Status:  metav1.ConditionFalse,
+		Reason:  ModelRouterReasonCompileFailed,
+		Message: message,
 	})
 	desired.Status.Phase = PhaseFailed
 	desired.Status.ActiveRules = 0
@@ -613,11 +654,17 @@ func (r *ModelRouterReconciler) findModelRoutersForEndpointSlice(ctx context.Con
 }
 
 // routerHasEndpointBackend reports whether any of the router's local backends
-// resolves to pod endpoints rather than the Service DNS name.
+// resolves to pod endpoints rather than the Service DNS name. A ref-less entry
+// that sets resolution: endpoint counts when a backendSelector is set: the
+// selector gives it an InferenceServiceRef, and its resolution carries into the
+// merge.
 func routerHasEndpointBackend(mr *inferencev1alpha1.ModelRouter) bool {
 	for i := range mr.Spec.Backends {
 		b := &mr.Spec.Backends[i]
-		if b.InferenceServiceRef != nil && b.Resolution == inferencev1alpha1.RouterBackendResolutionEndpoint {
+		if b.External != nil || b.Resolution != inferencev1alpha1.RouterBackendResolutionEndpoint {
+			continue
+		}
+		if b.InferenceServiceRef != nil || mr.Spec.BackendSelector != nil {
 			return true
 		}
 	}
@@ -640,6 +687,12 @@ func (r *ModelRouterReconciler) findModelRoutersForModelPool(ctx context.Context
 	var requests []reconcile.Request
 	for i := range routerList.Items {
 		mr := &routerList.Items[i]
+		if mr.Spec.BackendSelector != nil {
+			requests = append(requests, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: mr.Name, Namespace: mr.Namespace},
+			})
+			continue
+		}
 		for _, m := range pool.Spec.Members {
 			if routerReferencesInferenceService(mr, m.InferenceServiceRef.Name) {
 				requests = append(requests, reconcile.Request{
@@ -654,7 +707,12 @@ func (r *ModelRouterReconciler) findModelRoutersForModelPool(ctx context.Context
 
 // findModelRoutersForInferenceService returns reconcile requests for every
 // ModelRouter in the same namespace that references the given
-// InferenceService by name. Mirrors the pattern used by
+// InferenceService by name, plus every router whose backendSelector matches
+// the event object's labels. controller-runtime runs the map function on both
+// the old and the new object of an update, so a removed label still reaches a
+// selector router through the old object. A selector that does not parse
+// enqueues it too, so the reconcile can report the error.
+// Mirrors the pattern used by
 // InferenceServiceReconciler.findInferenceServicesForModel.
 func (r *ModelRouterReconciler) findModelRoutersForInferenceService(ctx context.Context, obj client.Object) []reconcile.Request {
 	isvc, ok := obj.(*inferencev1alpha1.InferenceService)
@@ -669,7 +727,7 @@ func (r *ModelRouterReconciler) findModelRoutersForInferenceService(ctx context.
 
 	var requests []reconcile.Request
 	for _, mr := range routerList.Items {
-		if routerReferencesInferenceService(&mr, isvc.Name) {
+		if routerSelectorMatchesLabels(&mr, isvc.Labels) || routerReferencesInferenceService(&mr, isvc.Name) {
 			requests = append(requests, reconcile.Request{
 				NamespacedName: types.NamespacedName{
 					Name:      mr.Name,
@@ -679,6 +737,20 @@ func (r *ModelRouterReconciler) findModelRoutersForInferenceService(ctx context.
 		}
 	}
 	return requests
+}
+
+// routerSelectorMatchesLabels reports whether the router's spec.backendSelector
+// selects an object carrying the given labels. A selector that does not parse
+// matches, so the router reconciles and reports the parse error.
+func routerSelectorMatchesLabels(mr *inferencev1alpha1.ModelRouter, objLabels map[string]string) bool {
+	if mr.Spec.BackendSelector == nil {
+		return false
+	}
+	selector, err := metav1.LabelSelectorAsSelector(mr.Spec.BackendSelector)
+	if err != nil {
+		return true
+	}
+	return selector.Matches(labels.Set(objLabels))
 }
 
 // routerReferencesInferenceService reports whether the router has a backend

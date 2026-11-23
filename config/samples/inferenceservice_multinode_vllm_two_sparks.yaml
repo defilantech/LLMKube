@@ -57,14 +57,14 @@ spec:
     rdmaResource: rdma/rdma_shared_device_a
     ibGIDIndex: 3
     members:
-      - node: ahazidgx3
+      - node: spark-3
         fabric:
           address: 10.10.4.1
           socketInterface: enp1s0f0np0
           ibHCA: rocep1s0f0
         modelCache:
           claimName: dsv4-vision-dgx3
-      - node: ahazidgx1
+      - node: spark-1
         fabric:
           address: 10.10.4.2
           socketInterface: enp1s0f1np1

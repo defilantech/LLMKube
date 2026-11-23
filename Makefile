@@ -1,5 +1,5 @@
 # Image URL to use all building/pushing image targets
-IMG ?= ghcr.io/defilantech/llmkube-controller:0.10.17 # x-release-please-version
+IMG ?= ghcr.io/defilantech/llmkube-controller:0.10.19 # x-release-please-version
 
 # Get the currently used golang install path (in GOPATH/bin, unless GOBIN is set)
 ifeq (,$(shell go env GOBIN))
@@ -110,6 +110,29 @@ check-reviewer-prompts: ## Drift-check: fail if any reviewer Agent's systemPromp
 check-agents-md: ## Drift-check: fail if any make target, repo path, or Go version AGENTS.md references no longer resolves.
 	@go run ./cmd/check-agents-md --check
 
+.PHONY: docs-reference
+docs-reference: ## Regenerate the CLI, Helm values, metrics and CRD reference pages in docs/site/reference.
+	@go run ./cmd/gen-reference-docs
+
+# Every page the generator writes is compared, so a page added to it is checked
+# without editing this target. A page in the directory that the generator does
+# not write, such as one it stopped generating, fails the check too.
+.PHONY: check-docs-reference
+check-docs-reference: ## Drift-check: fail if any generated page in docs/site/reference differs from what make docs-reference writes.
+	@tmp=$$(mktemp -d); trap 'rm -rf "$$tmp"' EXIT; \
+	go run ./cmd/gen-reference-docs -out "$$tmp"; \
+	status=0; \
+	for f in "$$tmp"/*.md; do \
+	  diff -u "docs/site/reference/$$(basename "$$f")" "$$f" || status=1; \
+	done; \
+	for f in docs/site/reference/*.md; do \
+	  [ -e "$$tmp/$$(basename "$$f")" ] || { echo "$$f is not written by the generator: delete it, or generate it"; status=1; }; \
+	done; \
+	if [ "$$status" -ne 0 ]; then \
+	  echo "docs/site/reference is out of date: run 'make docs-reference' and commit the result."; \
+	  exit 1; \
+	fi
+
 .PHONY: check-copyright
 check-copyright: ## Fail when a branch adds a Go file whose copyright header is not the year hack/boilerplate.go.txt carries (#2298).
 	@go run ./cmd/check-copyright -base "$(BASE_REF)"
@@ -201,7 +224,8 @@ test-affected: setup-envtest ## Test packages affected by changes since BASE_REF
 # hook that signs the darwin binaries (#2084), and its real-tool case runs only
 # on macOS with rcodesign on PATH; macos-notarize_test.sh and
 # install-rcodesign_test.sh cover the release's notarization step and its
-# pinned rcodesign install. go-mod-download_test.sh covers
+# pinned rcodesign install; install-pinned-tool_test.sh covers the pinned
+# trivy and crane installs of the release workflows. go-mod-download_test.sh covers
 # hack/go-mod-download.sh, the retried module download every CI job and image
 # build runs first (#2380). govulncheck-diff_test.sh and
 # govulncheck-tracking-issue_test.sh cover the Security workflow's verdict
@@ -210,7 +234,7 @@ test-affected: setup-envtest ## Test packages affected by changes since BASE_REF
 # report's package time budgets and its growth list against the last green
 # main run (#2382).
 .PHONY: test-scripts
-test-scripts: ## Run the shell regression tests (gate, test-affected, affected-packages, GINKGO_SEED single evaluation, envtest sharing, test metrics ports, macOS signing and notarization, Go module download retries, govulncheck verdict and tracking issue, CI timing report).
+test-scripts: ## Run the shell regression tests (gate, test-affected, affected-packages, GINKGO_SEED single evaluation, envtest sharing, test metrics ports, macOS signing and notarization, pinned release tools, Go module download retries, govulncheck verdict and tracking issue, CI timing report, docs link check).
 	@bash scripts/gate_test.sh
 	@bash scripts/test-affected_test.sh
 	@bash scripts/affected-packages_test.sh
@@ -220,10 +244,12 @@ test-scripts: ## Run the shell regression tests (gate, test-affected, affected-p
 	@bash scripts/macos-sign_test.sh
 	@bash scripts/macos-notarize_test.sh
 	@bash scripts/install-rcodesign_test.sh
+	@bash scripts/install-pinned-tool_test.sh
 	@bash scripts/go-mod-download_test.sh
 	@bash scripts/govulncheck-diff_test.sh
 	@bash scripts/govulncheck-tracking-issue_test.sh
 	@bash scripts/go-test-report_test.sh
+	@bash scripts/check-docs-links_test.sh
 
 .PHONY: test-chart
 test-chart: ## Lint and unit-test the Helm charts (requires helm + helm-unittest plugin).
@@ -349,6 +375,11 @@ lint-config: golangci-lint ## Verify golangci-lint linter configuration
 lint-deadcode: golangci-lint ## Fail on production code referenced only by its own tests.
 	$(GOLANGCI_LINT) run -c .golangci-deadcode.yml ./...
 
+.PHONY: check-docs-links
+check-docs-links: ## Check docs/site links, anchors and mdsvex-breaking markup the way llmkube.com builds them.
+	@command -v python3 >/dev/null 2>&1 || { echo "ERROR: python3 is required for check-docs-links"; exit 1; }
+	@python3 scripts/check-docs-links.py
+
 .PHONY: validate-samples
 validate-samples: ## Validate config/samples against CRD schemas (catch hallucinated manifests).
 	@command -v python3 >/dev/null 2>&1 || { echo "ERROR: python3 is required for validate-samples"; exit 1; }
@@ -368,6 +399,32 @@ build-cli: fmt vet ## Build llmkube CLI binary.
 .PHONY: install-cli
 install-cli: build-cli ## Install llmkube CLI to /usr/local/bin (requires sudo).
 	sudo cp bin/llmkube /usr/local/bin/llmkube
+
+# Generated at build time and never committed: the tree goes stale with every
+# dependency bump. .goreleaser.yaml ships it in each archive and image (#2564).
+THIRD_PARTY_LICENSES_DIR ?= third_party_licenses
+# The six binaries .goreleaser.yaml builds; one tree covers their union.
+THIRD_PARTY_LICENSES_PKGS ?= ./cmd ./cmd/cli ./cmd/metal-agent ./cmd/router-proxy ./cmd/foreman-agent ./cmd/foreman-operator
+# The windows cli links a module the linux and darwin builds do not (cobra's
+# mousetrap), so every shipped GOOS gets a pass and the trees are merged.
+THIRD_PARTY_LICENSES_GOOS ?= linux darwin windows
+
+.PHONY: third-party-licenses
+third-party-licenses: go-licenses ## Generate the third-party license tree the release archives and images ship.
+	@staging="$(THIRD_PARTY_LICENSES_DIR).tmp"; rm -rf "$$staging"; \
+		trap 'rm -rf "$$staging" $(THIRD_PARTY_LICENSES_DIR).tmp.*' EXIT; \
+		for os in $(THIRD_PARTY_LICENSES_GOOS); do \
+			out="$(THIRD_PARTY_LICENSES_DIR).tmp.$$os"; \
+			rm -rf "$$out"; \
+			echo "Collecting third-party licenses (GOOS=$$os)"; \
+			GOOS=$$os $(GO_LICENSES) save $(THIRD_PARTY_LICENSES_PKGS) \
+				--save_path "$$out" --ignore $$(go list -m) || exit 1; \
+			mkdir -p "$$staging"; \
+			cp -Rf "$$out/." "$$staging/" || exit 1; \
+		done; \
+		rm -rf "$(THIRD_PARTY_LICENSES_DIR)"; \
+		mv "$$staging" "$(THIRD_PARTY_LICENSES_DIR)"
+	@echo "✅ $(THIRD_PARTY_LICENSES_DIR)/ ready"
 
 ##@ Metal Agent (macOS only)
 
@@ -686,6 +743,14 @@ STUB_UPSTREAM_IMG ?= localhost/llmkube-stub-upstream:e2e
 docker-build-stub-upstream: ## Build docker image for the e2e stub upstream.
 	$(CONTAINER_TOOL) build -f test/e2e/stubupstream/Dockerfile -t ${STUB_UPSTREAM_IMG} .
 
+# hailo-ollama built against a fake libhailort that emulates a Hailo-10H.
+# Not published.
+HAILO_SIM_IMG ?= localhost/llmkube-hailo-sim:dev
+HAILO_SIM_PLATFORM ?= linux/$(shell go env GOARCH)
+.PHONY: docker-build-hailo-sim
+docker-build-hailo-sim: ## Build the Hailo-10H simulator image for agent e2e (HAILO_SIM_PLATFORM, default the host's arch).
+	$(CONTAINER_TOOL) build --platform $(HAILO_SIM_PLATFORM) -t ${HAILO_SIM_IMG} test/hailosim
+
 # PLATFORMS defines the target platforms for the manager image be built to provide support to multiple
 # architectures. (i.e. make docker-buildx IMG=myregistry/mypoperator:0.0.1). To use this option you need to:
 # - be able to use docker buildx. More info: https://docs.docker.com/build/buildx/
@@ -749,6 +814,7 @@ CONTROLLER_GEN ?= $(LOCALBIN)/controller-gen
 ENVTEST ?= $(LOCALBIN)/setup-envtest
 GOLANGCI_LINT = $(LOCALBIN)/golangci-lint
 GOVULNCHECK = $(LOCALBIN)/govulncheck
+GO_LICENSES = $(LOCALBIN)/go-licenses
 
 ## Tool Versions
 KUSTOMIZE_VERSION ?= v5.8.3
@@ -759,6 +825,7 @@ ENVTEST_VERSION ?= $(shell go list -m -f "{{ .Version }}" sigs.k8s.io/controller
 ENVTEST_K8S_VERSION ?= $(shell go list -m -f "{{ .Version }}" k8s.io/api | awk -F'[v.]' '{printf "1.%d", $$3}')
 GOLANGCI_LINT_VERSION ?= v2.15.0
 GOVULNCHECK_VERSION ?= e672cbe8fbc8c76e28fcb6db0efd9ce354e0dac5
+GO_LICENSES_VERSION ?= v2.0.1
 
 .PHONY: kustomize
 kustomize: $(KUSTOMIZE) ## Download kustomize locally if necessary.
@@ -792,6 +859,11 @@ $(GOLANGCI_LINT): $(LOCALBIN)
 govulncheck: $(GOVULNCHECK) ## Download govulncheck locally if necessary.
 $(GOVULNCHECK): $(LOCALBIN)
 	$(call go-install-tool,$(GOVULNCHECK),golang.org/x/vuln/cmd/govulncheck,$(GOVULNCHECK_VERSION))
+
+.PHONY: go-licenses
+go-licenses: $(GO_LICENSES) ## Download go-licenses locally if necessary.
+$(GO_LICENSES): $(LOCALBIN)
+	$(call go-install-tool,$(GO_LICENSES),github.com/google/go-licenses/v2,$(GO_LICENSES_VERSION))
 
 .PHONY: vulncheck
 vulncheck: govulncheck ## Run govulncheck against the module.

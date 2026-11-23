@@ -315,3 +315,29 @@ func TestShouldEvict_ZeroTotalMemoryDefensiveGuard(t *testing.T) {
 		t.Error("zero TotalMemory must defensively return false")
 	}
 }
+
+func TestPickEvictionTarget_SkipsRuntimeOutsideAgentCgroup(t *testing.T) {
+	processes := map[string]*ManagedProcess{
+		"default/ollama": {
+			Name: "ollama", Namespace: "default", Priority: "batch",
+			Runtime: runtimeOllama, StartedAt: time.Now().Add(-time.Hour),
+		},
+		"default/llama": {
+			Name: "llama", Namespace: "default", Priority: "normal",
+			Runtime: runtimeLlamaCPP, PID: 4242, ModelPath: "/models/llama.gguf", StartedAt: time.Now(),
+		},
+	}
+	got, reason := pickEvictionTarget(processes, nil)
+	if got == nil || got.Name != "llama" {
+		t.Fatalf("pickEvictionTarget = %v (reason %q), want llama: an ollama engine is outside the agent's cgroup",
+			got, reason)
+	}
+
+	delete(processes, "default/llama")
+	processes["default/ollama-2"] = &ManagedProcess{
+		Name: "ollama-2", Namespace: "default", Runtime: runtimeOllama, StartedAt: time.Now(),
+	}
+	if got, reason := pickEvictionTarget(processes, nil); got != nil || reason != SkipReasonRuntimeIneligible {
+		t.Errorf("pickEvictionTarget = %v, %q; want nil, %q", got, reason, SkipReasonRuntimeIneligible)
+	}
+}

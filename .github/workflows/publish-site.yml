@@ -1,0 +1,54 @@
+name: Publish Site
+
+# Rebuilds llmkube.com through a Netlify build hook. The site (Defilan/llmkube-web)
+# renders these docs from this repo's main branch at build time, but Netlify only
+# builds when llmkube-web itself changes, so docs merged here, and each release's
+# version badge, reached the site only by chance.
+#
+# release-please.yml calls this once a release's images, binaries and charts are
+# published. It cannot listen for the release event instead: release-please
+# creates releases with GITHUB_TOKEN, and events from that token do not start
+# other workflows. Run it by hand to publish docs merged since the last release.
+#
+# The hook URL is the secret NETLIFY_BUILD_HOOK_URL (Netlify: Site configuration,
+# Build & deploy, Build hooks, branch main). Without it this job warns and
+# succeeds, so forks and a repo without the secret are unaffected.
+
+on:
+  workflow_call:
+    inputs:
+      reason:
+        description: "Shown as the deploy's title in Netlify"
+        type: string
+        required: true
+    secrets:
+      NETLIFY_BUILD_HOOK_URL:
+        required: false
+  workflow_dispatch:
+    inputs:
+      reason:
+        description: "Shown as the deploy's title in Netlify"
+        type: string
+        default: "Docs update from defilantech/LLMKube"
+
+permissions: {}
+
+jobs:
+  trigger-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Trigger the llmkube.com build
+        env:
+          HOOK_URL: ${{ secrets.NETLIFY_BUILD_HOOK_URL }}
+          REASON: ${{ inputs.reason }}
+        run: |
+          if [ -z "$HOOK_URL" ]; then
+            echo "::warning::NETLIFY_BUILD_HOOK_URL is not set; llmkube.com was not rebuilt"
+            exit 0
+          fi
+          title="$(jq -rn --arg t "$REASON" '$t | @uri')"
+          curl --fail-with-body --silent --show-error --max-time 30 \
+            --retry 3 --retry-all-errors --retry-delay 10 \
+            -X POST --data '{}' "${HOOK_URL}?trigger_title=${title}"
+          echo "Netlify accepted the build; it deploys llmkube.com from llmkube-web main in a few minutes."

@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"slices"
 	"sort"
 	"time"
 
@@ -54,9 +55,9 @@ const modelPoolSwapRequeue = 3 * time.Second
 // fires promptly after reclaimAfter elapses, high enough not to hammer /slots.
 const modelPoolReclaimPoll = 30 * time.Second
 
-// defaultReclaimAfter is used when SwapPolicy is "reclaim" but spec.reclaimAfter
-// is unset (the CRD default also supplies 300s; this guards direct API writes
-// and unit construction).
+// defaultReclaimAfter is used when SwapPolicy is "reclaim" or "reclaim-down"
+// but spec.reclaimAfter is unset (the CRD default also supplies 300s; this
+// guards direct API writes and unit construction).
 const defaultReclaimAfter = 300 * time.Second
 
 // ModelPoolReconciler enforces the exclusive-slot invariant for a ModelPool:
@@ -159,6 +160,9 @@ func (r *ModelPoolReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	// keeps the reconciler polling idle state, which no InferenceService or Pod
 	// event would otherwise surface.
 	restartIdleClockOnReactivation(pool, members, owner)
+	// Under reclaim-down the reclaim can release the slot outright: no owner,
+	// so the drain below takes every member, the resident included, to zero.
+	unreclaimedOwner := owner
 	owner, reclaimRequeue := r.applyReclaimOwner(ctx, pool, members, owner)
 
 	// Drain every non-owner. A non-owner that reports Ready could still be
@@ -181,6 +185,7 @@ func (r *ModelPoolReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	// could otherwise admit the owner before the incumbent's process is gone and
 	// briefly co-reside (OOM).
 	deferReason := ""
+	var deferred []string
 	othersClear := true
 	for _, name := range memberNames(pool) {
 		if name == owner {
@@ -203,12 +208,14 @@ func (r *ModelPoolReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 			case idleVerdictBusy:
 				// Busy: let the in-flight request finish; do not unload.
 				deferReason = inferencev1alpha1.ReasonPodsBusy
+				deferred = append(deferred, name)
 				othersClear = false
 				continue
 			default:
 				// Fail closed: keep the incumbent resident.
 				log.Info("member idleness unestablished; deferring swap", "member", name)
 				deferReason = inferencev1alpha1.ReasonIdleCheckFailed
+				deferred = append(deferred, name)
 				othersClear = false
 				continue
 			}
@@ -223,6 +230,8 @@ func (r *ModelPoolReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 			othersClear = false
 		}
 	}
+
+	countRelease(pool, members, owner, unreclaimedOwner, deferred)
 
 	// The owner is held at zero replicas until every incumbent's Pods are gone.
 	// Only then is it scaled to one, so its Pod cannot start before the
@@ -262,7 +271,8 @@ func (r *ModelPoolReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		result.RequeueAfter = reclaimRequeue
 	}
 	result.RequeueAfter = soonerRequeue(result.RequeueAfter, externalScaleRequeue)
-	if err := r.updateStatus(ctx, pool, statusBefore, members, owner, swapping, deferReason); err != nil {
+	statusOwner := reportedOwner(owner, unreclaimedOwner, deferReason)
+	if err := r.updateStatus(ctx, pool, statusBefore, members, statusOwner, swapping, deferReason); err != nil {
 		if apierrors.IsConflict(err) {
 			//nolint:staticcheck // SA1019: keep the rate-limited retry on a write conflict; RequeueAfter would swap backoff for a fixed delay.
 			return ctrl.Result{Requeue: true}, nil
@@ -336,6 +346,14 @@ func validateMembers(
 // are gone), which would erase the activation signal. The in-progress owner is
 // therefore remembered in status.PendingMember and honored here even while it is
 // held at zero, so a deferred swap does not revert to the incumbent.
+//
+// A pending owner is not always one the router is waiting for, though: the
+// reconciler also loads spec.default into a cold pool and reclaims the slot for
+// it, and the router may have given up on an earlier target. The router scales
+// its target up once and then only waits, so a member it scaled up must not
+// lose to such an owner: it would be drained and the held request would wait
+// out spec.swapBudget for a member that never loads (#2533). routerTarget picks
+// that member first.
 func resolveSlotOwner(pool *inferencev1alpha1.ModelPool, members map[string]*inferencev1alpha1.InferenceService) string {
 	resident := pool.Status.ResidentMember
 	pending := pool.Status.PendingMember
@@ -369,8 +387,12 @@ func resolveSlotOwner(pool *inferencev1alpha1.ModelPool, members map[string]*inf
 
 	if resident == "" {
 		// Cold pool (no member has become resident yet).
-		// Continue an in-progress swap first, then honor a fresh activation,
-		// then spec.default, then declaration order, else stay cold.
+		// A member the router is holding a request for first, then continue an
+		// in-progress swap, then honor a fresh activation, then spec.default,
+		// then declaration order, else stay cold.
+		if target := routerTarget(pending, requested, members); target != "" {
+			return target
+		}
 		if pending != "" {
 			if _, ok := members[pending]; ok {
 				return pending
@@ -396,9 +418,13 @@ func resolveSlotOwner(pool *inferencev1alpha1.ModelPool, members map[string]*inf
 
 	// Warm pool with a recorded resident.
 	if len(newly) > 0 {
-		// A fresh activation supersedes. Prefer the in-progress pending swap
+		// A fresh activation supersedes. A member the router is holding a
+		// request for comes first; otherwise prefer the in-progress pending swap
 		// when it is still among the scaled-up members, else the first newly
 		// activated member.
+		if target := routerTarget(pending, newly, members); target != "" {
+			return target
+		}
 		if pending != "" {
 			for _, name := range newly {
 				if name == pending {
@@ -418,6 +444,65 @@ func resolveSlotOwner(pool *inferencev1alpha1.ModelPool, members map[string]*inf
 	return resident
 }
 
+// routerReplicaManagers are the field managers of the router-proxy's
+// activation: the one it names since #2302, and the name the API server gave a
+// build from before it, taken from its binary.
+var routerReplicaManagers = map[string]bool{
+	inferencev1alpha1.RouterProxyFieldManager: true,
+	legacyRouterProxyFieldManager:             true,
+}
+
+// routerWrite reports whether isvc is scaled up and the router wrote its
+// current spec.replicas, and when. The router writes with a merge patch, whose
+// entry the API server times; an entry without a time (a scale subresource
+// write) reads as the zero time and so sorts before any timed one. A
+// write that changes the field takes it from every other manager, so the router
+// still owning it means the pool has not drained or held the member since.
+func routerWrite(isvc *inferencev1alpha1.InferenceService) (time.Time, bool) {
+	if isvc == nil || replicasOf(isvc) < 1 {
+		return time.Time{}, false
+	}
+	for _, entry := range isvc.ManagedFields {
+		if routerReplicaManagers[entry.Manager] && ownsSpecReplicas(entry) {
+			if entry.Time != nil {
+				return entry.Time.Time, true
+			}
+			return time.Time{}, true
+		}
+	}
+	return time.Time{}, false
+}
+
+// routerTarget returns the candidate the router last scaled up, or "" when the
+// router owns none of their replica counts. A member the pool loaded without a
+// hold keeps the router's write, since the pool had no reason to write its
+// replicas, so a member the router asked for earlier can still read as its
+// request. A pooled ModelRouter runs one router-proxy replica (the deployment
+// builder pins it), and its Activator drives one swap per pool at a time, so
+// the latest write is the request that router holds now. Writes the API server
+// timed to the same second cannot be ordered; the pending one keeps the slot
+// among those, as between any two activations, else declaration order decides.
+//
+// Two router processes can still write: several ModelRouters fronting one pool,
+// or the old and new proxy Pod overlapping in a rollout. Then the latest write
+// wins and the other process's request waits out its swapBudget: with no
+// coordination between them, one of the two requests waits either way.
+func routerTarget(pending string, candidates []string, members map[string]*inferencev1alpha1.InferenceService) string {
+	best := ""
+	var bestAt time.Time
+	for _, name := range candidates {
+		at, ok := routerWrite(members[name])
+		switch {
+		case !ok:
+		case best == "", at.After(bestAt):
+			best, bestAt = name, at
+		case at.Equal(bestAt) && name == pending:
+			best = name
+		}
+	}
+	return best
+}
+
 // clearDepartedResident drops a resident that left spec.members. Status is the
 // only record of the old owner, and the pool can no longer drain or scale a
 // member it does not list, so status stops naming it (#2309). The caller must
@@ -432,16 +517,19 @@ func clearDepartedResident(pool *inferencev1alpha1.ModelPool, members map[string
 	}
 }
 
-// applyReclaimOwner implements the "reclaim" swap policy. When a non-default
-// member has held the slot and been continuously idle for spec.reclaimAfter, it
-// overrides owner with spec.default so the ordinary drain-and-swap machinery
-// returns the slot to the background model. It returns the (possibly overridden)
+// applyReclaimOwner implements the "reclaim" and "reclaim-down" swap policies.
+// When a non-default member has held the slot and been continuously idle for
+// spec.reclaimAfter, it overrides owner with spec.default so the ordinary
+// drain-and-swap machinery returns the slot to the background model. Under
+// reclaim-down (no spec.default) it overrides owner with "" instead: every
+// member, the idle resident included, is drained to zero and the slot is
+// released until a request activates a member. It returns the (possibly overridden)
 // owner and a requeue interval that keeps the reconciler polling idle state
 // while a non-default member is resident (no watch fires on a busy->idle
 // transition). Idle-probe failure is fail-closed: the clock holds its value and
 // the slot is not reclaimed on that poll. The idle clock lives in
 // status.ResidentIdleSince, which updateStatus persists untouched; it
-// self-clears once the default is resident.
+// self-clears once the default is resident, or once a released pool is cold.
 func (r *ModelPoolReconciler) applyReclaimOwner(
 	ctx context.Context,
 	pool *inferencev1alpha1.ModelPool,
@@ -451,27 +539,49 @@ func (r *ModelPoolReconciler) applyReclaimOwner(
 	log := logf.FromContext(ctx)
 
 	def := pool.Spec.Default
-	if pool.Spec.SwapPolicy != inferencev1alpha1.ModelPoolSwapPolicyReclaim || def == "" {
+	// Releasing to zero is an explicit opt-in (#1896): reclaim with no default
+	// keeps the resident, as it always has. Admission rejects reclaim-down with a
+	// default; one admitted without the rule reclaims to it rather than
+	// releasing a slot the cold-pool default would warm straight back up.
+	toZero := false
+	switch pool.Spec.SwapPolicy {
+	case inferencev1alpha1.ModelPoolSwapPolicyReclaim:
+		if def == "" {
+			pool.Status.ResidentIdleSince = nil
+			return owner, 0
+		}
+	case inferencev1alpha1.ModelPoolSwapPolicyReclaimDown:
+		toZero = def == ""
+	default:
 		pool.Status.ResidentIdleSince = nil
 		return owner, 0
 	}
 
 	// Reclaim only applies to a pool that is settled on a non-default resident:
 	// resolveSlotOwner returned that same resident (no cross-model activation is
-	// already redirecting the slot), the resident is Ready, and spec.default is
-	// still a member to reclaim to. Any other shape means a real swap is already
-	// in motion or there is nothing to reclaim.
+	// already redirecting the slot), the resident is Ready, and, under reclaim,
+	// spec.default is still a member to reclaim to. Under reclaim-down there is
+	// no default, so any settled resident qualifies. Any other shape means a real
+	// swap is already in motion or there is nothing to reclaim.
 	resident := pool.Status.ResidentMember
-	if owner == "" || owner != resident || resident == def {
+	if owner == "" || owner != resident || (!toZero && resident == def) {
 		pool.Status.ResidentIdleSince = nil
 		return owner, 0
 	}
 	residentISVC, ok := members[resident]
+	if toZero && ok && drainedByPool(residentISVC) && replicasOf(residentISVC) == 0 {
+		// The pool already drained the resident to release the slot, but status
+		// still names it: the release pass's status write was lost, or this pass
+		// read a stale member. No one has scaled it back up (that would read
+		// replicas 1), so keep releasing. Treating it as the owner would scale
+		// it straight back up once it stops reporting Ready.
+		return "", 0
+	}
 	if !ok || !memberReady(residentISVC) {
 		pool.Status.ResidentIdleSince = nil
 		return owner, 0
 	}
-	if _, ok := members[def]; !ok {
+	if _, ok := members[def]; !ok && !toZero {
 		pool.Status.ResidentIdleSince = nil
 		return owner, 0
 	}
@@ -500,14 +610,61 @@ func (r *ModelPoolReconciler) applyReclaimOwner(
 		return owner, pollWithin(reclaimAfter)
 	}
 	if elapsed := now.Sub(pool.Status.ResidentIdleSince.Time); elapsed >= reclaimAfter {
-		log.Info("reclaiming pool slot to default after idle",
-			"pool", pool.Name, "from", resident, "to", def, "idleFor", elapsed.String())
-		llmkubemetrics.ModelPoolReclaimsTotal.WithLabelValues(pool.Namespace, pool.Name, resident, def).Inc()
+		if toZero {
+			log.Info("releasing pool slot to zero after idle",
+				"pool", pool.Name, "from", resident, "idleFor", elapsed.String())
+		} else {
+			log.Info("reclaiming pool slot to default after idle",
+				"pool", pool.Name, "from", resident, "to", def, "idleFor", elapsed.String())
+		}
+		// A release is counted by countRelease once its drain is carried out: the
+		// drain probes again and can defer it, and this decision is then retaken
+		// on the next pass. A reclaim to the default is counted here, once, since
+		// the pending default keeps later passes out of this branch.
+		if !toZero {
+			llmkubemetrics.ModelPoolReclaimsTotal.WithLabelValues(pool.Namespace, pool.Name, resident, def).Inc()
+		}
 		// Leave ResidentIdleSince set; it clears on the next reconcile once the
-		// default is resident (owner == resident == def branch above).
+		// default is resident (owner == resident == def branch above), or once a
+		// released pool is cold (owner == "" branch).
 		return def, 0
 	}
 	return owner, pollWithin(reclaimAfter)
+}
+
+// countRelease counts a reclaim-down release in llmkube_modelpool_reclaims_total
+// (to="", since no member is named "") on the pass whose drain scales the
+// resident down. Not when the drain deferred the resident: the release is
+// retaken, and counted, on a later pass. Not when the resident was already
+// drained at zero before this pass either: that is applyReclaimOwner keeping
+// an earlier, already counted release going.
+func countRelease(
+	pool *inferencev1alpha1.ModelPool,
+	members map[string]*inferencev1alpha1.InferenceService,
+	owner, unreclaimedOwner string,
+	deferred []string,
+) {
+	if owner != "" || unreclaimedOwner == "" || slices.Contains(deferred, unreclaimedOwner) {
+		return
+	}
+	// members holds the state read at the start of the pass; drainMember
+	// patches a copy.
+	resident, ok := members[unreclaimedOwner]
+	if !ok || (drainedByPool(resident) && replicasOf(resident) == 0) {
+		return
+	}
+	llmkubemetrics.ModelPoolReclaimsTotal.WithLabelValues(pool.Namespace, pool.Name, unreclaimedOwner, "").Inc()
+}
+
+// reportedOwner is the owner the pool's status reports. A release to zero
+// (owner "" where the reclaim started from a resident) that the drain deferred
+// left the resident serving: keep reporting it as the resident rather than a
+// cold pool. The next pass probes it again and retries the release.
+func reportedOwner(owner, unreclaimedOwner, deferReason string) string {
+	if owner == "" && unreclaimedOwner != "" && deferReason != "" {
+		return unreclaimedOwner
+	}
+	return owner
 }
 
 // pollWithin returns how long to wait before re-checking a running idle clock:

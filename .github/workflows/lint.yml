@@ -62,6 +62,12 @@ jobs:
         # version it names that no longer resolves sends them down a dead end.
         run: make check-agents-md
 
+      - name: Check generated reference docs
+        # docs/site/reference is generated from the CLI, the charts' values,
+        # the registered metrics and the CRDs; a change to one that skipped
+        # make docs-reference leaves llmkube.com describing the old behavior.
+        run: make check-docs-reference
+
       - name: Check new Go file copyright headers
         # A new file copies its header from a neighbor, so a stale year spreads
         # unless each added file is checked (#2298). The base SHA is the PR's

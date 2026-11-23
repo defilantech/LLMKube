@@ -23,9 +23,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net"
 	"os"
 	"path/filepath"
+	goruntime "runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -112,6 +114,12 @@ type MetalAgentConfig struct {
 	OMLXPort int
 	// OllamaPort is the port the Ollama daemon listens on (default 11434).
 	OllamaPort int
+	// HailoManifestsDir is hailo-ollama's model manifest directory. Empty
+	// searches the directories hailo-ollama itself reads.
+	HailoManifestsDir string
+	// HailoLibraryURL is the host hailo-ollama pulls HEFs from. Empty means
+	// DefaultHailoLibraryURL.
+	HailoLibraryURL string
 	// VLLMSwiftBin is the path to the vllm-swift binary. Only used when
 	// Runtime is "vllm-swift". Empty means auto-detect via $PATH.
 	VLLMSwiftBin string
@@ -130,7 +138,7 @@ type MetalAgentConfig struct {
 	// process (the historical behavior).
 	LlamaServerPort int
 
-	// MemoryProvider supplies system memory info. Nil defaults to DarwinMemoryProvider.
+	// MemoryProvider supplies system memory info. Nil defaults to NewHostMemoryProvider.
 	MemoryProvider MemoryProvider
 	// MemoryFraction is the fraction of total memory to budget for models (0 = auto-detect).
 	MemoryFraction float64
@@ -140,9 +148,9 @@ type MetalAgentConfig struct {
 	// proceeds (the legacy behavior).
 	MemoryCheckMode string
 	// AllowModelMemoryBudgetOverride lets a Model's spec.hardware.memoryBudget
-	// or memoryFraction exceed this Mac's budget (total * MemoryFraction).
-	// False (the default) clamps such a Model budget to the Mac's budget with
-	// a Warning event, so a Model cannot raise the limit its Mac's owner set.
+	// or memoryFraction exceed this host's budget (total * MemoryFraction).
+	// False (the default) clamps such a Model budget to the host's budget with
+	// a Warning event, so a Model cannot raise the limit the host's owner set.
 	AllowModelMemoryBudgetOverride bool
 
 	// WatchdogConfig configures the memory pressure watchdog. Nil disables it.
@@ -181,7 +189,7 @@ type MetalAgentConfig struct {
 	// InferenceServices this agent claims by name. Empty / nil claims
 	// every metal-accelerator InferenceService in the namespace (v0.1
 	// behavior); non-empty surfaces only the named ones to the
-	// runtime executor. v0.2 (#524): lets multi-Mac fleets share a
+	// runtime executor. v0.2 (#524): lets several hosts share a
 	// cluster without racing for each other's InferenceServices.
 	InferenceServiceAllowlist []string
 
@@ -253,8 +261,13 @@ type MetalAgentConfig struct {
 	// removed, and the start refused with ModelDownloadTooLarge. Zero means
 	// no cap.
 	MaxDownloadBytes int64
+	// DownloadFreeSpaceHeadroom is the free space a Model download must leave
+	// on the model store's filesystem (--download-free-space-headroom). A
+	// download that would leave less is refused with ModelDownloadNoSpace
+	// before it starts (#2409).
+	DownloadFreeSpaceHeadroom int64
 
-	// AllowUnsafeExtraArgs relaxes the extraArgs policy on a Mac whose
+	// AllowUnsafeExtraArgs relaxes the extraArgs policy on a host whose
 	// InferenceService authors are fully trusted: unknown flags, stray
 	// tokens, refused non-listener flags, path checks and vllm-swift
 	// code-loading checks are skipped. Flags that set or move the engine's
@@ -284,7 +297,10 @@ type MetalAgentConfig struct {
 	IngressPort int
 	// StateDir holds agent state (the ingress TLS identity, under
 	// "<StateDir>/ingress"). Empty means
-	// ~/Library/Application Support/llmkube/metal-agent.
+	// ~/Library/Application Support/llmkube/metal-agent on macOS, and
+	// $XDG_DATA_HOME/llmkube/metal-agent elsewhere
+	// (~/.local/share/llmkube/metal-agent when XDG_DATA_HOME is unset or not
+	// absolute).
 	StateDir string
 	// LegacyDirectEndpoints is the deprecated pre-ingress mode: engines bind
 	// on all interfaces without authentication and are registered directly
@@ -339,6 +355,9 @@ type MetalAgent struct {
 	mu               sync.RWMutex
 	memoryProvider   MemoryProvider
 	memoryFraction   float64
+	// ggufShapes caches the attention shape read from model files on this
+	// Mac for the KV-cache estimate (see estimateModelMemory).
+	ggufShapes ggufShapeCache
 	// memoryCheckWarnOnly is true when config.MemoryCheckMode resolved to
 	// MemoryCheckModeWarn; an incomplete admission check then logs and
 	// proceeds instead of failing closed.
@@ -390,7 +409,7 @@ type MetalAgent struct {
 	// services starting at once cannot both fit into the same free budget;
 	// the start moves it onto ManagedProcess.AdmittedBytes or releases it.
 	// Guarded by mu.
-	reservedMemory map[string]uint64
+	reservedMemory map[string]memoryReservation
 
 	// restarts holds the health-restart backoff of each service whose engine
 	// the health monitor has restarted (see health_restart.go).
@@ -425,7 +444,7 @@ type MetalAgent struct {
 	// and for adoption.
 	healthChecker ProcessHealthChecker
 	// adopted holds the keys of the engines adopted at startup, whose
-	// endpoints the startup withdrawal leaves Ready. Guarded by mu.
+	// healthy endpoints the startup withdrawal leaves Ready. Guarded by mu.
 	adopted map[string]bool
 
 	// now returns the current time for the RelayNotAdopted watchdog.
@@ -471,6 +490,14 @@ type ManagedProcess struct {
 	StartedAt time.Time
 	Healthy   bool
 
+	// ServedModel is the model ID the engine serves under the name the agent
+	// gave it (engineServedName), which the client proxy matches a request's
+	// model against. Empty when the engine names its model itself (an
+	// --alias in extraArgs, mlx-server, vllm-swift, Ollama) and on an adopted
+	// engine, whose record does not carry it; the proxy then finds the
+	// engine through the engine's own GET /v1/models.
+	ServedModel string
+
 	// SpecHash captures the hash of InferenceServiceSpec fields that, if
 	// changed, require respawning the underlying process. Used by ensureProcess
 	// to detect spec drift on UPDATED events and respawn instead of no-oping.
@@ -511,9 +538,31 @@ type ManagedProcess struct {
 	// its identity before signalling its group.
 	Adopted bool
 
+	// AdmissionReestimated marks an adopted engine whose charge has been
+	// re-estimated from its InferenceService and Model; always false for a
+	// process this agent started (#2535).
+	AdmissionReestimated bool
+
+	// adoptedCharge is the estimate and budget an adopted engine's charge was
+	// re-estimated with, so a report that charge produced can be re-checked
+	// without I/O when other services' charges change (#2535).
+	adoptedCharge *adoptedCharge
+
 	// healthFailures counts this process's consecutive failed health probes.
 	// Guarded by MetalAgent.mu; a replacement process starts again at zero.
 	healthFailures int
+
+	// exit reports the engine's exit: its reaper, set by the executor that
+	// spawned it, or for an adopted engine a kernel exit watch set by
+	// watchAdoptedExits (macOS only). Nil for the shared oMLX and Ollama
+	// daemons. watchEngineExit acts on it without waiting for a health probe
+	// (#2405). Set before the process is shared (by the executor) or under
+	// MetalAgent.mu before its watcher starts (adoption), and read-only after.
+	exit *childExit
+	// logPath is the engine's per-process log, which an EngineExited Event
+	// names and whose tail goes to the agent log. Empty when the executor
+	// keeps none. Set at spawn or adoption and read-only after.
+	logPath string
 }
 
 // EffectiveModelRoots returns the root paths NewMetalAgent resolves into
@@ -548,8 +597,9 @@ func NewMetalAgent(config MetalAgentConfig) *MetalAgent {
 	// Resolve memory provider
 	provider := config.MemoryProvider
 	if provider == nil {
-		provider = &DarwinMemoryProvider{}
+		provider = NewHostMemoryProvider()
 	}
+	logCgroupV1Memory(provider, logger)
 
 	// Resolve memory fraction
 	fraction := config.MemoryFraction
@@ -626,7 +676,7 @@ func NewMetalAgent(config MetalAgentConfig) *MetalAgent {
 		logger.Warnw("engine records unavailable: state directory not resolved",
 			"engineRecords", records.Dir(), "error", stateDirErr)
 	} else {
-		logger.Infow("engine records directory", "engineRecords", records.Dir())
+		logger.Infow("engine records directory", "stateDir", stateDir, "engineRecords", records.Dir())
 	}
 
 	return &MetalAgent{
@@ -648,7 +698,7 @@ func NewMetalAgent(config MetalAgentConfig) *MetalAgent {
 		evictionBackoff:     make(map[string]*evictionBackoff),
 		pressureObserved:    make(map[string]MemoryPressureLevel),
 		starting:            make(map[string]bool),
-		reservedMemory:      make(map[string]uint64),
+		reservedMemory:      make(map[string]memoryReservation),
 		restarts:            make(map[string]*restartBackoff),
 		restartWake:         make(chan struct{}, 1),
 		heartbeatWake:       make(chan struct{}, 1),
@@ -659,15 +709,9 @@ func NewMetalAgent(config MetalAgentConfig) *MetalAgent {
 	}
 }
 
-// Start begins watching for InferenceService resources and managing processes
-// buildExecutors populates a.executors with one ProcessExecutor per runtime
-// whose binary path is configured, so each InferenceService can pick its own
-// backend via spec.runtime (#525). The llama.cpp executor is always created
-// because it is the default fallback, and it is registered under BOTH
-// runtimeLlamaServer ("llama-server", the historical key and --runtime
-// default) and runtimeLlamaCPP ("llamacpp", the CRD/controller canonical
-// value) so CRs authored with either runtime name resolve to it (#784).
-func (a *MetalAgent) buildExecutors() {
+// buildLlamaCPPExecutor registers the llama.cpp executor under both of its
+// runtime names.
+func (a *MetalAgent) buildLlamaCPPExecutor() {
 	metalExec := NewMetalExecutor(
 		a.config.LlamaServerBin,
 		a.config.ModelStorePath,
@@ -676,6 +720,7 @@ func (a *MetalAgent) buildExecutors() {
 		WithAllowUnlabeledSourceSecrets(a.config.AllowUnlabeledSourceSecrets),
 		WithAllowedDownloadHosts(a.config.AllowedDownloadHosts),
 		WithMaxDownloadBytes(a.config.MaxDownloadBytes),
+		WithDownloadFreeSpaceHeadroom(a.config.DownloadFreeSpaceHeadroom),
 	)
 	if a.config.LlamaServerStartupTimeout > 0 {
 		metalExec.SetStartupTimeout(a.config.LlamaServerStartupTimeout)
@@ -684,6 +729,20 @@ func (a *MetalAgent) buildExecutors() {
 	metalExec.SetEngineEnvPassthrough(a.config.EngineEnvPassthrough)
 	a.executors[runtimeLlamaServer] = metalExec
 	a.executors[runtimeLlamaCPP] = metalExec
+}
+
+// buildExecutors populates a.executors with one ProcessExecutor per runtime
+// whose binary path is configured, so each InferenceService can pick its own
+// backend via spec.runtime (#525). The llama.cpp executor is created whenever
+// llama-server was found (the agent exits without it unless --runtime selects
+// another engine), and it is registered under BOTH
+// runtimeLlamaServer ("llama-server", the historical key and --runtime
+// default) and runtimeLlamaCPP ("llamacpp", the CRD/controller canonical
+// value) so CRs authored with either runtime name resolve to it (#784).
+func (a *MetalAgent) buildExecutors() {
+	if a.config.LlamaServerBin != "" {
+		a.buildLlamaCPPExecutor()
+	}
 
 	if a.config.OMLXBin != "" {
 		port := a.config.OMLXPort
@@ -765,19 +824,24 @@ func (a *MetalAgent) Start(ctx context.Context) error {
 	}
 
 	// Log effective memory budget and set gauge
-	if total, err := a.memoryProvider.TotalMemory(); err == nil {
+	if total, hostTotal, err := a.memoryTotals(); err == nil {
 		budget := uint64(float64(total) * a.memoryFraction)
+		hostBudget := uint64(float64(hostTotal) * a.memoryFraction)
 		checkMode := MemoryCheckModeEnforce
 		if a.memoryCheckWarnOnly {
 			checkMode = MemoryCheckModeWarn
 		}
-		a.logger.Infow("memory budget",
+		kv := []interface{}{
 			"total", formatMemory(total),
 			"fraction", a.memoryFraction,
 			"budget", formatMemory(budget),
 			"checkMode", checkMode,
-		)
-		memoryBudgetBytes.Set(float64(budget))
+		}
+		if hostTotal != total {
+			kv = append(kv, "hostTotal", formatMemory(hostTotal), "hostBudget", formatMemory(hostBudget))
+		}
+		a.logger.Infow("memory budget", kv...)
+		memoryBudgetBytes.Set(float64(hostBudget))
 	} else {
 		a.logger.Warnw("unable to query total memory", "error", err)
 	}
@@ -856,6 +920,12 @@ func (a *MetalAgent) Start(ctx context.Context) error {
 			}
 		}()
 	}
+
+	// Act on the exit of an adopted engine at once, as for a child (#2405).
+	a.watchAdoptedExits(ctx)
+
+	// Report the model store's used and free bytes (#2409).
+	go a.watchModelStore(ctx)
 
 	// Start health monitor
 	monitor := NewHealthMonitor(
@@ -1127,40 +1197,58 @@ func (a *MetalAgent) validateRuntimeFormat(model *inferencev1alpha1.Model, runti
 	)
 }
 
-// ensureProcess ensures a llama-server process is running for the InferenceService.
-// On UPDATED events, the spec is diffed against the running process's stored
-// hash; if it changed, the existing process is stopped before a fresh one is
-// spawned so the new flags actually take effect. Replicas=0 stops the process
-// without restarting.
-// currentBackend returns the loopback address and runtime of the inference
-// child the host-side client proxy should forward to, satisfying
-// backendProvider (#406). The runtime is the same string the ingress uses
-// (ManagedProcess.Runtime, mirrored into ingress.Route.Runtime by Route), so
-// the client proxy can apply the identical ingress.Allowed path policy. The
-// agent tracks one process per InferenceService but in practice runs one at a
-// time on a single Mac, so we return the first running child with an
-// allocated port, preferring a healthy one. ok is false when none is running.
-func (a *MetalAgent) currentBackend() (addr, runtime string, ok bool) {
+// engineServedName returns the model ID an engine of runtime serves because
+// the agent named it (ExecutorConfig.ServedModelName), mirroring each
+// executor: llama-server gets it as --alias unless extraArgs sets its own
+// alias, oMLX as the model directory's model_alias, TensorFold as its --name
+// unless extraArgs sets --name or --alias (buildTensorFoldArgs). It is "" for
+// the runtimes that name the model themselves and for an override, so the
+// client proxy never matches a request on a name the engine does not answer
+// to.
+func engineServedName(runtime string, cfg ExecutorConfig) string {
+	switch runtime {
+	case runtimeLlamaServer, runtimeLlamaCPP:
+		if hasMatchingExtraArg(cfg.ExtraArgs, "alias") {
+			return ""
+		}
+		return cfg.ServedModelName
+	case inferencev1alpha1.RuntimeOMLX:
+		return cfg.ServedModelName
+	case inferencev1alpha1.RuntimeTensorFold:
+		if hasMatchingExtraArg(cfg.ExtraArgs, "name") || hasMatchingExtraArg(cfg.ExtraArgs, "alias") {
+			return ""
+		}
+		return tensorFoldServedName(cfg)
+	}
+	return ""
+}
+
+// backends lists the running inference children with an allocated port for
+// the host-side client proxy, satisfying backendProvider (#406). Each entry
+// carries the runtime string the ingress uses (ManagedProcess.Runtime,
+// mirrored into ingress.Route.Runtime by Route), so the proxy applies the
+// identical ingress.Allowed path policy, and the names a request's model can
+// use to pick it (#2412). Entries are ordered by namespace/name so the
+// proxy's choices and messages are stable.
+func (a *MetalAgent) backends() []proxyBackend {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
-	var fallbackAddr, fallbackRuntime string
+	bs := make([]proxyBackend, 0, len(a.processes))
 	for _, p := range a.processes {
 		if p == nil || p.Port <= 0 {
 			continue
 		}
-		candidate := fmt.Sprintf("127.0.0.1:%d", p.Port)
-		if p.Healthy {
-			return candidate, p.Runtime, true
-		}
-		if fallbackAddr == "" {
-			fallbackAddr = candidate
-			fallbackRuntime = p.Runtime
-		}
+		bs = append(bs, proxyBackend{
+			id:          p.Namespace + "/" + p.Name,
+			addr:        fmt.Sprintf("127.0.0.1:%d", p.Port),
+			runtime:     p.Runtime,
+			healthy:     p.Healthy,
+			servedModel: p.ServedModel,
+			modelID:     p.ModelID,
+		})
 	}
-	if fallbackAddr != "" {
-		return fallbackAddr, fallbackRuntime, true
-	}
-	return "", "", false
+	sort.Slice(bs, func(i, j int) bool { return bs[i].id < bs[j].id })
+	return bs
 }
 
 // isvcStopped reports whether the InferenceService desires zero running
@@ -1173,6 +1261,28 @@ func isvcStopped(isvc *inferencev1alpha1.InferenceService) bool {
 	return isvc.Spec.Replicas != nil && *isvc.Spec.Replicas == 0
 }
 
+// refreshEvictionPolicy copies spec.priority and spec.evictionProtection onto
+// the running engine of key. Neither reaches the engine's arguments, so
+// editing them keeps the engine, but the memory-pressure selector reads them
+// from the process, which otherwise kept the values it started with (#2410).
+// The pressure loop copies each process under a.mu before reading them. The
+// engine record keeps the values from the spawn: an agent that adopts the
+// engine after a restart refreshes them on its first reconcile.
+func (a *MetalAgent) refreshEvictionPolicy(key string, isvc *inferencev1alpha1.InferenceService) {
+	protect := isvc.Spec.EvictionProtection != nil && *isvc.Spec.EvictionProtection
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if p := a.processes[key]; p != nil {
+		p.Priority = isvc.Spec.Priority
+		p.EvictionProtection = protect
+	}
+}
+
+// ensureProcess ensures a llama-server process is running for the InferenceService.
+// On UPDATED events, the spec is diffed against the running process's stored
+// hash; if it changed, the existing process is stopped before a fresh one is
+// spawned so the new flags actually take effect. Replicas=0 stops the process
+// without restarting.
 func (a *MetalAgent) ensureProcess(ctx context.Context, isvc *inferencev1alpha1.InferenceService) error {
 	err := a.reconcileProcess(ctx, isvc)
 	if err != nil {
@@ -1182,6 +1292,7 @@ func (a *MetalAgent) ensureProcess(ctx context.Context, isvc *inferencev1alpha1.
 	// Started, already running, stopped or eviction-blocked: not refused,
 	// so a later refusal is a new one and gets its Event.
 	a.refusals.forget(types.NamespacedName{Namespace: isvc.Namespace, Name: isvc.Name}.String())
+	a.clearStartFailure(ctx, isvc)
 	return nil
 }
 
@@ -1208,15 +1319,17 @@ func (a *MetalAgent) withdrawAfterStartFailure(ctx context.Context, isvc *infere
 
 // withdrawInheritedEndpoints runs WithdrawOwnedEndpoints with the watcher's
 // ownership predicate, so the allowlist partition (#524) bounds which slices a
-// restarted agent may touch. The endpoint of an engine adopted at startup is
-// left alone: it is still serving (#2079).
+// restarted agent may touch. Only healthy adopted engines keep their
+// endpoints Ready (#2079).
 func (a *MetalAgent) withdrawInheritedEndpoints(ctx context.Context) {
 	if a.watcher == nil {
 		return
 	}
 	withdraw := func(ctx context.Context, isvc *inferencev1alpha1.InferenceService) bool {
 		a.mu.RLock()
-		adopted := a.adopted[isvc.Namespace+"/"+isvc.Name]
+		key := isvc.Namespace + "/" + isvc.Name
+		p := a.processes[key]
+		adopted := a.adopted[key] && p != nil && p.Healthy
 		a.mu.RUnlock()
 		return !adopted && a.watcher.owns(ctx, isvc)
 	}
@@ -1352,14 +1465,31 @@ func (a *MetalAgent) reconcileProcess(ctx context.Context, isvc *inferencev1alph
 		return nil
 	}
 
-	if exists && existing.SpecHash == desiredHash {
+	if exists && sameEngineSpec(existing.SpecHash, isvc) {
+		a.refreshEvictionPolicy(key, isvc)
 		// An unhealthy process is left to the health monitor, which stops
 		// it and restarts it after healthFailureThreshold consecutive
 		// failed probes. Starting a new engine here would leave this one
 		// running untracked, with its weights still wired (#2077).
 		a.logger.Debugw("inference service already has a process with matching spec",
 			"key", key, "healthy", existing.Healthy)
+		// Charge an adopted engine what admission would charge today, then
+		// clear the report once that charge fits again (#2535).
+		if !a.reestimateAdoptedCharge(ctx, isvc, key, existing) {
+			a.recheckAdoptedChargeReport(ctx, isvc, key, existing)
+		}
 		return nil
+	}
+
+	// Resolve the effective runtime for this InferenceService.
+	// spec.runtime wins; the agent's --runtime flag is the fallback.
+	runtime := a.resolveRuntime(isvc)
+
+	// Refuse a runtime with no executor before fetchModelThenStopStale, which
+	// stops the running engine of a changed spec.
+	exec, ok := a.executors[runtime]
+	if !ok {
+		return a.refuseStart(ctx, isvc, EventReasonRuntimeNotAvailable, runtimeNotAvailableMessage(goruntime.GOOS, runtime))
 	}
 
 	model, err := a.fetchModelThenStopStale(ctx, isvc, key, existing, desiredHash)
@@ -1368,10 +1498,6 @@ func (a *MetalAgent) reconcileProcess(ctx context.Context, isvc *inferencev1alph
 	}
 
 	a.logger.Infow("starting inference service", "namespace", isvc.Namespace, "name", isvc.Name)
-
-	// Resolve the effective runtime for this InferenceService.
-	// spec.runtime wins; the agent's --runtime flag is the fallback.
-	runtime := a.resolveRuntime(isvc)
 
 	// Relay mode appends "-agent" to the Service name; refuse a name that no
 	// longer fits a DNS label before starting anything.
@@ -1420,15 +1546,14 @@ func (a *MetalAgent) reconcileProcess(ctx context.Context, isvc *inferencev1alph
 		return err
 	}
 
+	// A hailo:// source on another runtime is refused before memory
+	// admission, for the same reason; the llama.cpp path would try to
+	// download it.
+	if err := inferencev1alpha1.HailoSourceRuntimeError(model, runtime); err != nil {
+		return a.refuseStart(ctx, isvc, EventReasonRuntimeCannotServeSource, err.Error())
+	}
 	if err := a.validateRuntimeFormat(model, runtime); err != nil {
 		return err
-	}
-
-	// Look up the executor for the resolved runtime.
-	exec, ok := a.executors[runtime]
-	if !ok {
-		return fmt.Errorf("no executor registered for runtime %q; "+
-			"ensure the corresponding binary is installed and the agent was started with the right flags", runtime)
 	}
 
 	// Get GPU layers if specified
@@ -1438,10 +1563,7 @@ func (a *MetalAgent) reconcileProcess(ctx context.Context, isvc *inferencev1alph
 	}
 
 	// Get context size from InferenceService spec, default to 2048
-	contextSize := 2048
-	if isvc.Spec.ContextSize != nil && *isvc.Spec.ContextSize > 0 {
-		contextSize = int(*isvc.Spec.ContextSize)
-	}
+	contextSize := admissionContextSize(isvc)
 
 	// Resolve KV cache types now (custom > standard) so the memory check and
 	// the executor config see the same values; otherwise the pre-flight check
@@ -1511,12 +1633,15 @@ func (a *MetalAgent) reconcileProcess(ctx context.Context, isvc *inferencev1alph
 	// Capture the runtime so deleteProcess and Shutdown can pick the
 	// correct executor even when the agent hosts multiple runtimes (#525).
 	process.Runtime = runtime
+	// The served model name lets the client proxy route a request that names
+	// it when several engines run (#2412).
+	process.ServedModel = engineServedName(runtime, cfg)
 
 	// Store process and update metrics. The admission reservation moves onto
 	// the record in the same critical section, so the budget it holds is
 	// never counted twice or dropped in between.
 	a.mu.Lock()
-	process.AdmittedBytes = a.reservedMemory[key]
+	process.AdmittedBytes = a.reservedMemory[key].bytes
 	delete(a.reservedMemory, key)
 	a.processes[key] = process
 	managedProcesses.Set(float64(len(a.processes)))
@@ -1526,6 +1651,7 @@ func (a *MetalAgent) reconcileProcess(ctx context.Context, isvc *inferencev1alph
 	// record when the stop fails, so the deferred drop must not remove it.
 	stored = true
 	processHealthy.WithLabelValues(isvc.Name, isvc.Namespace).Set(1)
+	a.watchEngineExit(ctx, key, process)
 
 	if err := a.completeEngineRecord(ctx, key, process); err != nil {
 		return err
@@ -1756,6 +1882,9 @@ func (a *MetalAgent) stopManagedProcess(ctx context.Context, process *ManagedPro
 		}
 		return nil
 	}
+	if exec == nil {
+		return fmt.Errorf("no executor registered for runtime %q to stop PID %d", process.Runtime, process.PID)
+	}
 	if err := exec.StopProcess(process.PID); err != nil {
 		return fmt.Errorf("failed to stop process: %w", err)
 	}
@@ -1904,7 +2033,7 @@ func (a *MetalAgent) newWatcher() *InferenceServiceWatcher {
 	if len(a.config.InferenceServiceAllowlist) > 0 {
 		w.SetNameAllowlist(a.config.InferenceServiceAllowlist)
 		a.logger.Infow(
-			"InferenceService name allowlist active (#524 multi-Mac partition)",
+			"InferenceService name allowlist active (#524 multi-host partition)",
 			"allowed", a.config.InferenceServiceAllowlist,
 		)
 	}
@@ -2287,6 +2416,37 @@ func (a *MetalAgent) HealthCheck() map[string]bool {
 	return health
 }
 
+// runsOutsideAgentCgroup reports whether runtime's engine is a daemon the
+// agent does not start, so its memory is not charged to the agent's cgroup.
+func runsOutsideAgentCgroup(runtime string) bool {
+	return runtime == runtimeOllama
+}
+
+// memoryReservation is an admitted start's estimate and whether its engine
+// runs outside the agent's cgroup.
+type memoryReservation struct {
+	bytes    uint64
+	hostWide bool
+}
+
+// memoryTotals returns total memory as the agent's cgroup sees it and
+// host-wide. They are equal without a cgroup memory limit and on macOS.
+func (a *MetalAgent) memoryTotals() (total, hostTotal uint64, err error) {
+	total, err = a.memoryProvider.TotalMemory()
+	if err != nil {
+		return 0, 0, err
+	}
+	hostProvider, distinct := hostWideProvider(a.memoryProvider)
+	if !distinct {
+		return total, total, nil
+	}
+	hostTotal, err = hostProvider.TotalMemory()
+	if err != nil {
+		return 0, 0, err
+	}
+	return total, hostTotal, nil
+}
+
 // checkMemoryAdmission runs the pre-flight memory check for an
 // InferenceService: estimate the model's memory need, resolve the budget, and
 // reject the service when it does not fit. A check that cannot be completed
@@ -2302,118 +2462,51 @@ func (a *MetalAgent) checkMemoryAdmission(
 	contextSize int,
 	cacheTypeK, cacheTypeV string,
 ) error {
-	estimate, err := a.estimateModelMemory(ctx, model, contextSize, cacheTypeK, cacheTypeV)
+	// An admission must not fit against an adopted engine's recorded charge,
+	// which the current estimate may no longer hold: re-estimate the pending
+	// adopted engines whatever order the watcher delivers them in (#2535). One
+	// whose spec changed is left to the reconcile that replaces it.
+	a.reestimatePendingAdoptedCharges(ctx)
+	estimate, err := a.estimateModelMemory(ctx, model, contextSize, cacheTypeK, cacheTypeV,
+		derefInt32(isvc.Spec.ParallelSlots))
 	if err != nil {
 		return a.failModelEstimate(ctx, isvc, model, err)
 	}
 	a.sizeProbes.forget(types.NamespacedName{Namespace: isvc.Namespace, Name: isvc.Name}.String())
 	memoryEstimatedBytes.WithLabelValues(isvc.Name, isvc.Namespace).Set(float64(estimate.TotalBytes))
 
-	// This Mac's budget, the limit its owner set with --memory-fraction. Every
-	// admitted model shares it, and a Model budget may not exceed it.
-	total, totalErr := a.memoryProvider.TotalMemory()
-	if totalErr != nil {
-		return a.failMemoryCheck(ctx, isvc,
-			fmt.Sprintf("memory budget check failed: failed to get total memory: %v", totalErr))
-	}
-	hostBudget := uint64(float64(total) * a.memoryFraction)
-	memoryBudgetBytes.Set(float64(hostBudget))
-
-	resolved, resolveErr := ResolveMemoryBudget(model.Spec.Hardware, a.memoryFraction)
-	if resolveErr != nil {
-		return a.failMemoryCheck(ctx, isvc, fmt.Sprintf("memory budget resolution failed: %v", resolveErr))
+	// This host's budget, the limit its owner set with --memory-fraction. Every
+	// admitted model shares it, and a Model budget may not exceed it. An
+	// engine outside the agent's cgroup is measured against the host-wide
+	// budget, every other engine against the cgroup's.
+	b, err := a.resolveAdmissionBudget(ctx, isvc, model, estimate, admissionBudgetOptions{publishHostBudget: true})
+	if err != nil {
+		return a.failMemoryCheck(ctx, isvc, err.Error())
 	}
 	a.logger.Infow("resolved memory budget",
-		"mode", resolved.Mode, "source", resolved.Source)
+		"mode", b.resolved.Mode, "source", b.resolved.Source)
 
-	var budget *MemoryBudget
-	switch resolved.Mode {
-	case BudgetModeAbsolute:
-		budget = CheckMemoryBudgetAbsolute(resolved.Bytes, estimate)
-	default: // BudgetModeFraction
-		var budgetErr error
-		budget, budgetErr = CheckMemoryBudget(a.memoryProvider, estimate, resolved.Fraction)
-		if budgetErr != nil {
-			return a.failMemoryCheck(ctx, isvc, fmt.Sprintf("memory budget check failed: %v", budgetErr))
-		}
-	}
-
-	// A Model's memoryBudget or memoryFraction may lower this Mac's limit for
-	// itself but not raise it, unless the agent allows overrides (#2080).
-	clamped := false
-	if budget.BudgetBytes > hostBudget && !a.config.AllowModelMemoryBudgetOverride {
-		a.emitInferenceEvent(ctx, &ManagedProcess{Namespace: isvc.Namespace, Name: isvc.Name},
-			corev1.EventTypeWarning, EventReasonMemoryBudgetClamped,
-			"Model %s budget %s (%s) exceeds this Mac's budget %s (%s total * %.0f%%); clamped to it. "+
-				"Start the metal-agent with --allow-model-memory-budget-override to allow it",
-			model.Name, formatMemory(budget.BudgetBytes), resolved.Source,
-			formatMemory(hostBudget), formatMemory(total), a.memoryFraction*100,
-		)
-		budget = CheckMemoryBudgetAbsolute(hostBudget, estimate)
-		clamped = true
-	}
-
-	if !budget.Fits {
-		var msg string
-		switch {
-		case clamped:
-			msg = fmt.Sprintf("estimated %s required, budget %s (the Model's budget, clamped to this Mac's: %s total * %.0f%%)",
-				formatMemory(budget.EstimateBytes),
-				formatMemory(budget.BudgetBytes),
-				formatMemory(total),
-				a.memoryFraction*100,
-			)
-		case resolved.Mode == BudgetModeAbsolute:
-			msg = fmt.Sprintf("estimated %s required, budget %s (absolute from CRD)",
-				formatMemory(budget.EstimateBytes),
-				formatMemory(budget.BudgetBytes),
-			)
-		default:
-			msg = fmt.Sprintf("estimated %s required, budget %s (%s total * %.0f%%)",
-				formatMemory(budget.EstimateBytes),
-				formatMemory(budget.BudgetBytes),
-				formatMemory(budget.TotalBytes),
-				resolved.Fraction*100,
-			)
-		}
-		return a.refuseInsufficientMemory(ctx, isvc, msg, "source", resolved.Source)
-	}
-
-	// The model fits on its own; it must also fit next to every running and
-	// starting process. The check and the reservation share one critical
-	// section, so two services starting at once cannot both claim the same
-	// free budget. A respawn is checked against everything but its own key:
-	// its previous engine is already stopped. An override-raised Model budget
-	// raises the shared limit for this admission too.
+	// The fit and the reservation share one critical section, so two services
+	// starting at once cannot both claim the same free budget.
 	key := types.NamespacedName{Namespace: isvc.Namespace, Name: isvc.Name}.String()
-	capacity := max(hostBudget, budget.BudgetBytes)
 	a.mu.Lock()
-	committed, holders := a.committedMemoryLocked(key)
-	if committed+estimate.TotalBytes > capacity {
+	fit := a.fitAdmissionLocked(key, b, estimate)
+	if !fit.fits {
 		a.mu.Unlock()
-		var free uint64
-		if committed < capacity {
-			free = capacity - committed
-		}
-		msg := fmt.Sprintf("estimated %s required, %s of the %s budget already committed to %s, %s free",
-			formatMemory(estimate.TotalBytes),
-			formatMemory(committed),
-			formatMemory(capacity),
-			describeMemoryHolders(holders),
-			formatMemory(free),
-		)
-		return a.refuseInsufficientMemory(ctx, isvc, msg, "committed", formatMemory(committed))
+		return a.refuseInsufficientMemory(ctx, isvc, fit.message+kvNotCountedNote(estimate, contextSize),
+			fit.logKV...)
 	}
-	a.reservedMemory[key] = estimate.TotalBytes
+	a.reservedMemory[key] = memoryReservation{bytes: estimate.TotalBytes, hostWide: b.hostWide}
 	a.updateCommittedMetricLocked()
 	a.mu.Unlock()
 
 	a.logger.Infow("memory check passed",
-		"estimate", formatMemory(budget.EstimateBytes),
-		"budget", formatMemory(budget.BudgetBytes),
-		"headroom", formatMemory(budget.HeadroomBytes),
-		"committed", formatMemory(committed),
-		"source", resolved.Source,
+		"estimate", formatMemory(b.budget.EstimateBytes),
+		"kvCache", kvCacheLogValue(estimate),
+		"budget", formatMemory(b.budget.BudgetBytes),
+		"headroom", formatMemory(b.budget.HeadroomBytes),
+		"committed", formatMemory(fit.committed),
+		"source", b.resolved.Source,
 	)
 
 	// Clear any stale scheduling status from a previous failed check.
@@ -2426,6 +2519,29 @@ func (a *MetalAgent) checkMemoryAdmission(
 	}
 
 	return nil
+}
+
+// kvNotCountedNote is appended to an InsufficientMemory message whose
+// estimate holds no KV-cache term, so the reader knows the figure is a lower
+// bound and why.
+func kvNotCountedNote(estimate MemoryEstimate, contextSize int) string {
+	if estimate.KVCacheNotCounted == "" {
+		return ""
+	}
+	return fmt.Sprintf("; the KV cache for --ctx-size %d is not counted (%s)", contextSize, estimate.KVCacheNotCounted)
+}
+
+// kvCacheLogValue renders the KV-cache term of an admitted estimate for the
+// "memory check passed" log line.
+func kvCacheLogValue(estimate MemoryEstimate) string {
+	if estimate.KVCacheNotCounted != "" {
+		return "not counted: " + estimate.KVCacheNotCounted
+	}
+	if estimate.RecurrentStateBytes > 0 {
+		return formatMemory(estimate.KVCacheBytes) + " (plus " + formatMemory(estimate.RecurrentStateBytes) +
+			" recurrent state)"
+	}
+	return formatMemory(estimate.KVCacheBytes)
 }
 
 // refuseInsufficientMemory refuses a start that does not fit: it records msg on
@@ -2449,16 +2565,42 @@ func (a *MetalAgent) refuseInsufficientMemory(
 	return fmt.Errorf("insufficient memory: %s", msg)
 }
 
+// memoryRefusal returns the refusal message when estimate does not fit next
+// to committed under capacity; ok is true when it fits.
+func memoryRefusal(estimate, committed, capacity uint64, holders []string) (msg string, ok bool) {
+	if committed+estimate <= capacity {
+		return "", true
+	}
+	var free uint64
+	if committed < capacity {
+		free = capacity - committed
+	}
+	return fmt.Sprintf("estimated %s required, %s of the %s budget already committed to %s, %s free",
+		formatMemory(estimate),
+		formatMemory(committed),
+		formatMemory(capacity),
+		describeMemoryHolders(holders),
+		formatMemory(free),
+	), false
+}
+
 // committedMemoryLocked sums the admitted estimates of running processes and
 // of starts holding a reservation, skipping exclude, and returns the keys that
-// hold memory, sorted. Caller holds a.mu.
-func (a *MetalAgent) committedMemoryLocked(exclude string) (uint64, []string) {
+// hold memory, sorted. inCgroupOnly skips engines that run outside the
+// agent's cgroup. Caller holds a.mu.
+func (a *MetalAgent) committedMemoryLocked(exclude string, inCgroupOnly bool) (uint64, []string) {
 	perKey := make(map[string]uint64, len(a.processes)+len(a.reservedMemory))
 	for k, p := range a.processes {
+		if inCgroupOnly && runsOutsideAgentCgroup(p.Runtime) {
+			continue
+		}
 		perKey[k] += p.AdmittedBytes
 	}
-	for k, b := range a.reservedMemory {
-		perKey[k] += b
+	for k, r := range a.reservedMemory {
+		if inCgroupOnly && r.hostWide {
+			continue
+		}
+		perKey[k] += r.bytes
 	}
 	var sum uint64
 	holders := make([]string, 0, len(perKey))
@@ -2475,7 +2617,7 @@ func (a *MetalAgent) committedMemoryLocked(exclude string) (uint64, []string) {
 
 // updateCommittedMetricLocked publishes the committed total. Caller holds a.mu.
 func (a *MetalAgent) updateCommittedMetricLocked() {
-	committed, _ := a.committedMemoryLocked("")
+	committed, _ := a.committedMemoryLocked("", false)
 	memoryCommittedBytes.Set(float64(committed))
 }
 
@@ -2537,17 +2679,24 @@ func (a *MetalAgent) failMemoryCheck(
 
 // estimateModelMemory builds a MemoryEstimate for a model using the file on
 // disk (preferred), the Status.Size string, or a HEAD probe of an http(s)
-// source as a last resort, plus GGUF metadata when available. Cache types are
-// passed through so quantized KV caches (q8_0, turbo3, turbo4) produce a
+// source as a last resort, plus the GGUF attention shape from the header of
+// the model file on this Mac or, while that file is not there, from the Model
+// status (see attentionShapeFor). Cache types are passed through so quantized
+// KV caches (q8_0, turbo3, turbo4) produce a
 // realistic estimate instead of always assuming f16. The remote fallback
 // matters on fresh hosts: with no file on disk and a not-yet-populated status
 // size ("0"), the old chain errored out and the caller started the process
 // unchecked.
+//
+// parallelSlots is the InferenceService's spec.parallelSlots; it sizes the
+// recurrent state of a hybrid model, which llama-server keeps per sequence
+// (see recurrentSequences).
 func (a *MetalAgent) estimateModelMemory(
 	ctx context.Context,
 	model *inferencev1alpha1.Model,
 	contextSize int,
 	cacheTypeK, cacheTypeV string,
+	parallelSlots int,
 ) (MemoryEstimate, error) {
 	var fileSizeBytes uint64
 	var reasons []string
@@ -2560,12 +2709,22 @@ func (a *MetalAgent) estimateModelMemory(
 	// status/remote chain like any other unsized source; the executor's
 	// resolveLocalModelSource fails the load with a precise message if the
 	// path really does not exist.
-	if isLocalModelSource(model.Spec.Source) {
+	//
+	// headerPath is the file the attention shape is read from when the Model
+	// status lacks it: the file the agent will load, and only once it is on
+	// disk.
+	var headerPath string
+	var headerFollowsSymlinks bool
+	local := isLocalModelSource(model.Spec.Source)
+	if local {
 		src := localSourcePath(model.Spec.Source)
 		if !filepath.IsAbs(src) {
 			reasons = append(reasons, fmt.Sprintf("local source %q is not an absolute path", src))
 		} else if size, err := localModelSize(src); err == nil {
 			fileSizeBytes = size
+			// resolveLocalModelSource hands llama-server the cleaned path,
+			// links unresolved.
+			headerPath, headerFollowsSymlinks = filepath.Clean(src), true
 		} else {
 			reasons = append(reasons, fmt.Sprintf("local source not readable: %v", err))
 		}
@@ -2579,6 +2738,10 @@ func (a *MetalAgent) estimateModelMemory(
 	if fileSizeBytes == 0 {
 		if size, err := localModelSize(localPath); err == nil {
 			fileSizeBytes = size
+			// A local source is never loaded from the store slot.
+			if !local {
+				headerPath = localPath
+			}
 		} else {
 			reasons = append(reasons, fmt.Sprintf("file not found at %s", localPath))
 		}
@@ -2620,40 +2783,128 @@ func (a *MetalAgent) estimateModelMemory(
 		return MemoryEstimate{}, err
 	}
 
-	var layerCount, embeddingSize, headCount, headCountKV, keyLength, valueLength uint64
-	if model.Status.GGUF != nil {
-		layerCount = model.Status.GGUF.LayerCount
-		embeddingSize = model.Status.GGUF.EmbeddingSize
-		headCount = model.Status.GGUF.HeadCount
-		headCountKV = model.Status.GGUF.HeadCountKV
-		keyLength = model.Status.GGUF.KeyLength
-		valueLength = model.Status.GGUF.ValueLength
+	shape, notCounted := a.attentionShapeFor(model, headerPath, headerFollowsSymlinks)
+	seqs := recurrentSequences(parallelSlots)
+	recurrentState := shape.RecurrentStatePerSeq * seqs
+	if recurrentState/seqs != shape.RecurrentStatePerSeq {
+		recurrentState = math.MaxUint64 // overflow: the estimate takes its overflow fallback
 	}
+	estimate := EstimateModelMemoryWithOptions(fileSizeBytes, shape.LayerCount, shape.EmbeddingSize, contextSize,
+		EstimateOptions{
+			CacheTypeK:          cacheTypeK,
+			CacheTypeV:          cacheTypeV,
+			HeadCount:           shape.HeadCount,
+			HeadCountKV:         shape.HeadCountKV,
+			KeyLength:           shape.KeyLength,
+			ValueLength:         shape.ValueLength,
+			KVHeadLayers:        shape.KVHeadLayers,
+			RecurrentStateBytes: recurrentState,
+		})
+	if notCounted != "" && contextSize > defaultContextSize {
+		estimate.KVCacheNotCounted = notCounted
+		if a.ggufShapes.warnOnce(model.Namespace + "/" + model.Name + ": " + notCounted) {
+			a.logger.Warnw("memory estimate does not count the KV cache: no attention shape for the model",
+				"model", model.Namespace+"/"+model.Name, "contextSize", contextSize,
+				"estimate", formatMemory(estimate.TotalBytes), "reason", notCounted)
+		}
+	}
+	return estimate, nil
+}
 
-	return EstimateModelMemoryWithOptions(fileSizeBytes, layerCount, embeddingSize, contextSize, EstimateOptions{
-		CacheTypeK:  cacheTypeK,
-		CacheTypeV:  cacheTypeV,
-		HeadCount:   headCount,
-		HeadCountKV: headCountKV,
-		KeyLength:   keyLength,
-		ValueLength: valueLength,
-	}), nil
+// attentionShapeFor returns the attention shape the KV-cache estimate uses.
+// The header of headerPath, the file llama-server loads, wins once that file
+// is on this Mac; the Model status covers the first start before the
+// download lands and a header that could not be read. A status an older
+// controller wrote records no per-layer layout and no KV head count for a
+// file that stores them per layer, so a hybrid model sized from it is
+// over-charged; a controller that read the header records both
+// (GGUFMetadata.KVHeadLayers and .RecurrentStatePerSeq), so the first
+// deploy of a hybrid is sized from the real layout. headerPath is empty
+// when the model is not on this Mac yet. notCounted says why there is no
+// shape, if there is none.
+func (a *MetalAgent) attentionShapeFor(
+	model *inferencev1alpha1.Model, headerPath string, followSymlinks bool,
+) (shape attentionShape, notCounted string) {
+	if headerPath != "" {
+		if shape, notCounted = a.ggufShapes.shapeOf(headerPath, followSymlinks); shape.known() {
+			return shape, ""
+		}
+	}
+	if shape = shapeFromStatus(model.Status.GGUF); shape.known() {
+		return shape, ""
+	}
+	if headerPath == "" {
+		return attentionShape{}, "the Model status has no GGUF attention shape and the model file is not on this Mac yet"
+	}
+	return attentionShape{}, notCounted
+}
+
+// llamaServerAutoSlots is how many slots llama-server runs when --parallel is
+// not given: its default is auto, which it resolves to 4 with a unified KV
+// cache (tools/server/server.cpp, "n_parallel is set to auto"). The agent
+// omits the flag for spec.parallelSlots <= 1, so such a service runs 4 slots.
+const llamaServerAutoSlots = 4
+
+// recurrentSequences is the number of sequences llama-server sizes a hybrid
+// model's recurrent state for: one per slot (llama-model.cpp passes
+// max(1, n_seq_max) as the recurrent cache size). extraArgs are not read; a
+// --parallel there above the spec's value is not counted.
+func recurrentSequences(parallelSlots int) uint64 {
+	if parallelSlots <= 1 {
+		return llamaServerAutoSlots
+	}
+	return uint64(parallelSlots) //nolint:gosec // G115: positive here
+}
+
+// hailoBlobSource resolves a hailo:// source to the URL of the HEF
+// hailo-ollama maps its tag to in its manifests, on the library host.
+func (a *MetalAgent) hailoBlobSource(model *inferencev1alpha1.Model) (string, error) {
+	tag, _, err := inferencev1alpha1.HailoSourceTag(model.Spec.Source)
+	if err != nil {
+		return "", err
+	}
+	dir := a.config.HailoManifestsDir
+	if dir == "" {
+		home, _ := os.UserHomeDir()
+		if dir, err = hailoManifestsDir(home, os.Getenv("XDG_DATA_HOME"), os.Getenv("XDG_DATA_DIRS")); err != nil {
+			return "", err
+		}
+	}
+	digest, err := hailoHEFDigest(dir, tag)
+	if err != nil {
+		return "", err
+	}
+	base := a.config.HailoLibraryURL
+	if base == "" {
+		base = DefaultHailoLibraryURL
+	}
+	return hailoBlobURL(base, digest), nil
 }
 
 // probeRemoteModelSize sizes an http(s) source with a HEAD for its
 // Content-Length, or an s3:// source with a signed HEAD through the same
 // executor the download uses, since it needs the credential-bearing client.
+// A hailo:// source is sized as the http(s) URL of its HEF (hailoBlobSource).
 // probed is false for any other source, which has no remote size to ask for.
 func (a *MetalAgent) probeRemoteModelSize(
 	ctx context.Context, model *inferencev1alpha1.Model,
 ) (size uint64, probed bool, err error) {
+	source := model.Spec.Source
+	if inferencev1alpha1.IsHailoSource(source) {
+		if source, err = a.hailoBlobSource(model); err != nil {
+			return 0, true, err
+		}
+		if !strings.HasPrefix(source, "http://") && !strings.HasPrefix(source, "https://") {
+			return 0, true, fmt.Errorf("--hailo-library-url must be an http:// or https:// URL, got %q", source)
+		}
+	}
 	switch {
-	case strings.HasPrefix(model.Spec.Source, "http://") || strings.HasPrefix(model.Spec.Source, "https://"):
+	case strings.HasPrefix(source, "http://") || strings.HasPrefix(source, "https://"):
 		probeClient := safehttp.NewClient(a.downloadAllow, 0, downloadHostsFlag)
 		defer probeClient.CloseIdleConnections()
-		size, err = remoteModelSize(ctx, probeClient, model.Spec.Source)
+		size, err = remoteModelSize(ctx, probeClient, source)
 		return size, true, err
-	case isS3Source(model.Spec.Source):
+	case isS3Source(source):
 		size, err = a.s3SizeProbe(ctx, model)
 		return size, true, err
 	}
@@ -2721,6 +2972,40 @@ func localTreeSize(path string, walked map[string]struct{}) (uint64, error) {
 	return total, nil
 }
 
+// hashedReplicas is spec.replicas as the spec hash sees it. A Mac runs one
+// engine per InferenceService, so any count above one hashes as one (#2410);
+// zero and unset keep their own values, so existing hashes are unchanged.
+func hashedReplicas(replicas *int32) *int32 {
+	if replicas != nil && *replicas > 1 {
+		one := int32(1)
+		return &one
+	}
+	return replicas
+}
+
+// sameEngineSpec reports whether an engine started with spec hash stored
+// already runs what isvc asks for: an equal hash, or the hash of the same
+// spec with replicas unset, 1, or the raw count. Unset, 1 and any higher
+// count all run one engine on a Mac, but unset and 1 hash differently in
+// every record written before #2410, and such a record holds the raw count
+// for a service that ran with replicas above 1, so neither a replicas edit
+// nor the agent upgrade restarts the engine.
+func sameEngineSpec(stored string, isvc *inferencev1alpha1.InferenceService) bool {
+	if stored == computeSpecHash(isvc) {
+		return true
+	}
+	if isvc.Spec.Replicas != nil && *isvc.Spec.Replicas < 1 {
+		return false
+	}
+	one := int32(1)
+	for _, r := range []*int32{nil, &one, isvc.Spec.Replicas} {
+		if specHashWithReplicas(isvc, r) == stored {
+			return true
+		}
+	}
+	return false
+}
+
 // computeSpecHash returns a stable hash of the InferenceServiceSpec fields that,
 // if changed, require respawning the underlying llama-server process. Listing
 // fields explicitly (rather than hashing the full Spec) keeps the hash stable
@@ -2736,6 +3021,13 @@ func computeSpecHash(isvc *inferencev1alpha1.InferenceService) string {
 	if isvc == nil {
 		return ""
 	}
+	return specHashWithReplicas(isvc, hashedReplicas(isvc.Spec.Replicas))
+}
+
+// specHashWithReplicas is computeSpecHash with replicas as the count hashed.
+// sameEngineSpec also hashes the raw count, which records written before
+// #2410 hold for a service running with replicas above 1.
+func specHashWithReplicas(isvc *inferencev1alpha1.InferenceService, replicas *int32) string {
 	// Fields included MUST match what the executor actually consumes (or what
 	// it will consume once #349 closes the ExecutorConfig gap). When adding a
 	// new spec field that affects llama-server args, add it here too.
@@ -2743,6 +3035,13 @@ func computeSpecHash(isvc *inferencev1alpha1.InferenceService) string {
 	// ModelRef is hashed because it also derives the --alias served model name
 	// (servedModelName); that derivation needs no separate entry, and a renamed
 	// Model is a new object rather than a spec change.
+	//
+	// An adopted engine keeps the hash its record holds, so a change to the
+	// encoding of a spec that does not use a field restarts every engine on
+	// the Mac when the agent is upgraded. A field added here is omitempty, and
+	// TestComputeSpecHash_UnchangedForExistingSpecs pins the encoding.
+	// TestComputeSpecHash_CoversEveryExecutorConfigField fails on a spec
+	// field buildExecutorConfig consumes that is missing here.
 	relevant := struct {
 		ModelRef               string
 		ContextSize            *int32
@@ -2772,6 +3071,7 @@ func computeSpecHash(isvc *inferencev1alpha1.InferenceService) string {
 		PagedSSDCacheDir       *string
 		HotCacheMaxSize        *string
 		PagedSSDCacheMaxSize   *string
+		RopeScaling            *inferencev1alpha1.RopeScalingSpec `json:",omitempty"`
 	}{
 		ModelRef:               isvc.Spec.ModelRef,
 		ContextSize:            isvc.Spec.ContextSize,
@@ -2794,13 +3094,14 @@ func computeSpecHash(isvc *inferencev1alpha1.InferenceService) string {
 		ReasoningBudget:        isvc.Spec.ReasoningBudget,
 		ReasoningBudgetMessage: isvc.Spec.ReasoningBudgetMessage,
 		Mode:                   isvc.Spec.Mode,
-		Replicas:               isvc.Spec.Replicas,
+		Replicas:               replicas,
 		Suspend:                isvc.Spec.Suspend,
 		Runtime:                isvc.Spec.Runtime,
 		TurboQuantBits:         isvc.Spec.TurboQuantBits,
 		PagedSSDCacheDir:       isvc.Spec.PagedSSDCacheDir,
 		HotCacheMaxSize:        isvc.Spec.HotCacheMaxSize,
 		PagedSSDCacheMaxSize:   isvc.Spec.PagedSSDCacheMaxSize,
+		RopeScaling:            isvc.Spec.RopeScaling,
 	}
 	b, err := json.Marshal(relevant)
 	if err != nil {

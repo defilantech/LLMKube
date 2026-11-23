@@ -12,6 +12,9 @@ before:
     # Info.plist without compiling the tool per binary. Not in dist/: the
     # dist directory must still be empty when the before hooks finish.
     - go build -o ./bin/machoplist ./cmd/machoplist
+    # Generates third_party_licenses/, shipped by every archive and image
+    # below (#2564).
+    - make third-party-licenses
 
 builds:
   - id: llmkube-cli
@@ -70,17 +73,18 @@ builds:
       - CGO_ENABLED=0
 
   - id: llmkube-metal-agent
-    main: ./cmd/metal-agent
-    binary: llmkube-metal-agent
+    main: &metal_agent_main ./cmd/metal-agent
+    binary: &metal_agent_binary llmkube-metal-agent
 
     # Set version information at build time
-    ldflags:
+    ldflags: &metal_agent_ldflags
       - -s -w
       - -X main.Version={{.Version}}
       - -X main.GitCommit={{.FullCommit}}
       - -X main.BuildDate={{.Date}}
 
-    # macOS only (Metal is macOS-specific)
+    # darwin only: its archive ships deployment/macos and is the one the cask
+    # installs. The linux agent is llmkube-metal-agent-linux below.
     goos:
       - darwin
 
@@ -98,6 +102,23 @@ builds:
           env:
             - MACHOPLIST=./bin/machoplist
           output: true
+
+  # Linux host agent (experimental). Separate from llmkube-metal-agent, whose
+  # archive ships deployment/macos and feeds the cask.
+  - id: llmkube-metal-agent-linux
+    main: *metal_agent_main
+    binary: *metal_agent_binary
+    ldflags: *metal_agent_ldflags
+
+    goos:
+      - linux
+
+    goarch:
+      - arm64
+      - amd64
+
+    env:
+      - CGO_ENABLED=0
 
   - id: llmkube-foreman-operator
     main: ./cmd/foreman-operator
@@ -175,6 +196,7 @@ archives:
     # Files to include in archive
     files:
       - LICENSE
+      - third_party_licenses/**
       - README.md
       - CHANGELOG.md
       - examples/gpu-quickstart/*
@@ -190,19 +212,34 @@ archives:
       - llmkube-metal-agent
 
     # Archive name template
-    name_template: "{{ .ProjectName }}-metal-agent_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    name_template: &metal_agent_archive_name "{{ .ProjectName }}-metal-agent_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
 
     # Files to include
     files:
       - LICENSE
+      - third_party_licenses/**
       - README.md
       - examples/metal-quickstart/*
+      # The quickstart's full text; the example README above points to it.
+      - docs/site/getting-started/metal-quickstart.md
       # deployment/macos minus the *.Info.plist.tmpl files, which only the
       # build hook uses (internal/machoplist/release_identity_test.go).
       - deployment/macos/README.md
       - deployment/macos/*.plist
       - deployment/macos/*.yaml
       - deployment/macos/sudoers.d/*
+
+  # Not in homebrew_casks: the cask installs only the darwin archive above.
+  - id: llmkube-metal-agent-linux
+    ids:
+      - llmkube-metal-agent-linux
+
+    name_template: *metal_agent_archive_name
+
+    files:
+      - LICENSE
+      - third_party_licenses/**
+      - README.md
 
   - id: llmkube-foreman-agent
     ids:
@@ -216,6 +253,7 @@ archives:
     # Files to include
     files:
       - LICENSE
+      - third_party_licenses/**
       - README.md
       # deployment/macos minus the *.Info.plist.tmpl files, which only the
       # build hook uses (internal/machoplist/release_identity_test.go).
@@ -242,6 +280,9 @@ dockers_v2:
     tags:
       - "{{ .Version }}"
     dockerfile: Dockerfile.goreleaser
+    extra_files:
+      - LICENSE
+      - third_party_licenses
     platforms:
       - linux/amd64
       - linux/arm64
@@ -260,6 +301,9 @@ dockers_v2:
     tags:
       - "{{ .Version }}"
     dockerfile: Dockerfile.foreman-operator.goreleaser
+    extra_files:
+      - LICENSE
+      - third_party_licenses
     platforms:
       - linux/amd64
       - linux/arm64
@@ -278,6 +322,9 @@ dockers_v2:
     tags:
       - "{{ .Version }}"
     dockerfile: Dockerfile.foreman-agent.goreleaser
+    extra_files:
+      - LICENSE
+      - third_party_licenses
     platforms:
       - linux/amd64
       - linux/arm64
@@ -296,6 +343,9 @@ dockers_v2:
     tags:
       - "{{ .Version }}"
     dockerfile: Dockerfile.router-proxy.goreleaser
+    extra_files:
+      - LICENSE
+      - third_party_licenses
     platforms:
       - linux/amd64
       - linux/arm64
@@ -398,6 +448,16 @@ release:
     ```
 
     **Windows**: Download the `.zip` file and add `llmkube.exe` to your PATH.
+
+    **Linux host agent (experimental)**
+    Static metal-agent builds for a Linux host; see the [Linux host agent guide](https://llmkube.com/docs/guides/linux-host-agent) to join one to a cluster.
+    ```bash
+    # ARM64
+    curl -L https://github.com/defilantech/LLMKube/releases/download/v{{ .Version }}/LLMKube-metal-agent_{{ .Version }}_linux_arm64.tar.gz | tar xz llmkube-metal-agent
+
+    # AMD64
+    curl -L https://github.com/defilantech/LLMKube/releases/download/v{{ .Version }}/LLMKube-metal-agent_{{ .Version }}_linux_amd64.tar.gz | tar xz llmkube-metal-agent
+    ```
 
     ### Verify Installation
     ```bash

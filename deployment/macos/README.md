@@ -13,7 +13,7 @@ model, the other runtimes, and the manual and source-build installs.
 
 1. **macOS with Apple Silicon** (M1 to M5). An Intel Mac with Metal 2+ can run the agent, but the bundled plist points `--llama-server` at the Apple Silicon Homebrew path (`/opt/homebrew/bin/llama-server`); change it to `/usr/local/bin/llama-server` there.
 2. **Access to a Kubernetes cluster**, remote or on the same Mac (minikube, kind). The cluster's pods must be able to open TCP connections to the Mac on `--ingress-port` (9443); see "Network requirements" in the [macOS Metal guide](https://llmkube.com/docs/guides/macos-metal#network-requirements)
-3. **llama.cpp** with Metal support:
+3. **llama.cpp** with Metal support, unless `--runtime` selects another engine (see "Choosing a Runtime per InferenceService"):
    ```bash
    brew install llama.cpp
    ```
@@ -23,7 +23,7 @@ model, the other runtimes, and the manual and source-build installs.
    helm install llmkube llmkube/llmkube \
      -n llmkube-system --create-namespace
    ```
-5. **To build the agent from source:** the Xcode Command Line Tools (`xcode-select --install`) and Go 1.27.3 or newer, the version `go.mod` pins.
+5. **To build the agent from source:** the Xcode Command Line Tools (`xcode-select --install`) and Go 1.27.4 or newer, the version `go.mod` pins.
 6. **`--host-ip` flag** (optional): an agent started with `--metal-node` (as `llmkube metal join` does) registers the address the MetalNode dial-back verified. Without `--metal-node` it auto-detects one, preferring a Tailscale address (see "`--host-ip` flag (remote cluster)" below), which may not be one your cluster can reach. Start the agent with `--host-ip <your-mac-ip>` so that its ingress is registered in Kubernetes at an address you chose.
 
 ## Installation
@@ -171,8 +171,8 @@ Once it is joined (`llmkube metal join`) or installed with the Makefile, the Met
 ### Deploy a Model with Metal Acceleration
 
 ```bash
-# Deploy from catalog (--context caps the 131072-token catalog default so the
-# model fits the agent's memory budget on most Macs)
+# Deploy from catalog (8192 tokens is the catalog default; increase --context
+# only if the agent's memory budget allows)
 llmkube deploy llama-3.1-8b --accelerator metal --context 8192
 
 # Or deploy custom model
@@ -317,7 +317,12 @@ engine it cannot stop keeps its record, and the command exits 1 after trying
 the rest. With a kubeconfig it first withdraws each service's endpoint. It
 takes `--state-dir`, `--namespace`, `--kubeconfig`, `--kube-context`,
 `--ollama-port` and `--log-level`. Only `--state-dir` must match the agent's,
-since the records live under it; `--namespace` only affects log lines.
+since the records live under it; `--namespace` only affects log lines. The
+default state directory depends on `HOME` (and `XDG_DATA_HOME` off macOS), so
+a shell with a different environment than the agent resolves a different one.
+`stop-engines` logs the directory it read as `stateDir` on its `stopping
+recorded engines` line; compare it with `stateDir` on the agent's `engine
+records directory` startup line, and pass `--state-dir` when they differ.
 `make uninstall-metal-agent` does both steps and then removes the binary and
 plist.
 
@@ -398,8 +403,10 @@ Avoid restarting or upgrading the agent while its API server is unreachable.
 ### Model store
 
 Downloaded models and the per-engine logs live in the model store, by default
-`~/Library/Application Support/llmkube/models`. The agent creates it (mode
-0700) on first start. The store is judged on the directory it resolves to (the
+`~/Library/Application Support/llmkube/models` (off macOS,
+`$XDG_DATA_HOME/llmkube/models`, or `~/.local/share/llmkube/models` when
+`XDG_DATA_HOME` is unset or not absolute). The agent creates it (mode 0700) on
+first start. The store is judged on the directory it resolves to (the
 target of a symlinked store), and the agent refuses to start unless:
 
 - the store is not at or under `/tmp`, `/var/tmp` or their `/private` forms
@@ -555,6 +562,18 @@ The agent logs the effective cap as `maxDownloadBytes` at startup. It refuses to
 Like a digest mismatch, the refusal is remembered, so the agent does not download the same source up to the cap on every reconcile. Changing the Model's `source` (or `sha256`) retries, and so does restarting the agent, which is also how a raised cap takes effect. Deleting the `Model` or the `InferenceService` clears the memo too, once the agent's next poll (every 5 seconds) sees it gone, so recreate it after that. A file placed in the cache slot (`<model-store>/<model>/<file>`) by hand does not lift the refusal: the memo is checked before the agent looks for a cached file, so the start stays refused until one of those resets or an agent restart.
 
 Upgrade note: if you deliberately serve a model file larger than the Mac's physical memory (for example with a Model `spec.hardware.memoryBudget` above the Mac's RAM), raise `--max-download-size` or set it to `0` before upgrading, or the agent will refuse that download.
+
+### `--download-free-space-headroom` flag (disk preflight)
+
+When the source declares its size (the HEAD probe, the response's `Content-Length`, or the s3 object size), the agent checks the free space on the model store's filesystem before the download writes anything. It refuses the start with reason `ModelDownloadNoSpace` when the bytes still to fetch plus the headroom are more than the space left. A body of unknown length is not checked up front; a disk it fills is caught as below. A resumed download counts only its remaining bytes, and its partial file is kept. The headroom keeps room on the filesystem for macOS itself (swap, updates) and everything else on it; it defaults to `10Gi`:
+
+```bash
+llmkube-metal-agent --download-free-space-headroom=20Gi
+```
+
+`0` still refuses a download that does not fit at all. A filesystem that fills up during the copy (another process writing at the same time) is the same refusal, and the partial file is kept so the download resumes. The refusal is retried on the agent's refusal re-check (backing off to once a minute, with no limit on attempts), so freeing space lets the next check start the service; a partial download resumes from where it stopped. When the agent cannot read the free space, the download proceeds as before. The check covers the downloads the agent makes for llama-server, like `--max-download-size`.
+
+`llmkube_metal_agent_model_store_used_bytes` and `llmkube_metal_agent_model_store_free_bytes` report the store's size and the free space every minute, so model churn can be alerted on before a start is refused. The agent does not delete models from the store yet; remove `<model-store>/<model>` for a model no InferenceService on this Mac uses to reclaim it (`llmkube cache clear` works on the cluster's cache claims, not on a Mac's store).
 
 ### Model-source credentials Secrets (`sourceSecretRef`)
 
@@ -1075,9 +1094,9 @@ model" for the full flow.
 | Flag | Default | Purpose |
 |------|---------|---------|
 | `--ingress-port` | `9443` | TLS port of the ingress, on all interfaces. Open this port, not engine ports, in the macOS firewall. |
-| `--state-dir` | `~/Library/Application Support/llmkube/metal-agent` | Agent state: the ingress key and certificate in `<state-dir>/ingress/` (relay mode) and a record of each running engine in `<state-dir>/engines/` (both modes), which the next agent process uses to adopt engines that outlived the previous one (see [Agent restarts, upgrades and stopping engines](#agent-restarts-upgrades-and-stopping-engines)). `<state-dir>` and `engines/` are 0700; record files 0600. A leading `~` is expanded to the agent's home and a relative path is made absolute; the resolved path is logged at startup. |
+| `--state-dir` | `~/Library/Application Support/llmkube/metal-agent`; off macOS, `$XDG_DATA_HOME/llmkube/metal-agent` (`~/.local/share/llmkube/metal-agent` when `XDG_DATA_HOME` is unset or not absolute) | Agent state: the ingress key and certificate in `<state-dir>/ingress/` (relay mode) and a record of each running engine in `<state-dir>/engines/` (both modes), which the next agent process uses to adopt engines that outlived the previous one (see [Agent restarts, upgrades and stopping engines](#agent-restarts-upgrades-and-stopping-engines)). `<state-dir>` and `engines/` are 0700; record files 0600. A leading `~` is expanded to the agent's home and a relative path is made absolute; the resolved path is logged at startup. |
 | `--legacy-direct-endpoints` | `false` | DEPRECATED, removed in a future release. Engines on all interfaces without authentication, registered directly, no ingress. Only for a controller that predates relay support. |
-| `--client-port` | `9999` | Listener on `127.0.0.1:<port>` that forwards `/v1/*` to the current engine, for clients on the Mac itself. `0` disables it. |
+| `--client-port` | `9999` | Listener on `127.0.0.1:<port>` that forwards `/v1/*` to an engine, for clients on the Mac itself: the one running, or with several running the one the request's `model` names (see "Model identifier"). `0` disables it. |
 
 `--ingress-port` must differ from `--port` and `--client-port`.
 
@@ -1089,7 +1108,11 @@ The Metal Agent estimates model memory requirements (weights + KV cache + overhe
 
 The KV-cache term is sized from the model's GGUF attention shape (KV head count and key/value length, i.e. grouped-query attention) when the file provides it. The charge can be lower or higher than the old embedding-width formula: lower for GQA models whose KV head count is well below the attention head count (Llama 3.1), higher for head-dim models whose heads times head_dim exceeds the embedding width (Gemma), so a model admitted under the old estimate can be refused after this change. When the GGUF omits the key/value lengths, the head dims are derived as the embedding width divided by the attention head count, which is what llama-server itself uses for such files (Llama 3.1 and Qwen 2.5 GGUFs carry the KV head count but not the lengths). The embedding-width fallback remains for GGUFs without a usable attention shape at all: no scalar KV head count (absent, or stored per layer as an array on hybrid archs), no scalar head count, more KV heads than attention heads, or a head count that does not divide the embedding width when a key or value length is missing from the file. Two known over-charges remain by design: models with sliding-window layers (Gemma 3) are charged the full-attention head dims for every layer, and DeepSeek MLA-layout files are charged their stated head dims even though llama-server stores only the compressed key cache, so they are over-charged. Older deepseek2 conversions carry plain head dims and no `*_mla` keys, run the non-MLA path, and are charged exactly what llama-server allocates.
 
-The estimate charges the total `--ctx-size` pool: llama-server shares that pool across `--parallel` slots rather than multiplying it, so admission does not scale with slot count.
+The attention shape comes from the Model's `status.gguf` when the controller recorded it, which it does for http(s) and s3 sources whose header it could read over the network. The controller cannot read the Mac's disk, so for a local source (an absolute path or a `file://` URI), an `hf://` source, or a source whose remote header read failed, the agent reads the GGUF header of the file it will load: the local file (following symlinks, as the load does) or its own model-store copy once downloaded. It reads at most 32 MiB of header, never the tensor data, and reads a file again only when its size, modification time or inode changes. For a split GGUF that file is the first shard, the only one llama-server accepts as the model path. With no shape (an MLX model directory, whose `config.json` the agent does not read; a file that is not a GGUF; or the first start of a download the controller could not read, before the file is on the Mac) the estimate is the file size plus 20% and 512 MiB, with no KV-cache term at any `contextSize`. Above the default 2048-token context the agent logs that once per model, and an `InsufficientMemory` message then ends with `the KV cache for --ctx-size N is not counted (<reason>)`, so the figure is a lower bound. An MLX model with a long context is therefore admitted against less memory than it will use; leave room for its KV cache in `--memory-fraction`.
+
+A header the agent reads also gives the model's layer layout, which `status.gguf` does not record. On a hybrid model only the attention layers keep a KV cache: the layers `<arch>.attention.recurrent_layers` or `<arch>.full_attention_interval` mark as attention, plus any MTP (`nextn_predict_layers`) layers, or, when the file has neither key but has SSM geometry, the layers whose per-layer `head_count_kv` is not 0. That covers the Qwen3.5, Qwen3.6 and Qwen3.8 GGUFs (`qwen35`, `qwen35moe`), Qwen3-Next, and the Jamba, Nemotron-H and Granite hybrids. Each other layer keeps a fixed f32 recurrent state per sequence, sized from the `ssm.*` keys as llama.cpp sizes it, and charged for `spec.parallelSlots` sequences, or 4 when that is 1 or unset, because llama-server then runs its automatic 4 slots. A per-layer `head_count_kv` array (Nemotron Super) is summed rather than falling back to the embedding-width formula. For Qwen3.8-27B at `contextSize: 131072` this charges 8 GiB of KV cache and 0.6 GiB of recurrent state, where counting all 64 layers charged 32 GiB. A file whose recurrent layers keep another kind of state (RWKV, LFM2, Kimi Linear) or lack SSM geometry is charged at every layer, as before, and so is a Model charged from its `status.gguf`.
+
+The estimate charges the total `--ctx-size` pool: llama-server shares that pool across `--parallel` slots rather than multiplying it, so the KV term does not scale with slot count. A hybrid model's recurrent state, above, is per sequence and does.
 
 A Model parsed by an older controller keeps the embedding-width estimate until its GGUF metadata is re-parsed, which happens on the next download, or after any change to the Model's spec when the Available condition records an older generation than the spec (a Ready status written before that condition existed has no such record and needs the Model recreated). Editing a local source's file on disk does nothing under the default `IfNotPresent` refresh policy; with `refreshPolicy: OnChange` the size and mtime change counts as drift, triggering a re-download and a fresh parse.
 
@@ -1250,6 +1273,8 @@ The Metal Agent exposes an HTTP server on `127.0.0.1:9090` (configurable via `--
 | `llmkube_metal_agent_evictions_total` | Counter | Processes the memory watchdog evicted under Critical pressure (only with `--eviction-enabled`). Each eviction also emits an `Evicted` Warning event |
 | `llmkube_metal_agent_engine_record_errors_total` | Counter | Engine record writes that failed and failed the start |
 | `llmkube_metal_agent_engines_adopted_total` | Counter | Engine records evaluated at startup, by outcome. Labels: `result` (`adopted`, `stopped`, `discarded`) |
+| `llmkube_metal_agent_model_store_used_bytes` | Gauge | Bytes of regular files under the model store, refreshed every minute |
+| `llmkube_metal_agent_model_store_free_bytes` | Gauge | Free bytes on the model store's filesystem, refreshed every minute |
 | `llmkube_metal_agent_evictions_skipped_total` | Counter | Times the watchdog was at Critical but did not evict. Labels: `reason` (`disabled`, `below_guard`, `empty`, `floor`, `all_protected`, `runtime_ineligible`) |
 | `llmkube_metal_agent_watch_consecutive_failures` | Gauge | Consecutive failed Kubernetes lists by the InferenceService watcher; resets to 0 on success. At `--max-watch-failures` the API counts as unreachable |
 | `llmkube_metal_agent_api_unreachable` | Gauge | 1 while the agent counts the Kubernetes API as unreachable (`--max-watch-failures` or more consecutive failed lists), 0 otherwise. The agent keeps running and its engines keep serving; see [API server outages](#api-server-outages) |
@@ -1261,7 +1286,7 @@ The Metal Agent exposes an HTTP server on `127.0.0.1:9090` (configurable via `--
 | `llmkube_metal_agent_apple_power_cpu_watts` | Gauge | CPU subsystem power. Zero unless `--apple-power-enabled`. |
 | `llmkube_metal_agent_apple_power_ane_watts` | Gauge | Apple Neural Engine power. Zero unless `--apple-power-enabled`. |
 | `llmkube_metal_agent_ingress_requests_total` | Counter | Requests answered by the authenticated ingress. Labels: `code` (HTTP status) |
-| `llmkube_metal_agent_client_proxy_requests_total` | Counter | Requests answered by the host-side client proxy. Labels: `outcome` (`bad_host`, `no_backend`, `path_forbidden`, or the response's status class) |
+| `llmkube_metal_agent_client_proxy_requests_total` | Counter | Requests answered by the host-side client proxy. Labels: `outcome` (`bad_host`, `no_backend`, `path_forbidden`; with several engines running `bad_request`, `request_too_large`, `model_required`, `model_not_found`, `model_ambiguous`; or the response's status class) |
 
 Standard Go runtime and process metrics (`go_*`, `process_*`) are also available.
 
@@ -1351,9 +1376,16 @@ kubectl describe inferenceservice <name>
   `--max-download-size` (default: the Mac's total memory) is stopped, its
   partial removed, and refused. See "`--max-download-size` flag (download
   cap)" above.
+- **Disk space** (`ModelDownloadNoSpace`): a download that would leave less
+  than `--download-free-space-headroom` (default `10Gi`) free on the model
+  store, or that fills the disk, is refused and retried once space is freed.
+  See "`--download-free-space-headroom` flag (disk preflight)" above.
 - **Cache slot** (`ModelSourceNotAllowed`): for a downloaded source, the
   file at `<model-store>/<model>/<file>` must be a regular file the agent
   wrote. A symlink there is refused, not followed.
+- **Runtime** (`RuntimeNotAvailable`): the InferenceService's runtime must
+  have an engine on this agent. The refusal comes before anything is stopped
+  or downloaded, so an engine already serving the service keeps running.
 - **Credentials Secret** (`SourceSecretNotAllowed`): a Model's
   `sourceSecretRef` must name an existing Secret labeled
   `inference.llmkube.dev/model-source-credentials=true`, and never the relay
@@ -1682,8 +1714,28 @@ On a Metal InferenceService (`kubectl describe inferenceservice <name>`):
   `RelaySecretNotManaged` (Warning).
 - From the agent: `RelayNotAdopted`, `ExtraArgsRejected`,
   `EndpointNameConflict`, `ModelSourceNotAllowed`, `ServiceNameTooLong`,
-  `ModelDigestMismatch`, `ModelDownloadTooLarge`, `SourceSecretNotAllowed`,
-  `SourceSecretUnlabeled` (Warning).
+  `ModelDigestMismatch`, `ModelDownloadTooLarge`, `ModelDownloadNoSpace`, `SourceSecretNotAllowed`,
+  `RuntimeNotAvailable`, `RuntimeCannotServeSource`, `SourceSecretUnlabeled`, `StartFailed`, `EngineExited`
+  (Warning).
+
+`StartFailed` means a start the agent did not refuse failed anyway (the engine
+exited while loading, the download failed, or the engine never answered its
+health check): the Event carries the error's first line and the path of the
+engine log on the Mac, `status.schedulingStatus` reads `StartFailed`, and the
+agent retries after 10 seconds, doubling up to 5 minutes, until an engine runs,
+the InferenceService is deleted or scaled to zero, or its spec changes (which
+retries at once).
+
+`EngineExited` means a running engine's process exited: the agent withdraws its
+endpoint at once and restarts the engine without waiting for failed health
+checks, the Event carries the exit status and the log's path, and the crashed
+run's log is kept as `<engine>-<namespace>-<name>.log.1` in the model store
+(`llama-server-...` for llama.cpp). The restart uses the same backoff as
+`StartFailed`, 10 seconds doubling up to 5 minutes, so an engine that keeps
+crashing is restarted less and less often.
+Neither Event carries engine log content, since Events are readable by anyone
+who can read the namespace and an engine log can hold request text; the last
+lines of the log go to the agent's own log.
 
 `ServiceNameTooLong` means the InferenceService name is too long for the
 `<isvc>-agent` Service (at most 57 characters, since the name plus `-agent`
@@ -1887,9 +1939,17 @@ The downloaded source's SHA256 does not match the Model's `spec.sha256`. The bad
 
 The Model's download went over `--max-download-size`: either the source declared a size over the cap (nothing was written) or the body ran past it (the partial was removed). The message says which, and names the cap in bytes. If the source is wrong, fix `spec.source`; the next reconcile retries. If the model really is that large, raise `--max-download-size` (or set it to `0`) and restart the agent. If the spec was already right and the source was fixed upstream, delete and recreate the Model (or the InferenceService), or restart the agent. Placing the file in the cache slot by hand is not enough: the remembered refusal is checked first, so it only lifts after one of those. See "`--max-download-size` flag (download cap)" above.
 
+### `ModelDownloadNoSpace`
+
+The model store's filesystem has no room for the download: the bytes still to fetch plus `--download-free-space-headroom` are more than the free space, or the disk filled up during the copy. The message gives the space needed and roughly what is free. Free space on that filesystem (for example by removing `<model-store>/<model>` for a model no InferenceService on this Mac uses) and the agent retries on its refusal re-check; a partial download is kept and resumes. Lowering `--download-free-space-headroom` also works but leaves less room for macOS. See "`--download-free-space-headroom` flag (disk preflight)" above.
+
 ### `SourceSecretNotAllowed`
 
 The Model's `spec.sourceSecretRef` names a Secret the agent will not read: it is not labeled `inference.llmkube.dev/model-source-credentials=true`, it does not exist in the Model's namespace, the agent's RBAC does not let it read it (a Secret outside `metalAgent.rbac.secretNames`, or the `resourceNames` you pinned in `metal-agent-rbac.yaml`), or it is the relay token Secret `llmkube-metal-relay`. The message says which, and gives the `kubectl label` command. Label (or create) the Secret, or add it to the pinned names, and the next poll starts the service; for the relay Secret, move the credentials to a Secret of their own and point `sourceSecretRef` at it. See "Model-source credentials Secrets (`sourceSecretRef`)" above.
+
+### `RuntimeNotAvailable`
+
+The InferenceService resolves to a runtime this agent has no engine for: its binary was not found or not configured when the agent started. For `llamacpp` (or `llama-server`) that means llama-server was not found and `--runtime` selects another engine. Install llama.cpp or pass `--llama-server=/path/to/llama-server` and restart the agent, or set `spec.runtime` to an engine the agent serves. For another runtime, install its binary or pass its binary flag (or select it with `--runtime`) and restart the agent. An engine already running for the service is not stopped.
 
 ### Can't connect to Kubernetes
 
@@ -1920,6 +1980,8 @@ see "LAN download fails with `no route to host` after an upgrade" above, and
 ### Agent logs `referenced model lookup failed; keeping the inference service's previous state`
 
 On every poll (every 5 seconds) the agent looks up the Model each InferenceService references, to decide whether it is a Metal service this agent runs. When that lookup fails with anything other than NotFound (an API server timeout, throttling, a 5xx while the control plane restarts, `Forbidden`), the agent cannot tell, so it leaves the service as it was: a running engine keeps serving and keeps its Service and EndpointSlice, and a service it was not running yet is not started. While the lookup fails, changes to the InferenceService (`replicas: 0`, `suspend`, flag changes) do not take effect; deleting the InferenceService, or restoring the agent's access, does.
+
+A NotFound Model stops a running engine only once it has been missing for 5 minutes, so deleting and re-creating it (`kubectl replace --force`, a GitOps re-create) keeps the engine serving. Re-created with the same spec, nothing restarts; re-created with a different spec, the engine restarts on the new Model, as before. An in-place edit of a Model does not restart the engine.
 
 The agent retries on every poll. It logs this warning once when a service's lookup starts failing, Debug lines while it keeps failing, and `referenced model lookup recovered` at Info when it succeeds again, and the `llmkube_metal_agent_watch_model_lookup_failing_services` gauge counts the services currently in this state. A warning followed by a recovery line around a control-plane restart is expected. If the gauge stays above zero, check that the agent's credentials can still read Models in its namespace:
 
@@ -2097,6 +2159,13 @@ spec:
 The operator rejects them on an InferenceService whose Model does not set
 `hardware.accelerator: metal`.
 
+llama-server is looked up in `/opt/homebrew/bin`, `/usr/local/bin` and
+`/usr/bin` unless `--llama-server` names it. The agent exits at startup when
+it is missing and `--runtime` is `llama-server` (the default). With another
+`--runtime` it logs a warning and starts without llama.cpp, and an
+InferenceService that resolves to `llamacpp` is refused with
+`RuntimeNotAvailable` (see "`RuntimeNotAvailable`" under Troubleshooting).
+
 InferenceServices created with LLMKube 0.9.30 or earlier were stored with
 `runtime: llamacpp`, because the CRD used to set that default. They keep
 serving llama.cpp and ignore `--runtime`. To hand one of them back to the
@@ -2243,6 +2312,19 @@ A client that reaches the `<isvc>` Service directly or the agent's
 `model` field. For llama-server and oMLX that name is the served model
 name: the InferenceService's `spec.modelRef` (falling back to the Model
 name). With the example above it is `llama-3b-mlx`.
+
+With several InferenceServices running on the Mac, the `--client-port`
+proxy uses that field to pick the engine: the served model name or the
+shared daemon's model ID first, then the InferenceService name, then
+`<namespace>/<name>`, then any ID an engine's own `GET /v1/models` lists
+(an `--alias` set in `extraArgs`, for example). Its `GET /v1/models` merges
+every engine's list. A request with no `model`, a model no engine serves,
+or a name two engines answer to is refused with 400, 404 or 409, and the
+error names the models to choose from. The proxy reads at most 32 MiB of a
+request body to find the model, and forwards the `model` field unchanged:
+an engine that checks it (oMLX, Ollama, vllm-swift, mlx-server) needs the ID
+it lists, not the InferenceService name. With one engine running it forwards
+every request to it, as before.
 
 oMLX itself names each model after its model-store directory
 (`Llama-3.2-3B-Instruct-4bit` above). So that it answers to the served

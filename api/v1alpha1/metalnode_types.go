@@ -31,6 +31,12 @@ const (
 	// with a server whose certificate is the one the agent reported, names
 	// this MetalNode's UID and carries the reported SPKI pin.
 	MetalNodeConditionReachable = "Reachable"
+	// MetalNodeConditionAgentVersionSupported is True when the agent's
+	// version is inside the supported skew window of the controller's: the
+	// same minor release, and not newer than the controller. False names the
+	// side to upgrade; Unknown means either version is not a release version
+	// (a development build) or the agent has not reported one.
+	MetalNodeConditionAgentVersionSupported = "AgentVersionSupported"
 )
 
 // MetalNode condition reasons.
@@ -59,6 +65,18 @@ const (
 	// MetalNodeReasonCertificateUnbound: the agent's ingress certificate does
 	// not name this MetalNode's UID (yet), so no server can pass the check.
 	MetalNodeReasonCertificateUnbound = "CertificateUnbound"
+	// MetalNodeReasonVersionInSkewWindow: the agent's version is inside the
+	// supported skew window.
+	MetalNodeReasonVersionInSkewWindow = "InSkewWindow"
+	// MetalNodeReasonAgentNewerThanController: the agent is a newer release
+	// than the controller. Upgrade the chart first, then the agents.
+	MetalNodeReasonAgentNewerThanController = "AgentNewerThanController"
+	// MetalNodeReasonAgentMinorBehind: the agent is from an older minor
+	// release than the controller. Upgrade the agent.
+	MetalNodeReasonAgentMinorBehind = "AgentMinorBehind"
+	// MetalNodeReasonVersionUnknown: the controller or the agent version is
+	// not a release version, or the agent has not reported one.
+	MetalNodeReasonVersionUnknown = "VersionUnknown"
 )
 
 // LabelMetalNode names the MetalNode an object belongs to. The controller
@@ -113,10 +131,12 @@ type MetalNodeVerifier struct {
 	Tolerations []corev1.Toleration `json:"tolerations,omitempty"`
 }
 
-// MetalNodeCapacity is the hardware the agent reports. All of it is the Mac's
-// own claim.
+// MetalNodeCapacity is the hardware the agent reports. All of it is the
+// host's own claim.
 type MetalNodeCapacity struct {
-	// MemoryBytes is the Mac's unified memory in bytes.
+	// MemoryBytes is the host's memory in bytes: unified memory on a Mac,
+	// RAM on Linux, capped by the smallest cgroup v2 memory.max on the
+	// agent's cgroup path. A cgroup v1 limit is not read.
 	// +optional
 	MemoryBytes int64 `json:"memoryBytes,omitempty"`
 
@@ -124,15 +144,17 @@ type MetalNodeCapacity struct {
 	// +optional
 	Memory string `json:"memory,omitempty"`
 
-	// Chip is the CPU brand string (for example "Apple M5 Max").
+	// Chip is the CPU brand string on macOS (for example "Apple M5 Max"),
+	// and the device-tree model or the cpuinfo model name on Linux.
 	// +optional
 	Chip string `json:"chip,omitempty"`
 
-	// GPUCores is the GPU core count.
+	// GPUCores is the GPU core count. Reported on macOS only.
 	// +optional
 	GPUCores int32 `json:"gpuCores,omitempty"`
 
-	// MetalVersion is the Metal family the GPU supports (for example "Metal 4").
+	// MetalVersion is the Metal family the GPU supports (for example
+	// "Metal 4"). Reported on macOS only.
 	// +optional
 	MetalVersion string `json:"metalVersion,omitempty"`
 }

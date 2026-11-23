@@ -97,7 +97,7 @@ Look for issues labeled:
 ### Prerequisites
 
 **Required:**
-- **Go 1.27.3+** (the version `go.mod` pins): Install from [golang.org](https://golang.org/dl/)
+- **Go 1.27.4+** (the version `go.mod` pins): Install from [golang.org](https://golang.org/dl/)
 - **Docker 17.03+**: For building images
 - **kubectl**: Configured with a cluster (minikube, kind, GKE, etc.)
 - **Kubernetes cluster**: a recent release (minikube, kind, or cloud). CI runs the e2e suite on kind's default node image, which is Kubernetes v1.37.0 as of November 2026; older versions are not tested
@@ -286,7 +286,9 @@ generated or substantially assisted by an AI tool, the following apply.
 - A human signs off every commit with the DCO (`git commit -s`). The sign-off
   means a person takes responsibility for understanding, testing, and
   maintaining the change, however it was produced. Bot-only sign-offs are not
-  accepted.
+  accepted. On pull requests opened by the project's own agent, a maintainer
+  adds the sign-off before approving; see "The maintainer-run agent workflow"
+  below.
 - A human, not an agent, owns the review conversation. Replies to review
   feedback come from you, not from an autonomous agent posting on your behalf.
 
@@ -313,6 +315,19 @@ generated or substantially assisted by an AI tool, the following apply.
   or discussion, especially low-effort ones targeting `good-first-issue`
   labels. To work an issue, comment on it first so a human can confirm it is a
   good fit and not already in progress.
+
+**The maintainer-run agent workflow.**
+
+Work an agent does for the maintainers is authored by `defilan-agent[bot]`,
+the project's GitHub App, and pushed to `agent/<topic>` branches in
+`defilantech/LLMKube` itself. Human contributors keep opening pull requests
+from their own forks, and keep signing off their own commits with
+`git commit -s`, as today. The bot's commits carry no sign-off: the agent
+never adds a `Signed-off-by` line. Before approving an agent PR, a human
+maintainer adds the DCO sign-off with the `signoff-pr` helper (a
+`git rebase --signoff` followed by a `--force-with-lease` push of the PR
+branch). Commit messages stay conventional and free of attribution trailers,
+and the PR description keeps the `Assisted-by:` disclosure line.
 
 This is not an anti-AI policy. It is a "stand behind your work" policy. We
 dogfood agentic contribution daily; we just require that a person stay in the
@@ -374,14 +389,18 @@ loop and on the hook.
 3. **Address feedback** by pushing new commits
 4. **Approval and merge** (squash-merge to `main` through the merge queue)
 
-Approved PRs merge through GitHub's merge queue. The queue squashes each PR onto
-the current `main`, together with any PRs queued ahead of it, and runs the
-required checks (Unit and envtest, Lint and static checks, the E2E Tests jobs,
-govulncheck and the DCO check) on that result before it lands. A PR whose checks
-pass on its own branch can still fail in the queue when it conflicts with
-something that merged after it was opened; the queue then removes it, and a
-rebase on `main` shows the failure locally. This is what keeps two green PRs
-from merging into a red `main` (#2379).
+Approved PRs merge through GitHub's merge queue: a maintainer clicks "Merge when
+ready", and GitHub adds the PR to the queue once its own required checks pass,
+waiting for them if they are still running. The queue squashes each PR onto the
+current `main`, together with any PRs queued ahead of it, and runs the three
+required checks on that result before it lands: Unit and envtest, Lint and
+static checks, and Developer Certificate of Origin. The DCO check reads the PR's
+own commits, so in the queue it only reports a pass. The E2E Tests jobs and
+govulncheck run on the queued result too, but a failure there does not stop the
+merge. A PR whose checks pass on its own branch can still fail in the queue when
+it conflicts with something that merged after it was opened; the queue then
+removes it, and a rebase on `main` shows the failure locally. This is what keeps
+two green PRs from merging into a red `main` (#2379, #2509).
 
 **What reviewers look for:**
 - Code quality and readability

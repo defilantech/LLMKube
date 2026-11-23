@@ -545,6 +545,11 @@ func TestRunCatalogInfo(t *testing.T) {
 	if !strings.Contains(output, "Resource Requirements") {
 		t.Error("output should contain resource requirements")
 	}
+	for _, want := range []string{"Context Size:    8,192 tokens", "VRAM Estimate:   7-8GB"} {
+		if !strings.Contains(output, want) {
+			t.Errorf("catalog info missing %q", want)
+		}
+	}
 }
 
 func TestRunCatalogInfoQwen14BContext(t *testing.T) {
@@ -566,6 +571,33 @@ func TestRunCatalogInfoQwen14BContext(t *testing.T) {
 	output := buf.String()
 
 	for _, want := range []string{"Context Size:    16,384 tokens", "VRAM Estimate:   14-16GB"} {
+		if !strings.Contains(output, want) {
+			t.Errorf("catalog info missing %q", want)
+		}
+	}
+}
+
+func TestRunCatalogInfoQwenCoder7BContext(t *testing.T) {
+	old := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+
+	err := runCatalogInfo("qwen-2.5-coder-7b")
+
+	_ = w.Close()
+	os.Stdout = old
+
+	if err != nil {
+		t.Fatalf("runCatalogInfo error: %v", err)
+	}
+
+	var buf bytes.Buffer
+	_, _ = buf.ReadFrom(r)
+	output := buf.String()
+
+	// The model's trained window is 32,768 (max_position_embeddings, no rope_scaling);
+	// asking llama-server for 131,072 would run it past the context it was trained on.
+	for _, want := range []string{"Context Size:    32,768 tokens", "VRAM Estimate:   7-8GB"} {
 		if !strings.Contains(output, want) {
 			t.Errorf("catalog info missing %q", want)
 		}

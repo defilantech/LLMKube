@@ -34,6 +34,7 @@ import (
 	"time"
 
 	inferencev1alpha1 "github.com/defilantech/llmkube/api/v1alpha1"
+	"github.com/defilantech/llmkube/pkg/downloadprogress"
 )
 
 // gatedOrigin serves fixed per-file bodies, and serves each one only once the
@@ -663,6 +664,23 @@ func testPoolProgressNamesFileAndCount(t *testing.T, v poolVariant) {
 	}
 	if !strings.Contains(out, "Staging up to 2 files at once\n") {
 		t.Errorf("no line naming the pool's size\n%s", out)
+	}
+	// llmkube deploy shows these lines through downloadprogress (#2415): every
+	// report the pool prints must parse and name the file it belongs to.
+	reports := 0
+	for _, line := range strings.Split(out, "\n") {
+		if !strings.HasPrefix(line, "Downloaded ") {
+			continue
+		}
+		reports++
+		p, ok := downloadprogress.Parse(line)
+		if !ok || (p.File != names[0] && p.File != names[1]) || p.HasTotal == v.s3 {
+			t.Errorf("downloadprogress.Parse(%q) = %+v, %v; want a report naming %s or %s, with a total unless S3",
+				line, p, ok, names[0], names[1])
+		}
+	}
+	if reports == 0 {
+		t.Errorf("no progress report to parse\n%s", out)
 	}
 }
 

@@ -162,6 +162,10 @@ func TestRegisterEndpoint(t *testing.T) {
 		t.Errorf("EndpointSlice label llmkube.ai/managed-by = %q, want %q",
 			slice.Labels["llmkube.ai/managed-by"], "metal-agent")
 	}
+	if slice.Labels["endpointslice.kubernetes.io/managed-by"] != "metal-agent.llmkube.ai" {
+		t.Errorf("EndpointSlice label endpointslice.kubernetes.io/managed-by = %q, want %q",
+			slice.Labels["endpointslice.kubernetes.io/managed-by"], "metal-agent.llmkube.ai")
+	}
 	if slice.AddressType != discoveryv1.AddressTypeIPv4 {
 		t.Errorf("EndpointSlice AddressType = %q, want %q", slice.AddressType, discoveryv1.AddressTypeIPv4)
 	}
@@ -173,6 +177,10 @@ func TestRegisterEndpoint(t *testing.T) {
 	}
 	if slice.Endpoints[0].Conditions.Ready == nil || !*slice.Endpoints[0].Conditions.Ready {
 		t.Errorf("EndpointSlice endpoint Conditions.Ready = %v, want true", slice.Endpoints[0].Conditions.Ready)
+	}
+	// The endpoint is the Mac host; there is no Pod for a TargetRef to name.
+	if slice.Endpoints[0].TargetRef != nil {
+		t.Errorf("EndpointSlice endpoint TargetRef = %+v, want nil", slice.Endpoints[0].TargetRef)
 	}
 	if len(slice.Ports) != 1 {
 		t.Fatalf("EndpointSlice has %d ports, want 1", len(slice.Ports))
@@ -1191,6 +1199,40 @@ func TestRegisterEndpoint_UpdatesOwnedObjects(t *testing.T) {
 	}
 }
 
+// TestRegisterEndpoint_RepairsSliceFromOlderAgent checks that registering over
+// a slice an older agent wrote drops its targetRef to the <isvc>-metal Pod,
+// which never exists, and adds the endpointslice managed-by label (#2407).
+func TestRegisterEndpoint_RepairsSliceFromOlderAgent(t *testing.T) {
+	old := &discoveryv1.EndpointSlice{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "m",
+			Namespace: "default",
+			Labels:    map[string]string{labelServiceName: "m", managedByLabel: managedByValue},
+		},
+		AddressType: discoveryv1.AddressTypeIPv4,
+		Endpoints: []discoveryv1.Endpoint{{
+			Addresses: []string{"10.0.0.5"},
+			TargetRef: &corev1.ObjectReference{Kind: "Pod", Name: "m-metal"},
+		}},
+	}
+	c := newRegistryTestClient(t, old)
+	r := NewServiceRegistry(c, "10.0.0.5", newNopLogger(), "")
+	isvc := &inferencev1alpha1.InferenceService{ObjectMeta: metav1.ObjectMeta{Name: "m", Namespace: "default"}}
+	if err := r.RegisterEndpoint(context.Background(), isvc, 9000); err != nil {
+		t.Fatalf("RegisterEndpoint: %v", err)
+	}
+	slice := &discoveryv1.EndpointSlice{}
+	if err := c.Get(context.Background(), types.NamespacedName{Name: "m", Namespace: "default"}, slice); err != nil {
+		t.Fatalf("get EndpointSlice: %v", err)
+	}
+	if got := slice.Labels["endpointslice.kubernetes.io/managed-by"]; got != "metal-agent.llmkube.ai" {
+		t.Errorf("slice endpointslice.kubernetes.io/managed-by = %q, want %q", got, "metal-agent.llmkube.ai")
+	}
+	if len(slice.Endpoints) != 1 || slice.Endpoints[0].TargetRef != nil {
+		t.Errorf("slice endpoints = %+v, want one endpoint with no TargetRef", slice.Endpoints)
+	}
+}
+
 // A conflict is permanent: RegisterEndpointWithRetry must return it at once
 // instead of backing off.
 func TestRegisterEndpointWithRetry_StopsOnConflict(t *testing.T) {
@@ -1397,6 +1439,9 @@ func TestRegisterEndpoint_RelayWritesAgentService(t *testing.T) {
 	if slice.Labels[managedByLabel] != managedByValue || slice.Labels["llmkube.ai/inference-service"] != "m.v1" {
 		t.Errorf("slice labels = %v, want managed-by and inference-service=m.v1", slice.Labels)
 	}
+	if got := slice.Labels["endpointslice.kubernetes.io/managed-by"]; got != "metal-agent.llmkube.ai" {
+		t.Errorf("slice endpointslice.kubernetes.io/managed-by = %q, want %q", got, "metal-agent.llmkube.ai")
+	}
 	if len(slice.Ports) != 1 || slice.Ports[0].Port == nil || *slice.Ports[0].Port != 9443 ||
 		slice.Ports[0].Name == nil || *slice.Ports[0].Name != "https" {
 		t.Errorf("slice ports = %+v, want https 9443", slice.Ports)
@@ -1411,8 +1456,9 @@ func TestRegisterEndpoint_RelayWritesAgentService(t *testing.T) {
 		t.Error("slice heartbeat annotation missing")
 	}
 	if len(slice.Endpoints) != 1 || slice.Endpoints[0].Addresses[0] != "10.0.0.5" ||
-		slice.Endpoints[0].Conditions.Ready == nil || !*slice.Endpoints[0].Conditions.Ready {
-		t.Errorf("slice endpoints = %+v, want one Ready 10.0.0.5", slice.Endpoints)
+		slice.Endpoints[0].Conditions.Ready == nil || !*slice.Endpoints[0].Conditions.Ready ||
+		slice.Endpoints[0].TargetRef != nil {
+		t.Errorf("slice endpoints = %+v, want one Ready 10.0.0.5 with no TargetRef", slice.Endpoints)
 	}
 
 	legacy := types.NamespacedName{Namespace: "default", Name: "m-v1"}

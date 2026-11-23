@@ -62,6 +62,9 @@ type ModelSpec struct {
 	//     Kubernetes ImageVolume; requires Kubernetes >= 1.36 and containerd >= 2.1.0
 	//     or CRI-O >= 1.31 on the serving node; pin by digest)
 	//   - /mnt/models/Llama-3.2-3B-Instruct-4bit (MLX model directory)
+	//   - hailo://qwen2.5-instruct:1.5b (a HEF in Hailo's GenAI model zoo, pulled and served
+	//     by hailo-ollama through the host agent's ollama runtime; experimental,
+	//     needs hardware.accelerator: metal)
 	//
 	// Source may also name a repository or bucket PREFIX rather than a single
 	// object. In that case spec.files selects which artifacts to stage from it,
@@ -83,7 +86,7 @@ type ModelSpec struct {
 	// equivalent https://huggingface.co/.../<filename>.gguf URL which
 	// the runtime/init container resolves at deploy time.
 	// +optional
-	// +kubebuilder:validation:Pattern=`^(https?|file|pvc|hf|s3|oci)://.*|^/[^\s]+$|^[a-zA-Z0-9][\w\-\.\/]+$`
+	// +kubebuilder:validation:Pattern=`^(https?|file|pvc|hf|s3|oci|hailo)://.*|^/[^\s]+$|^[a-zA-Z0-9][\w\-\.\/]+$`
 	Source string `json:"source,omitempty"`
 
 	// SHA256 is the expected SHA256 hash of the model file for integrity
@@ -520,6 +523,22 @@ type GGUFMetadata struct {
 	// +optional
 	ValueLength uint64 `json:"valueLength,omitempty"`
 
+	// KVHeadLayers is the KV head count summed over the layers that hold a KV
+	// cache, for a model whose layout is not blockCount layers of headCountKV
+	// heads (a hybrid with recurrent layers). 0 means the layout is the plain
+	// one, the header was unreadable, or an older controller wrote the status:
+	// consumers then charge every layer by headCountKV, which over-charges a
+	// hybrid and never under-charges it.
+	// +optional
+	KVHeadLayers uint64 `json:"kvHeadLayers,omitempty"`
+
+	// RecurrentStatePerSeq is the state all recurrent layers hold per
+	// sequence, in bytes, for the same hybrids. 0 means the model has no
+	// recurrent layer, or its state is not described by the generic
+	// convolution + SSM formula, and it is charged like an attention layer.
+	// +optional
+	RecurrentStatePerSeq uint64 `json:"recurrentStatePerSeq,omitempty"`
+
 	// TensorCount is the number of tensors in the model
 	// +optional
 	TensorCount uint64 `json:"tensorCount,omitempty"`
@@ -724,10 +743,14 @@ type ModelStatus struct {
 	// Each condition has a unique type and reflects the status of a specific aspect of the resource.
 	//
 	// Standard condition types include:
-	// - "Available": the model is downloaded and ready for use
+	// - "Available": the model is ready for use. A source the controller caches
+	//   itself is downloaded by then; a remote source is fetched by the serving
+	//   pod when it starts, so the download can still be running
 	// - "Progressing": the model is being downloaded or processed
 	// - "Degraded": the model download or setup failed
-	// - "SourceDrifted": the upstream source bytes differ from the cached copy
+	// - "SourceDrifted": the upstream source differs from what the controller
+	//   last recorded: its cached copy for a source it caches, otherwise the
+	//   fingerprint it recorded
 	//
 	// The status of each condition is one of True, False, or Unknown.
 	// +listType=map

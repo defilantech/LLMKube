@@ -5,10 +5,12 @@ import (
 	"flag"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
 
+	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 	restclient "k8s.io/client-go/rest"
 
@@ -122,6 +124,58 @@ func TestResolveLlamaServerBin(t *testing.T) {
 	})
 }
 
+func TestResolveDefaultLlamaServerBin(t *testing.T) {
+	origStat := statFunc
+	t.Cleanup(func() { statFunc = origStat })
+	installed := func(string) (os.FileInfo, error) { return nil, nil }
+	missing := func(string) (os.FileInfo, error) { return nil, errors.New("not found") }
+
+	for _, tc := range []struct {
+		name, runtime, override string
+		stat                    func(string) (os.FileInfo, error)
+		wantBin                 string
+		wantErr                 bool
+	}{
+		{name: "llama-server missing is fatal", runtime: "llama-server", stat: missing, wantErr: true},
+		{name: "llamacpp missing is fatal", runtime: "llamacpp", stat: missing, wantErr: true},
+		{name: "ollama starts without llama-server", runtime: "ollama", stat: missing},
+		{name: "omlx starts without llama-server", runtime: "omlx", stat: missing},
+		{name: "mlx-server starts without llama-server", runtime: "mlx-server", stat: missing},
+		{name: "llama-server found", runtime: "llama-server", stat: installed, wantBin: defaultLlamaServerPaths[0]},
+		{name: "ollama still records a found llama-server", runtime: "ollama", stat: installed,
+			wantBin: defaultLlamaServerPaths[0]},
+		{name: "override wins", runtime: "ollama", override: "/opt/llama-server", stat: missing,
+			wantBin: "/opt/llama-server"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			statFunc = tc.stat
+			cfg := &AgentConfig{Runtime: tc.runtime}
+			err := resolveDefaultLlamaServerBin(cfg, tc.override, zap.NewNop().Sugar())
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("err = %v, want error %v", err, tc.wantErr)
+			}
+			if cfg.LlamaServerBin != tc.wantBin {
+				t.Errorf("LlamaServerBin = %q, want %q", cfg.LlamaServerBin, tc.wantBin)
+			}
+		})
+	}
+}
+
+func TestDefaultLlamaServerPathsIncludeDistroPackage(t *testing.T) {
+	if !slices.Contains(defaultLlamaServerPaths, "/usr/bin/llama-server") {
+		t.Errorf("defaultLlamaServerPaths = %v, want /usr/bin/llama-server", defaultLlamaServerPaths)
+	}
+}
+
+func TestLlamaServerInstallHint(t *testing.T) {
+	if got := llamaServerInstallHint("darwin"); got != "brew install llama.cpp" {
+		t.Errorf("darwin hint = %q, want brew install llama.cpp", got)
+	}
+	if got := llamaServerInstallHint("linux"); strings.Contains(got, "brew") {
+		t.Errorf("linux hint = %q, want no Homebrew", got)
+	}
+}
+
 func TestResolveTensorFoldBin(t *testing.T) {
 	origStat := statFunc
 	origPaths := defaultTensorFoldPaths
@@ -195,10 +249,18 @@ func TestResolveModelStorePath(t *testing.T) {
 
 	t.Run("empty flag defaults under the home directory", func(t *testing.T) {
 		userHomeDir = func() (string, error) { return "/Users/tester", nil }
-		got, err := resolveModelStorePath("")
-		want := "/Users/tester/Library/Application Support/llmkube/models"
-		if err != nil || got != want {
-			t.Fatalf("resolveModelStorePath(\"\") = %q, %v; want %q", got, err, want)
+		for _, tc := range []struct{ xdg, offDarwin string }{
+			{"", "/Users/tester/.local/share/llmkube/models"},
+			{"/xdg", "/xdg/llmkube/models"},
+		} {
+			t.Setenv("XDG_DATA_HOME", tc.xdg)
+			want := tc.offDarwin
+			if runtime.GOOS == "darwin" {
+				want = "/Users/tester/Library/Application Support/llmkube/models"
+			}
+			if got, err := resolveModelStorePath(""); err != nil || got != want {
+				t.Fatalf("resolveModelStorePath(\"\") with XDG_DATA_HOME=%q = %q, %v; want %q", tc.xdg, got, err, want)
+			}
 		}
 	})
 
@@ -301,7 +363,8 @@ func TestPrepareModelStore(t *testing.T) {
 }
 
 // prepareModelStore refuses a store under /tmp, which the 0.10.0 plist
-// pinned, even though it creates the store 0700 and owns it.
+// pinned, even though it creates the store 0700 and owns it. On macOS the
+// refusal names the plist re-render.
 func TestPrepareModelStore_RefusesStoreUnderTmp(t *testing.T) {
 	prev := agent.SetSystemTempRootsForTest([]string{"/private/tmp", "/tmp", "/private/var/tmp", "/var/tmp"})
 	t.Cleanup(func() { agent.SetSystemTempRootsForTest(prev) })
@@ -313,8 +376,11 @@ func TestPrepareModelStore_RefusesStoreUnderTmp(t *testing.T) {
 	t.Cleanup(func() { _ = os.RemoveAll(base) })
 	store := filepath.Join(base, "llmkube-models")
 	_, err = prepareModelStore(store)
-	if err == nil || !strings.Contains(err.Error(), "make install-metal-agent") {
-		t.Fatalf("prepareModelStore(%s) = %v, want a refusal naming the plist re-render", store, err)
+	if err == nil || !strings.Contains(err.Error(), "outside /tmp") {
+		t.Fatalf("prepareModelStore(%s) = %v, want a refusal under /tmp", store, err)
+	}
+	if runtime.GOOS == "darwin" && !strings.Contains(err.Error(), "make install-metal-agent") {
+		t.Errorf("prepareModelStore(%s) = %v, want the refusal to name the plist re-render", store, err)
 	}
 }
 
@@ -592,6 +658,46 @@ func TestStopEnginesParsesWhatLeaveSends(t *testing.T) {
 			t.Fatalf("parsed namespace %q, state dir %q, kubeconfig %q, Ollama port %d from %q; "+
 				"want team, /Users/a/state, /Users/a/kc, 11500", opts.Namespace, opts.StateDir, kc.Value.String(),
 				opts.OllamaPort, args[1:])
+		}
+	}
+}
+
+// TestParseByteQuantity covers --download-free-space-headroom's parsing.
+func TestParseByteQuantity(t *testing.T) {
+	for _, tc := range []struct {
+		in      string
+		want    int64
+		wantErr bool
+	}{
+		{"10Gi", 10 << 30, false},
+		{"500M", 500_000_000, false},
+		{"1073741824", 1 << 30, false},
+		{"0", 0, false},
+		{"-1Gi", 0, true},
+		{"ten gigs", 0, true},
+	} {
+		got, err := parseByteQuantity("--download-free-space-headroom", tc.in)
+		if (err != nil) != tc.wantErr || got != tc.want {
+			t.Errorf("parseByteQuantity(%q) = %d, %v; want %d, error %t", tc.in, got, err, tc.want, tc.wantErr)
+		}
+	}
+}
+
+// TestResolveDownloadLimits: both download flags resolve together, and an
+// error names the flag that caused it.
+func TestResolveDownloadLimits(t *testing.T) {
+	mem := func() (uint64, error) { return 64 << 30, nil }
+	ok := &AgentConfig{MaxDownloadSize: "0", DownloadFreeSpaceHeadroom: "10Gi"}
+	maxBytes, headroom, err := resolveDownloadLimits(ok, mem)
+	if err != nil || maxBytes != 0 || headroom != 10<<30 {
+		t.Fatalf("resolveDownloadLimits = %d, %d, %v; want 0, 10Gi, nil", maxBytes, headroom, err)
+	}
+	for flagName, cfg := range map[string]*AgentConfig{
+		"--max-download-size":            {MaxDownloadSize: "lots", DownloadFreeSpaceHeadroom: "10Gi"},
+		"--download-free-space-headroom": {MaxDownloadSize: "0", DownloadFreeSpaceHeadroom: "lots"},
+	} {
+		if _, _, err := resolveDownloadLimits(cfg, mem); err == nil || !strings.Contains(err.Error(), flagName) {
+			t.Errorf("error for a bad %s = %v, want it to name the flag", flagName, err)
 		}
 	}
 }
