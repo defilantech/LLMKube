@@ -28,7 +28,7 @@ A control plane in four planes, with strict dependency direction. Policy flows d
 - **Serving** (`Model`, `InferenceService`) schedules inference onto the fleet within declared resource and SLO limits.
 - **Policy / routing** (`ModelRouter`) is the governance boundary: all traffic, human and agentic, enters through a router that enforces data classification, SLO-aware routing, and durable audit. Nothing talks to an `InferenceService` directly in production.
 - **Economics** (InferCost, companion project) enforces token and dollar budgets synchronously and computes marginal cost per team per deployment from real hardware and power.
-- **Agentic** (Meitheal, companion project) submits batch workloads to the top of the stack with budget and SLO constraints that propagate downward before a GPU cycle is spent.
+- **Agentic** (Foreman) submits batch workloads to the top of the stack with budget and SLO constraints that propagate downward before a GPU cycle is spent.
 
 The current work (see milestones below) is about coupling these planes into one loop, not just shipping them as siblings.
 
@@ -53,7 +53,7 @@ Since then, among other changes (see the [CHANGELOG](CHANGELOG.md) for versions)
 
 ### Governance and agentic
 - **ModelRouter (Phase 1):** one OpenAI-compatible endpoint across local `InferenceService`s and external providers, with fail-closed routing for sensitive data and a per-request audit log
-- **Agentic pipeline (v0.1):** coder / verifier / reviewer agents dispatched across a heterogeneous local fleet, gated against the repo's own build and tests, including Job-mode execution against in-cluster models. It now lives in its own repository as [Meitheal](https://github.com/defilantech/meitheal) (#2526)
+- **Foreman (v0.1):** Kubernetes-native agentic pipeline (coder / verifier / reviewer) dispatched across a heterogeneous local fleet, gated against the repo's own build and tests, including Job-mode execution against in-cluster models
 
 ### Observability and economics
 - 10+ Prometheus metrics, OpenTelemetry tracing of ModelRouter proxy requests (OTLP, e.g. Tempo), DCGM GPU metrics, Grafana dashboards, PodMonitor
@@ -68,7 +68,7 @@ Milestones are tracked in [GitHub Milestones](https://github.com/defilantech/LLM
 ### [M1: Trustworthy fleet](https://github.com/defilantech/LLMKube/milestone/1) - July 2026
 *Fix what shipped and make the fleet substrate reliable before extending it.*
 
-The heterogeneous-fleet claim is only as good as the fleet's ability to tell a live node from a dead one and to ship a correct change. This milestone closes the two correctness bugs on the core paths, adds liveness detection for fleet nodes (#627), migrates the metal-agent off deprecated `Endpoints` (#377), and lands v0.2 of the agentic pipeline (now Meitheal) with a CI e2e gate.
+The heterogeneous-fleet claim is only as good as the fleet's ability to tell a live node from a dead one and to ship a correct change. This milestone closes the two correctness bugs on the core paths, adds liveness detection for fleet nodes (#627), migrates the metal-agent off deprecated `Endpoints` (#377), and lands Foreman v0.2 with a CI e2e gate.
 
 ### [M2: Sovereign enterprise (B200-ready)](https://github.com/defilantech/LLMKube/milestone/2) - August 2026
 *The enterprise gate.*
@@ -114,8 +114,8 @@ We own a compound that no single project covers: **sovereign + heterogeneous + o
 
 - **v0.10.0** - September 2026 · metal-agent serves engines on loopback behind an authenticated ingress (breaking)
 - **v0.9.0** - July 2026 · local and hostPath model sources gated by an allowlist, controller SSRF blocked (GHSA-jw3m-8q7m-f35r; breaking)
-- **v0.8.1** - June 2026 · docs site restructure, agentic pipeline overview cross-refs, release hardening
-- **v0.8.0** - May 2026 · agentic pipeline debut (Kubernetes-native coder/verifier/reviewer fleet, now Meitheal), Intel GPU contribution
+- **v0.8.1** - June 2026 · docs site restructure, Foreman overview cross-refs, release hardening
+- **v0.8.0** - May 2026 · Foreman debut (Kubernetes-native agentic coder/verifier/reviewer fleet), Intel GPU contribution
 - **v0.7.9** - May 2026 · mlx-server runtime for Apple Silicon, `kubectl scale` subresource
 - **v0.7.8** - May 2026 · ModelRouter Phase 1 (cross-engine routing, fail-closed PII routing, audit log)
 - **v0.7.7** - May 2026 · OpenShift first-class, vllm-swift + TurboQuant on Apple Silicon
