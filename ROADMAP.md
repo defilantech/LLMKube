@@ -43,7 +43,7 @@ The current work (see milestones below) is about coupling these planes into one 
 
 ### Since v0.8.1 (June to November 2026)
 
-78 releases shipped between v0.8.1 (2026-06-01) and v0.10.19 (2026-11-18). Their CHANGELOG entries list 351 features: 133 belong to Foreman, the agentic coding harness, which is now its own project, [Meitheal](https://github.com/defilantech/meitheal), and the other 218 are LLMKube's. The highlights, by theme, with the release each landed in:
+78 releases shipped between v0.8.1 (2026-06-01) and v0.10.19 (2026-11-18). Their CHANGELOG entries list 351 features. About 130 of them belong to Foreman, the agentic coding harness, which is now its own project, [Meitheal](https://github.com/defilantech/meitheal); the other 220 or so are LLMKube's. The highlights, by theme, with the release each landed in:
 
 - **Serving:** speculative decoding for llama.cpp (v0.8.17), extended to draft Models in v0.9.18; embedding and rerank serving through `spec.mode` (v0.8.20); the SGLang runtime (v0.9.4); the `GPUQuota` and `LoRAAdapter` CRDs (v0.9.6); the `llamacpp-router` runtime for several models behind one server (v0.9.8); the `ModelPool` CRD for swapping models on a shared GPU slot (v0.9.16); architecture-aware runtime placement (v0.9.18); multi-node vLLM serving with `spec.multiNode` (v0.9.25); and pinned default builds for llama.cpp, vLLM and SGLang, with vLLM's flags checked against its pin (v0.10.11).
 - **Accelerator breadth:** AMD through Vulkan images (v0.8.8) and a ROCm/HIP tier (v0.9.8); configurable GPU resource names for AMD, Vulkan and Intel device plugins (v0.8.8); DRA `ResourceClaim` passthrough for any DRA driver (v0.8.9); vendor-neutral GPU sharing tiers with VRAM-based quota accounting, and Blackwell-ready image pins and platform floors (v0.9.9).
@@ -113,7 +113,7 @@ Open:
 Testing, coverage and depth on the Apple Silicon / TurboQuant path. Delivered: broader unit test coverage (#89), an audit of controller tests that assert implementation rather than spec (#378), the docs sprint (#628), and the oMLX TurboQuant KV and paged SSD cache settings on the metal-agent (#277, #278). Open: a macOS CI runner for metal-agent coverage (#455), and a TurboQuant KV spike on consumer Blackwell (sm_120) (#601).
 
 ### [Backlog (Q1 2027+)](https://github.com/defilantech/LLMKube/milestone/5)
-Real value, wrong moment: an NVIDIA Dynamo runtime for `InferenceService` (#517), a signed private model registry (#22), LoRA adapters on the llama.cpp path (#12; the SGLang `LoRAAdapter` CRD shipped in v0.9.6), and a fleet-aware Envoy AI Gateway integration, once it is re-scoped (#661). Advanced SLO auto-remediation (#10) was closed as not planned.
+Real value, wrong moment: an NVIDIA Dynamo runtime for `InferenceService` (#517), a signed private model registry (#22), LoRA adapters for the other runtimes (#12; the SGLang `LoRAAdapter` CRD shipped in v0.9.6), and a fleet-aware Envoy AI Gateway integration, once it is re-scoped (#661). Advanced SLO auto-remediation (#10) was closed as not planned.
 
 ---
 
