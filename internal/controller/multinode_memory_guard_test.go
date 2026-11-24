@@ -491,9 +491,12 @@ func TestMultiNodeMemoryGuardScriptWithoutShmemLine(t *testing.T) {
 // the guard then exits: memory a drop cannot give back is exactly the case
 // the suspend floor is for.
 func TestMultiNodeMemoryGuardScriptSuspendsWhenCacheIsShmem(t *testing.T) {
-	out, code, _, term := runGuardScriptShmem(t, 6416, 16688, 16600, "4096", "8192", 10*time.Second)
+	out, code, dropped, term := runGuardScriptShmem(t, 6416, 16688, 16600, "4096", "8192", 10*time.Second)
 	if code != multiNodeMemoryGuardExitCode {
 		t.Fatalf("exit %d, want %d; output:\n%s", code, multiNodeMemoryGuardExitCode, out)
+	}
+	if dropped != "3" || !strings.Contains(out, "guard: last drop: MemFree 6416 -> 6416 MiB") {
+		t.Errorf("no last drop before the suspend when the cache is Shmem; output:\n%s", out)
 	}
 	if term != "MemFree 6416 MiB stayed under 8192 MiB for 1s after a page cache drop" {
 		t.Errorf("termination message = %q", term)
