@@ -1118,14 +1118,16 @@ credentials out of the relay Secret. See
 
 **InferenceService refused with `RuntimeNotAvailable`**
 The service's runtime (`spec.runtime`, or the agent's `--runtime` when
-that is unset) has no engine on this agent: its binary was not found
-when the agent started, or the agent was started without that engine's
-flag. An engine that is already serving the service keeps running.
-`status.schedulingMessage` names the runtime. Install the engine, pass
-its binary flag (`--llama-server`, `--mlx-server-bin`, `--omlx-bin`,
-`--vllm-swift-bin`, `--tensorfold-bin`) or select it with `--runtime`,
-and restart the agent; or set `spec.runtime` to an engine the agent
-serves. See "`RuntimeNotAvailable`" in
+that is unset) has no executor on this agent: its binary was not found
+when the agent started, the agent was started without that engine's
+flag, or (on a non-macOS host agent) the agent's executor for that
+runtime requires macOS with Apple Silicon. An engine that is already
+serving the service keeps running. `status.schedulingMessage` names the
+runtime. On macOS, install the engine, pass its binary flag
+(`--llama-server`, `--mlx-server-bin`, `--omlx-bin`, `--vllm-swift-bin`,
+`--tensorfold-bin`) or select it with `--runtime`, and restart the
+agent; or set `spec.runtime` to an engine the agent serves. See
+"`RuntimeNotAvailable`" in
 [`deployment/macos/README.md`](https://github.com/defilantech/LLMKube/blob/main/deployment/macos/README.md#runtimenotavailable).
 
 **Login Items lists the agent as "Defilan Technologies LLC"**

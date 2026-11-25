@@ -51,7 +51,7 @@ The behavior would change depending on the cluster runtime used:
 | tgi             | Not supported                     |
 | vllm            | Set `--num-max-seqs` CLI arg      |
 
-It might also impact Apple Silicon metal-agent runtimes:
+It might also impact host metal-agent runtimes:
 
 | Metal agent runtime| Behavior                          |
 | ------------------ | --------------------------------- |

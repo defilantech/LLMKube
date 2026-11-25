@@ -157,12 +157,12 @@ edge` where you have cluster access.
 ## Engines
 
 As on a Mac, `spec.runtime` picks an InferenceService's engine and the agent's
-`--runtime` is the fallback. On Linux the agent serves only the two engines
-below: it refuses to start when `--runtime` or a binary flag selects a
-macOS-only engine (`mlx-server`, `omlx`, `vllm-swift`, `tensorfold`, or their
-`--mlx-server-bin`, `--omlx-bin`, `--vllm-swift-bin`, `--tensorfold-bin`), and
-a service whose `spec.runtime` names one is refused with
-`RuntimeNotAvailable`.
+`--runtime` is the fallback. On Linux the agent serves only `llamacpp` and
+`ollama` below: LLMKube's executors for `mlx-server`, `omlx`, `vllm-swift`,
+and `tensorfold` serve Apple Silicon/MLX paths on macOS, so the agent refuses
+to start off macOS when `--runtime` or their binary flag (`--mlx-server-bin`,
+`--omlx-bin`, `--vllm-swift-bin`, `--tensorfold-bin`) selects one, and refuses
+a service whose `spec.runtime` names one with `RuntimeNotAvailable`.
 
 - **Ollama** (`runtime: ollama`): the agent talks to an Ollama-compatible
   daemon on `--ollama-port` (11434, Ollama's default) and does not start it.

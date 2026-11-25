@@ -1949,7 +1949,7 @@ The Model's `spec.sourceSecretRef` names a Secret the agent will not read: it is
 
 ### `RuntimeNotAvailable`
 
-The InferenceService resolves to a runtime this agent has no engine for: its binary was not found or not configured when the agent started. For `llamacpp` (or `llama-server`) that means llama-server was not found and `--runtime` selects another engine. Install llama.cpp or pass `--llama-server=/path/to/llama-server` and restart the agent, or set `spec.runtime` to an engine the agent serves. For another runtime, install its binary or pass its binary flag (or select it with `--runtime`) and restart the agent. An engine already running for the service is not stopped.
+The InferenceService resolves to a runtime this agent has no executor for: its binary was not found or not configured when the agent started, or (on a non-macOS host agent) the agent's executor for that runtime requires macOS with Apple Silicon. For `llamacpp` (or `llama-server`) that means llama-server was not found and `--runtime` selects another engine. Install llama.cpp or pass `--llama-server=/path/to/llama-server` and restart the agent, or set `spec.runtime` to an engine the agent serves. For another runtime, install its binary or pass its binary flag (or select it with `--runtime`) and restart the agent. An engine already running for the service is not stopped.
 
 ### Can't connect to Kubernetes
 
@@ -2155,7 +2155,7 @@ spec:
   runtime: mlx-server
 ```
 
-`mlx-server`, `omlx`, `vllm-swift`, `ollama`, and `tensorfold` only work on the metal-agent.
+In LLMKube, `mlx-server`, `omlx`, `vllm-swift`, `ollama`, and `tensorfold` are served only through the `metal-agent` (`mlx-server`, `omlx`, `vllm-swift`, and `tensorfold` require macOS with Apple Silicon; `ollama` also works on Linux host agents).
 The operator rejects them on an InferenceService whose Model does not set
 `hardware.accelerator: metal`.
 
@@ -2178,9 +2178,11 @@ kubectl patch inferenceservice <name> --type=json -p '[{"op":"remove","path":"/s
 ### TensorFold
 
 [TensorFold](https://github.com/ashhart/TensorFold) (MIT) serves an
-OpenAI-compatible endpoint on MLX with exact speculative decoding: a draft
+OpenAI-compatible endpoint with exact speculative decoding: a draft
 model proposes tokens and the target model verifies them, so the output is the
-same as decoding without drafts, only faster.
+same as decoding without drafts, only faster. While TensorFold supports both
+MLX and CUDA upstream, LLMKube's metal-agent executor runs its MLX path on
+Apple Silicon to serve MLX model directories.
 
 The operator installs and pins the engine; LLMKube only launches it. Install a
 pinned release with [uv](https://docs.astral.sh/uv/):

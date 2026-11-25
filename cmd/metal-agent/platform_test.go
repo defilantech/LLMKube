@@ -130,16 +130,19 @@ func TestCheckHostRuntimes(t *testing.T) {
 		{name: "linux accepts ollama", goos: "linux", cfg: AgentConfig{Runtime: "ollama"}},
 		{
 			name: "linux refuses --runtime mlx-server", goos: "linux", cfg: AgentConfig{Runtime: "mlx-server"},
-			wantErr: []string{"--runtime mlx-server", "only on macOS", "--runtime llama-server", "--runtime ollama"},
+			wantErr: []string{
+				"--runtime mlx-server", "executor runs only on macOS",
+				"--runtime llama-server", "--runtime ollama",
+			},
 		},
 		{name: "linux refuses --runtime omlx", goos: "linux", cfg: AgentConfig{Runtime: "omlx"},
 			wantErr: []string{"--runtime omlx"}},
 		{name: "linux refuses --runtime vllm-swift", goos: "linux", cfg: AgentConfig{Runtime: "vllm-swift"},
 			wantErr: []string{"--runtime vllm-swift"}},
 		{name: "linux refuses --runtime tensorfold", goos: "linux", cfg: AgentConfig{Runtime: "tensorfold"},
-			wantErr: []string{"--runtime tensorfold"}},
+			wantErr: []string{"--runtime tensorfold", "executor runs only on macOS"}},
 		{
-			name: "linux refuses macOS-only binary flags", goos: "linux",
+			name: "linux refuses Apple-Silicon-only executor binary flags", goos: "linux",
 			cfg:     AgentConfig{Runtime: "ollama", OMLXBin: "/usr/local/bin/omlx", MLXServerBin: "/usr/local/bin/mlx-server"},
 			wantErr: []string{"--mlx-server-bin (mlx-server)", "--omlx-bin (omlx)", "on linux"},
 		},
