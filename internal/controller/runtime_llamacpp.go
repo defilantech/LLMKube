@@ -173,7 +173,7 @@ func (b *LlamaCppBackend) BuildArgs(isvc *inferencev1alpha1.InferenceService, mo
 	args = appendReasoningBudgetArgs(args, isvc.Spec.ReasoningBudget, isvc.Spec.ReasoningBudgetMessage)
 	args = appendMmprojArgs(args, mmprojPath, isvc.Spec.ExtraArgs)
 	args = appendMetadataOverrideArgs(args, isvc.Spec.MetadataOverrides)
-	args = appendModeArgs(args, isvc.Spec.Mode, isvc.Spec.ExtraArgs, modelPoolingType(model))
+	args = appendModeArgs(args, isvc.Spec.Mode, isvc.Spec.ExtraArgs, modelPoolingType(model), isvc.Spec.MetadataOverrides)
 	if len(isvc.Spec.ExtraArgs) > 0 {
 		args = append(args, isvc.Spec.ExtraArgs...)
 	}

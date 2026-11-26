@@ -3754,8 +3754,9 @@ spec:
                   --pooling last, since llama.cpp would otherwise use pooling none and
                   /v1/embeddings would fail with "Pooling type 'none' is not OAI
                   compatible". Set extraArgs: ["--pooling", "<value>"] to choose another
-                  value, or for a Model whose status has no poolingType (its metadata was
-                  read before the field existed).
+                  value, or for a Model whose status has no poolingType: its metadata was
+                  read before the field existed, or its source is one whose header the
+                  controller never reads (pvc://, oci://).
                   When unset, the mode is inferred from spec.extraArgs / spec.endpoint.path.
                   The resolved value is always reported in status.mode.
                 enum:

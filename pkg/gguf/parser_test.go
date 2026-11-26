@@ -1158,3 +1158,22 @@ func TestPoolingType(t *testing.T) {
 		})
 	}
 }
+
+func TestOverridesPoolingType(t *testing.T) {
+	for _, tc := range []struct {
+		overrides []string
+		want      bool
+	}{
+		{nil, false},
+		{[]string{"llama.pooling_type=int:3"}, true},
+		{[]string{"tokenizer.ggml.add_bos_token=bool:false", "bert.pooling_type=int:1"}, true},
+		{[]string{" qwen3.pooling_type =int:3"}, true},
+		{[]string{"bert.classifier.pooling_type=int:2"}, false},
+		{[]string{"llama.context_length=int:8192"}, false},
+		{[]string{"pooling_type=int:1"}, false},
+	} {
+		if got := OverridesPoolingType(tc.overrides); got != tc.want {
+			t.Errorf("OverridesPoolingType(%q) = %v, want %v", tc.overrides, got, tc.want)
+		}
+	}
+}

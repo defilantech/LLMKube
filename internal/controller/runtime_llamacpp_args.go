@@ -184,8 +184,11 @@ func appendNoWarmupArgs(args []string, noWarmup *bool) []string {
 // Embedding pooling follows the GGUF's pooling_type. modelPoolingType is that
 // key as the Model's status records it; when the GGUF has none
 // (gguf.PoolingTypeUnspecified) llama.cpp would load it with pooling none,
-// which /v1/embeddings rejects, so --pooling last is added (#2580).
-func appendModeArgs(args []string, mode string, extraArgs []string, modelPoolingType string) []string {
+// which /v1/embeddings rejects, so --pooling last is added (#2580), unless
+// metadataOverrides sets the pooling_type key itself.
+func appendModeArgs(
+	args []string, mode string, extraArgs []string, modelPoolingType string, metadataOverrides []string,
+) []string {
 	switch mode {
 	case servingModeRerank:
 		if !hasMatchingExtraArg(extraArgs, "reranking") {
@@ -206,7 +209,8 @@ func appendModeArgs(args []string, mode string, extraArgs []string, modelPooling
 		}
 		// Leave pooling to GGUF metadata, matching the other runtime arg
 		// builder, unless the GGUF has none.
-		if modelPoolingType == gguf.PoolingTypeUnspecified && !hasMatchingExtraArg(extraArgs, "pooling") {
+		if modelPoolingType == gguf.PoolingTypeUnspecified && !hasMatchingExtraArg(extraArgs, "pooling") &&
+			!gguf.OverridesPoolingType(metadataOverrides) {
 			args = append(args, "--pooling", defaultEmbeddingPooling)
 		}
 		if !hasMatchingExtraArg(extraArgs, "cache-ram") {

@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 )
 
 // Magic number: bytes [G, G, U, F] = [0x47, 0x47, 0x55, 0x46] read as little-endian u32.
@@ -694,6 +695,23 @@ func (f *GGUFFile) PoolingType() string {
 		return ""
 	}
 	return poolingTypeNames[n]
+}
+
+// OverridesPoolingType reports whether llama-server --override-kv values
+// (KEY=TYPE:VALUE, as spec.metadataOverrides holds them) set an
+// {arch}.pooling_type. llama.cpp applies an override even to a key the GGUF
+// lacks, so such an override chooses the pooling a GGUF without the key loads
+// with, and an added --pooling flag would silently replace it. The classifier
+// head's {arch}.classifier.pooling_type is a different key.
+func OverridesPoolingType(overrides []string) bool {
+	for _, o := range overrides {
+		key, _, _ := strings.Cut(o, "=")
+		key = strings.TrimSpace(key)
+		if strings.HasSuffix(key, ".pooling_type") && !strings.HasSuffix(key, ".classifier.pooling_type") {
+			return true
+		}
+	}
+	return false
 }
 
 // attentionScalar reads {arch}.attention.<name> as a scalar unsigned integer.

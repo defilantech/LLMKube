@@ -162,3 +162,42 @@ func TestBuildLlamaServerArgsModeParity(t *testing.T) {
 		})
 	}
 }
+
+// TestBuildLlamaServerArgsPoolingDefaultParity covers the inputs the mode
+// table does not build: a Model whose metadata an older controller wrote (a
+// GGUF status without poolingType) and a pooling_type set through
+// spec.metadataOverrides, which llama.cpp applies even to a key the GGUF
+// lacks (#2580).
+func TestBuildLlamaServerArgsPoolingDefaultParity(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		gguf      *inferencev1alpha1.GGUFMetadata
+		overrides []string
+		want      string // the --pooling value, "" for none
+	}{
+		{"metadata from an older controller", &inferencev1alpha1.GGUFMetadata{Architecture: "llama"}, nil, ""},
+		{"no GGUF metadata", nil, nil, ""},
+		{"an override sets pooling_type", &inferencev1alpha1.GGUFMetadata{PoolingType: gguf.PoolingTypeUnspecified},
+			[]string{"llama.pooling_type=int:1"}, ""},
+		{"an override sets only the classifier's pooling_type",
+			&inferencev1alpha1.GGUFMetadata{PoolingType: gguf.PoolingTypeUnspecified},
+			[]string{"llama.classifier.pooling_type=int:2"}, "last"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			isvc := &inferencev1alpha1.InferenceService{
+				Spec: inferencev1alpha1.InferenceServiceSpec{Mode: "embedding", MetadataOverrides: tc.overrides},
+			}
+			model := &inferencev1alpha1.Model{}
+			model.Status.GGUF = tc.gguf
+			cfg := buildExecutorConfig(isvc, model, executorBaseConfig{})
+			for name, args := range map[string][]string{
+				"controller": (&controller.LlamaCppBackend{}).BuildArgs(isvc, model, "/m.gguf", "", 8080),
+				"agent":      buildLlamaServerArgs("/m.gguf", 8080, cfg),
+			} {
+				if got := flagValue(args, "--pooling"); got != tc.want {
+					t.Errorf("%s: --pooling = %q, want %q (args %v)", name, got, tc.want, args)
+				}
+			}
+		})
+	}
+}

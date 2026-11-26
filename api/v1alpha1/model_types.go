@@ -556,9 +556,11 @@ type GGUFMetadata struct {
 	// the GGUF has no such key. llama.cpp loads a GGUF without the key with
 	// pooling none, which /v1/embeddings rejects, so an embedding-mode
 	// llamacpp InferenceService on such a Model gets --pooling last unless
-	// spec.extraArgs sets --pooling. Empty means unknown (an unrecognized
-	// value, or metadata written by an older controller), and pooling is left
-	// to llama.cpp.
+	// spec.extraArgs sets --pooling or spec.metadataOverrides sets the key.
+	// Empty means unknown: an unrecognized value, metadata written by an older
+	// controller, or a source whose header the controller never reads
+	// (pvc://, oci://). Pooling is then left to llama.cpp, and spec.extraArgs
+	// is the way to set it.
 	// +kubebuilder:validation:Enum=none;mean;cls;last;rank;unspecified
 	// +optional
 	PoolingType string `json:"poolingType,omitempty"`

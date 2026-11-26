@@ -1445,8 +1445,11 @@ func hasLoadModeExtraArg(extraArgs []string) bool {
 //
 // Embedding pooling follows the GGUF's pooling_type, and a GGUF without one
 // (modelPoolingType gguf.PoolingTypeUnspecified) gets --pooling last, as in
-// the controller's builder (#2580).
-func appendModeArgs(args []string, mode string, extraArgs []string, modelPoolingType string) []string {
+// the controller's builder (#2580), unless metadataOverrides sets the
+// pooling_type key itself.
+func appendModeArgs(
+	args []string, mode string, extraArgs []string, modelPoolingType string, metadataOverrides []string,
+) []string {
 	switch mode {
 	case inferencev1alpha1.ServingModeRerank:
 		if !hasMatchingExtraArg(extraArgs, "reranking") {
@@ -1467,7 +1470,8 @@ func appendModeArgs(args []string, mode string, extraArgs []string, modelPooling
 		}
 		// Leave pooling to GGUF metadata, matching the other runtime arg
 		// builder, unless the GGUF has none.
-		if modelPoolingType == gguf.PoolingTypeUnspecified && !hasMatchingExtraArg(extraArgs, "pooling") {
+		if modelPoolingType == gguf.PoolingTypeUnspecified && !hasMatchingExtraArg(extraArgs, "pooling") &&
+			!gguf.OverridesPoolingType(metadataOverrides) {
 			args = append(args, "--pooling", "last")
 		}
 		if !hasMatchingExtraArg(extraArgs, "cache-ram") {
@@ -1595,7 +1599,7 @@ func buildLlamaServerArgs(modelPath string, port int, config ExecutorConfig) []s
 		args = append(args, "--jinja")
 	}
 
-	args = appendModeArgs(args, config.Mode, config.ExtraArgs, config.ModelPoolingType)
+	args = appendModeArgs(args, config.Mode, config.ExtraArgs, config.ModelPoolingType, config.MetadataOverrides)
 
 	// ExtraArgs comes last so user-provided overrides actually override.
 	if len(config.ExtraArgs) > 0 {
