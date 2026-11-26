@@ -784,6 +784,36 @@ a serving pod holds the claim; delete the InferenceService first in that case.
 `perService` claim the InferenceService owns: it is garbage-collected with the
 service, so the delete reports it instead of purging it.
 
+### Pruning files dropped from `spec.files` with `llmkube cache prune`
+
+A Model with `spec.files` is cached in a directory keyed on its source, so a
+file you drop from the list stays in that directory. `cache prune` removes such
+files from multi-file entries:
+
+```bash
+llmkube cache prune --dry-run -n <namespace>     # list files and bytes, remove nothing
+llmkube cache prune -n <namespace>               # list, then ask before removing
+llmkube cache prune --model <name> -n <namespace>
+```
+
+A file is removed only when no Model resolving to the entry lists it, after
+each Model's globs, URL entries and `spec.mmproj` are resolved by the code
+staging uses; files a live pod's downloader lists or a Model's
+`status.prefetch` records are kept too. Staging bookkeeping is never removed:
+SHA-256 stamps, `.sha256-rejected` markers, `.llmkube-size` records, resume
+partials (`*.tmp`), atomic-write temp files and the `.llmkube-download.lock`
+lockfile. An entry is skipped while a pod's downloader is staging into it or
+its download lock is held, and the removal runs holding that lock. Entries of
+single-file Models, entries a single-file Model shares, and entries no Model
+uses are left alone.
+
+The command uses the same purge pod as `cache clear`, pinned like the
+`cache list` inspector to the node of a pod that holds a `ReadWriteOnce` claim,
+and covers the shared claim, `perService` claims and every
+`spec.modelCache.claimName` in the namespace. The image also needs `find`,
+`stat` and `flock`, which busybox has. `docs/MODEL-CACHE.md` in the repository
+has the full rules.
+
 ### Relaxing the taint
 
 As an alternative to pre-provisioning, changing a GPU node's taint from
