@@ -304,6 +304,10 @@ func (r *InferenceServiceReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	r.warnIgnoredModelCacheClaim(inferenceService, model, cache)
 	r.warnPrefetchTargetMismatch(inferenceService, model, cache)
 	r.warnUnboundedEphemeralCache(inferenceService, cache)
+	// One runtime-cache decision per reconcile, so the warning and the render
+	// cannot disagree and the cache claim is read once.
+	runtimeCache := r.runtimeCachePlanFor(ctx, inferenceService, model, cache, resolveBackend(inferenceService))
+	r.warnRuntimeCacheNotApplied(inferenceService, runtimeCache)
 
 	isMetal := isMetalModel(model)
 
@@ -311,7 +315,7 @@ func (r *InferenceServiceReconciler) Reconcile(ctx context.Context, req ctrl.Req
 
 	r.emitSpecAdvisoryEvents(inferenceService, model)
 
-	deployment, counts, metalSnap, result, err := r.reconcileWorkload(ctx, inferenceService, cache, model, draftModel, desiredReplicas, modelReady, isMetal)
+	deployment, counts, metalSnap, result, err := r.reconcileWorkload(ctx, inferenceService, cache, model, draftModel, desiredReplicas, modelReady, isMetal, runtimeCache)
 	if err != nil || result != nil {
 		if result != nil {
 			return *result, err
@@ -995,7 +999,7 @@ func (r *InferenceServiceReconciler) refuseServiceNameTaken(ctx context.Context,
 // threshold; splitting it further would fragment one linear reconcile step.
 //
 //nolint:gocyclo
-func (r *InferenceServiceReconciler) reconcileDeployment(ctx context.Context, isvc *inferencev1alpha1.InferenceService, cache effectiveModelCache, model *inferencev1alpha1.Model, draftModel *inferencev1alpha1.Model, desiredReplicas int32, modelReady bool, isMetal bool) (*appsv1.Deployment, replicaCounts, *metalSnapshot, *ctrl.Result, error) {
+func (r *InferenceServiceReconciler) reconcileDeployment(ctx context.Context, isvc *inferencev1alpha1.InferenceService, cache effectiveModelCache, model *inferencev1alpha1.Model, draftModel *inferencev1alpha1.Model, desiredReplicas int32, modelReady bool, isMetal bool, runtimeCache runtimeCachePlan) (*appsv1.Deployment, replicaCounts, *metalSnapshot, *ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
 	// A previous pass may have reported a Deployment name-taken refusal.
@@ -1091,7 +1095,7 @@ func (r *InferenceServiceReconciler) reconcileDeployment(ctx context.Context, is
 			"%s", hubOfflineRuntimeDownloadMessage(isvc, model))
 	}
 	deployment := r.constructDeploymentForCache(isvc, model, cache, draftModel, desiredReplicas,
-		hfEndpoint, hfEndpointFromSecret(ctx, r.Client, draftModel))
+		hfEndpoint, hfEndpointFromSecret(ctx, r.Client, draftModel), runtimeCache)
 	if err := setControllerReferenceUnblocked(isvc, deployment, r.Scheme); err != nil {
 		log.Error(err, "Failed to set controller reference for Deployment")
 		return nil, replicaCounts{}, nil, nil, err
@@ -1927,6 +1931,7 @@ func (r *InferenceServiceReconciler) reconcileWorkload(
 	model, draftModel *inferencev1alpha1.Model,
 	desiredReplicas int32,
 	modelReady, isMetal bool,
+	runtimeCache runtimeCachePlan,
 ) (*appsv1.Deployment, replicaCounts, *metalSnapshot, *ctrl.Result, error) {
 	// A relay only serves Metal. After a model switch off Metal (for
 	// example to CUDA) the "<isvc>-relay" Deployment would otherwise linger.
@@ -1953,12 +1958,12 @@ func (r *InferenceServiceReconciler) reconcileWorkload(
 		// deployment-path pass is stale; drop it before the group's status
 		// writes persist it.
 		clearDeploymentNameTaken(isvc)
-		readyReplicas, result, err := r.reconcileMultiNodeGroup(ctx, isvc, cache, model, draftModel, desiredReplicas, modelReady)
+		readyReplicas, result, err := r.reconcileMultiNodeGroup(ctx, isvc, cache, model, draftModel, desiredReplicas, modelReady, runtimeCache)
 		// A multiNode group has no Deployment to read an observed total from,
 		// so the ready member count stands in for both.
 		return nil, replicaCounts{Ready: readyReplicas, Observed: readyReplicas}, nil, result, err
 	}
-	return r.reconcileDeployment(ctx, isvc, cache, model, draftModel, desiredReplicas, modelReady, isMetal)
+	return r.reconcileDeployment(ctx, isvc, cache, model, draftModel, desiredReplicas, modelReady, isMetal, runtimeCache)
 }
 
 func (r *InferenceServiceReconciler) findInferenceServiceForPod(ctx context.Context, obj client.Object) []reconcile.Request {

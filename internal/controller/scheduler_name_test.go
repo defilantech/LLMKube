@@ -57,10 +57,10 @@ func TestSchedulerNameChangesTemplateHash(t *testing.T) {
 	isvc := cachePrepTripwireIsvc()
 	model := cachePrepTripwireModel()
 	cache := resolveEffectiveModelCache(isvc, model)
-	unset := desiredTemplateHash(r.constructDeploymentForCache(isvc, model, cache, nil, 1, "", "").Spec.Template)
+	unset := desiredTemplateHash(r.deploymentFor(isvc, model, cache, nil, 1, "", "").Spec.Template)
 
 	isvc.Spec.SchedulerName = "kai-scheduler"
-	set := desiredTemplateHash(r.constructDeploymentForCache(isvc, model, cache, nil, 1, "", "").Spec.Template)
+	set := desiredTemplateHash(r.deploymentFor(isvc, model, cache, nil, 1, "", "").Spec.Template)
 
 	if unset == set {
 		t.Fatalf("the template hash did not change when schedulerName was set (%s); the RolloutPolicy path would not roll the Pods", set)
@@ -74,7 +74,7 @@ func TestMultiNodeMemberPodsCarrySchedulerName(t *testing.T) {
 	r := &InferenceServiceReconciler{ModelCachePath: "/models", ModelCacheMode: ModelCacheModePerService}
 	cache := resolveEffectiveModelCache(isvc, model)
 
-	pods, unsetHash, err := r.constructMemberPods(isvc, model, cache, nil, "", "")
+	pods, unsetHash, err := r.memberPodsFor(isvc, model, cache, nil, "", "")
 	if err != nil {
 		t.Fatalf("constructMemberPods: %v", err)
 	}
@@ -85,7 +85,7 @@ func TestMultiNodeMemberPodsCarrySchedulerName(t *testing.T) {
 	}
 
 	isvc.Spec.SchedulerName = "kai-scheduler"
-	pods, setHash, err := r.constructMemberPods(isvc, model, cache, nil, "", "")
+	pods, setHash, err := r.memberPodsFor(isvc, model, cache, nil, "", "")
 	if err != nil {
 		t.Fatalf("constructMemberPods: %v", err)
 	}

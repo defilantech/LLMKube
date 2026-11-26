@@ -4,7 +4,7 @@
 # prefetch target does not depend on which object the sync applies first, and
 # the service inherits the same claim. The service asks for the staging with
 # modelCache.prefetch: it creates no pods until the prefetch Job has filled the
-# claim, and its pods then mount the claim read-only with no downloader, so
+# claim, and its pods then mount the weights read-only with no downloader, so
 # the checkpoint is never downloaded on the GPU nodes.
 #
 # Notes:

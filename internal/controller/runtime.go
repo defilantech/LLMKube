@@ -112,6 +112,35 @@ type SharedMemoryRequirer interface {
 	NeedsSharedMemory(isvc *inferencev1alpha1.InferenceService, gpuCount int32) bool
 }
 
+// RuntimeCacheDir is one directory a runtime writes compiled kernels and
+// autotuning results into. A runtime's cache dirs are what makes a restarted
+// Pod skip its warmup: the runtime reloads what the previous container built
+// instead of building it again.
+type RuntimeCacheDir struct {
+	// Env is the environment variable that relocates this cache.
+	Env string
+	// Value is the directory under the operator's mount root the variable
+	// points at. Empty means the mount root itself.
+	Value string
+	// Dir is the directory the operator creates under the per-service cache
+	// directory, empty when the per-service directory is the cache. It differs
+	// from Value where the runtime appends a path of its own to the base it
+	// reads.
+	Dir string
+	// Default is the path the runtime writes when the variable is unset. It
+	// exists only so a user mount over the runtime's own path can take that
+	// cache over, as with /dev/shm (#2111).
+	Default string
+}
+
+// RuntimeCacheProvider is optionally implemented by backends whose compile and
+// autotune caches are worth keeping on the model cache claim
+// (spec.modelCache.runtimeCache, #2117). A backend that writes no such cache
+// does not implement it, and the operator reports the field as ignored there.
+type RuntimeCacheProvider interface {
+	RuntimeCacheDirs() []RuntimeCacheDir
+}
+
 // anyAboveOne reports whether any of the given parallelism sizes is set above 1.
 func anyAboveOne(sizes ...*int32) bool {
 	for _, s := range sizes {

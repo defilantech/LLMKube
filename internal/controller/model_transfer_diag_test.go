@@ -204,6 +204,77 @@ func terminatedInit(name string, exit int32, msg string) corev1.ContainerStatus 
 	}
 }
 
+// The runtime-cache prep creates and chowns the per-service directory on
+// the claim (#2117). A share that refuses that as root, as an NFS export
+// with root_squash does, is a cache-ownership failure like the
+// downloader's and must reach the same condition, with a remedy that names
+// the share rather than a uid setting that cannot change it. Driven through
+// the production constant so a rename cannot silently drop the diagnosis.
+func assertRefusedRuntimeCachePrep(t *testing.T) {
+	t.Helper()
+	for _, msg := range []string{
+		"mkdir: can't create directory '/runtime-cache/_runtime-cache/default/svc/vllm': Permission denied",
+		"chown: changing ownership of '/runtime-cache/_runtime-cache/default/svc': Operation not permitted",
+		"mkdir: can't create directory '/runtime-cache/_runtime-cache/default/svc': Read-only file system",
+	} {
+		pod := initPod("node-a", terminatedInit(runtimeCachePrepContainerName, 1, msg))
+		pod.Spec.Volumes = []corev1.Volume{{Name: "model-cache", VolumeSource: corev1.VolumeSource{
+			PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: "c"}}}}
+		f, found := findModelTransferFailure([]corev1.Pod{pod})
+		if !found || f.reason != ReasonRuntimeCacheNotWritable {
+			t.Fatalf("msg %q: found=%v reason=%q, want %q", msg, found, f.reason, ReasonRuntimeCacheNotWritable)
+		}
+		if !strings.Contains(f.remedy, "root_squash") {
+			t.Errorf("msg %q: remedy %q does not name the share's root squash", msg, f.remedy)
+		}
+		if strings.Contains(f.remedy, "--init-container-user") {
+			t.Errorf("msg %q: remedy %q sends a root-owned prep to the downloader's uid setting", msg, f.remedy)
+		}
+	}
+}
+
+// The downloader and the cache prep keep base behavior: a refused chown
+// (EPERM) and a read-only file system are undiagnosed on both, and
+// "Permission denied" reaches the downloader's remedy on both. Only the
+// runtime-cache prep, which has its own list, is told about a share that
+// refuses root.
+func assertDownloaderCacheDiagnosis(t *testing.T) {
+	t.Helper()
+	for _, name := range []string{"model-downloader", "model-cache-prep"} {
+		for _, msg := range []string{
+			"chown: changing ownership of '/models': Operation not permitted",
+			"mkdir: can't create directory '/models/k': Read-only file system",
+		} {
+			pod := initPod("node-a", terminatedInit(name, 1, msg))
+			pod.Spec.Volumes = []corev1.Volume{{Name: "model-cache", VolumeSource: corev1.VolumeSource{
+				PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: "c"}}}}
+			if f, found := findModelTransferFailure([]corev1.Pod{pod}); found {
+				t.Errorf("%s, msg %q: diagnosed as %q, want no diagnosis as on base", name, msg, f.reason)
+			}
+		}
+
+		denied := initPod("node-a", terminatedInit(name, 1,
+			"mkdir: can't create directory '/models/k': Permission denied"))
+		denied.Spec.Volumes = []corev1.Volume{{Name: "model-cache", VolumeSource: corev1.VolumeSource{
+			PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: "c"}}}}
+		f, found := findModelTransferFailure([]corev1.Pod{denied})
+		if !found || f.reason != ReasonModelCacheNotWritable {
+			t.Fatalf("%s: found=%v reason=%q, want %q", name, found, f.reason, ReasonModelCacheNotWritable)
+		}
+		if !strings.Contains(f.remedy, "--init-container-user") {
+			t.Errorf("%s remedy = %q, want the uid setting it names", name, f.remedy)
+		}
+	}
+
+	pod := initPod("node-a", terminatedInit(runtimeCachePrepContainerName, 1,
+		"chown: changing ownership of '/runtime-cache/_runtime-cache/default/svc': Operation not permitted"))
+	pod.Spec.Volumes = []corev1.Volume{{Name: "model-cache", VolumeSource: corev1.VolumeSource{
+		PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: "c"}}}}
+	if f, found := findModelTransferFailure([]corev1.Pod{pod}); !found || f.reason != ReasonRuntimeCacheNotWritable {
+		t.Fatalf("runtime-cache-prep: found=%v reason=%q, want %q", found, f.reason, ReasonRuntimeCacheNotWritable)
+	}
+}
+
 func TestFindModelTransferFailure(t *testing.T) {
 	t.Run("diagnoses a failed downloader", func(t *testing.T) {
 		pods := []corev1.Pod{initPod("node-a",
@@ -228,6 +299,9 @@ func TestFindModelTransferFailure(t *testing.T) {
 			t.Fatalf("found=%v reason=%q, want %q", found, f.reason, ReasonModelCacheNotWritable)
 		}
 	})
+
+	t.Run("diagnoses a refused runtime-cache-prep", assertRefusedRuntimeCachePrep)
+	t.Run("the downloader's cache diagnosis is unchanged", assertDownloaderCacheDiagnosis)
 
 	// The remedy lands in the condition the user reads. On the fsGroup <= 0
 	// profile the prep is already on, so a hint that names only
@@ -275,7 +349,7 @@ func TestFindModelTransferFailure(t *testing.T) {
 	// the container name is the real one.
 	t.Run("cache permission failure on the read-only prefetched pod is not labelled with the cache remedy", func(t *testing.T) {
 		cfg := buildPrefetchedStorageConfig(cachePrepTripwireModel(), cachePrepTripwireIsvc(), resolveEffectiveModelCache(cachePrepTripwireIsvc(), cachePrepTripwireModel()), ModelCacheModeShared,
-			"docker.io/curlimages/curl:8.18.0", nil)
+			"docker.io/curlimages/curl:8.18.0", nil, false)
 		if len(cfg.initContainers) != 1 || cfg.initContainers[0].Name != "model-verify" {
 			t.Fatalf("prefetched initContainers = %v, want [model-verify]", containerNames(cfg.initContainers))
 		}

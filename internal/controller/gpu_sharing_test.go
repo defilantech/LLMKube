@@ -308,7 +308,7 @@ func TestConstructDeploymentGPUSharing(t *testing.T) {
 		})
 		model := sharingModel(&inferencev1alpha1.GPUSpec{Enabled: true, Vendor: "nvidia"})
 
-		deployment := r.constructDeploymentForCache(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
+		deployment := r.deploymentFor(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
 
 		container := deployment.Spec.Template.Spec.Containers[0]
 		if _, ok := container.Resources.Limits["nvidia.com/mig-1g.24gb"]; !ok {
@@ -337,7 +337,7 @@ func TestConstructDeploymentGPUSharing(t *testing.T) {
 		isvc.Spec.NodeSelector = map[string]string{"zone": "user-zone"}
 		model := sharingModel(&inferencev1alpha1.GPUSpec{Enabled: true, Vendor: "nvidia"})
 
-		deployment := r.constructDeploymentForCache(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
+		deployment := r.deploymentFor(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
 
 		ns := deployment.Spec.Template.Spec.NodeSelector
 		if ns["llmkube.dev/gpu-pool"] != "shared" {
@@ -371,7 +371,7 @@ func TestConstructDeploymentGPUSharing(t *testing.T) {
 		})
 		model := sharingModel(&inferencev1alpha1.GPUSpec{Enabled: true, Vendor: "nvidia"})
 
-		deployment := r.constructDeploymentForCache(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
+		deployment := r.deploymentFor(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "")
 		pod := deployment.Spec.Template
 		container := pod.Spec.Containers[0]
 

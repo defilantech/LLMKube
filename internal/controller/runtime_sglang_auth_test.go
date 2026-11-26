@@ -35,7 +35,7 @@ func TestSGLangAPIKeyPrivateVolume(t *testing.T) {
 	isvc.Spec.SecurityContext = &corev1.SecurityContext{ReadOnlyRootFilesystem: boolPtr(true)}
 	model := &inferencev1alpha1.Model{}
 	r := &InferenceServiceReconciler{}
-	pod := r.constructDeploymentForCache(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "").Spec.Template.Spec
+	pod := r.deploymentFor(isvc, model, resolveEffectiveModelCache(isvc, model), nil, 1, "", "").Spec.Template.Spec
 	c := pod.Containers[0]
 	if len(c.Command) != 4 || c.Command[1] != "-c" || c.Command[3] != sglangAPIKeyConfigPath {
 		t.Fatalf("keyed container has no config launcher: %v", c.Command)
