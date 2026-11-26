@@ -215,14 +215,20 @@ func TestRuntimeNotAvailableMessage(t *testing.T) {
 		{
 			goos: "darwin", runtime: runtimeMLXServer,
 			want:    []string{`runtime "mlx-server"`, "started without that engine", "restart the agent"},
-			notWant: []string{"llama-server", "only on macOS"},
+			notWant: []string{"llama-server", "executor runs it only on macOS"},
 		},
 		{
 			goos: "linux", runtime: runtimeMLXServer,
-			want:    []string{`runtime "mlx-server"`, "only on macOS", "on linux (llamacpp or ollama)"},
+			want: []string{
+				`runtime "mlx-server"`, "executor runs it only on macOS",
+				"on linux (llamacpp or ollama)",
+			},
 			notWant: []string{"pass its binary flag", "brew"},
 		},
-		{goos: "linux", runtime: runtimeTensorFold, want: []string{`runtime "tensorfold"`, "only on macOS"}},
+		{
+			goos: "linux", runtime: runtimeTensorFold,
+			want: []string{`runtime "tensorfold"`, "executor runs it only on macOS"},
+		},
 		{goos: "linux", runtime: runtimeLlamaCPP, want: []string{"llama-server was not found", "--llama-server"}},
 		{goos: "linux", runtime: runtimeOllama, want: []string{"started without that engine"}},
 	} {

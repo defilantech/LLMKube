@@ -55,8 +55,9 @@ const (
 // whose resolved runtime has no registered executor.
 func runtimeNotAvailableMessage(goos, runtime string) string {
 	if goos != "darwin" && inferencev1alpha1.IsMacOSOnlyRuntime(runtime) {
-		return fmt.Sprintf("no executor registered for runtime %q: it runs only on macOS with Apple Silicon; "+
-			"set spec.runtime to an engine this agent serves on %s (llamacpp or ollama)", runtime, goos)
+		return fmt.Sprintf("no executor registered for runtime %q: this agent's executor runs it "+
+			"only on macOS with Apple Silicon; set spec.runtime to an engine this agent serves on %s "+
+			"(llamacpp or ollama)", runtime, goos)
 	}
 	if runtime == runtimeLlamaServer || runtime == runtimeLlamaCPP {
 		return fmt.Sprintf("no executor registered for runtime %q: this agent has no llama.cpp executor because "+

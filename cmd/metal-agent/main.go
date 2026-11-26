@@ -586,9 +586,10 @@ func checkHostPlatform(logger *zap.SugaredLogger) (platform.Capabilities, error)
 	return caps, nil
 }
 
-// checkHostRuntimes refuses, off macOS, a --runtime or binary flag that
-// selects a macOS-only engine (inferencev1alpha1.IsMacOSOnlyRuntime), naming
-// the runtimes the agent serves there.
+// checkHostRuntimes refuses, off macOS, a --runtime or binary flag whose
+// agent executor requires macOS with Apple Silicon
+// (inferencev1alpha1.IsMacOSOnlyRuntime), naming the runtimes the agent serves
+// there.
 func checkHostRuntimes(cfg *AgentConfig, goos string) error {
 	if goos == "darwin" {
 		return nil
@@ -610,8 +611,9 @@ func checkHostRuntimes(cfg *AgentConfig, goos string) error {
 	if len(refused) == 0 {
 		return nil
 	}
-	return fmt.Errorf("%s: only on macOS with Apple Silicon; on %s the agent serves --runtime llama-server "+
-		"(llama.cpp) and --runtime ollama", strings.Join(refused, ", "), goos)
+	return fmt.Errorf("%s: this agent's executor runs only on macOS with Apple Silicon; "+
+		"on %s the agent serves --runtime llama-server (llama.cpp) and --runtime ollama",
+		strings.Join(refused, ", "), goos)
 }
 
 // resolveRuntimes refuses runtimes this host cannot serve, then resolves the

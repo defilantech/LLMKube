@@ -116,8 +116,11 @@ Add `--runtime yourengine` handling in `pkg/cli/deploy.go`.
 | `generic` | Any container | 8080 | TCP socket | No (opt in with `spec.stageModel`) | — |
 
 The metal-agent runtimes `mlx-server`, `omlx`, `vllm-swift`, `ollama`, and
-`tensorfold` run as native processes on Apple Silicon hosts, not as pods. They
-need a Model with `hardware.accelerator: metal`. See `deployment/macos/README.md`.
+`tensorfold` are served through the out-of-cluster `metal-agent` rather than
+as pods, and need a Model with `hardware.accelerator: metal`. In LLMKube, the
+agent executors for `mlx-server`, `omlx`, `vllm-swift`, and `tensorfold` run
+on Apple Silicon hosts (macOS), while `ollama` talks to a host daemon on
+macOS or Linux. See `deployment/macos/README.md`.
 
 A new metal-agent runtime has no `RuntimeBackend`. Instead it needs a
 `ProcessExecutor` in `pkg/agent/` (`executor_tensorfold.go` is a compact

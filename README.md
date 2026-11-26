@@ -67,7 +67,7 @@ Suddenly you're building an entire platform instead of shipping your product.
 
 ## Architecture
 
-Two cooperating processes. An in-cluster controller owns Kubernetes-side desired state. An out-of-cluster `metal-agent` (optional, only needed for Apple Silicon hosts) owns OS-level process supervision and registers its authenticated ingress back into the cluster; the controller fronts that ingress with an in-cluster relay, so Metal InferenceServices are ordinary Services.
+Two cooperating processes. An in-cluster controller owns Kubernetes-side desired state. An out-of-cluster `metal-agent` (optional, used for Apple Silicon hosts and experimental Linux host agents) owns OS-level process supervision and registers its authenticated ingress back into the cluster; the controller fronts that ingress with an in-cluster relay, so Metal InferenceServices are ordinary Services.
 
 ```mermaid
 %%{init: {'theme':'neutral','flowchart':{'curve':'linear'}}}%%
@@ -286,7 +286,7 @@ Three properties worth calling out:
 **LLMKube is for teams that want Kubernetes-managed LLM inference across heterogeneous hardware.** What it combines:
 
 - **Apple Silicon in the same control plane as your GPU nodes.** The Metal Agent runs engines as native macOS processes, and the controller fronts each one with an ordinary Service, so a Mac and an NVIDIA node both show up as `InferenceService` objects.
-- **Several runtimes under one CRD.** llama.cpp, vLLM and SGLang in-cluster, MLX engines and Ollama on Macs (see [Features](#features) for the full list).
+- **Several runtimes under one CRD.** llama.cpp, vLLM and SGLang in-cluster; llama-server, MLX integrations and Ollama through the Metal Agent (see [Features](#features) for the full list).
 - **Local and external models behind one endpoint.** `ModelRouter` routes between your InferenceServices and Anthropic, OpenAI, Bedrock, Vertex AI or LiteLLM backends, with per-rule timeouts and fallback.
 
 If you just need to run a model on one machine, Ollama is simpler. If you need maximum throughput on NVIDIA-only clusters, vLLM on its own is faster. **[How LLMKube compares](https://llmkube.com/docs/concepts/comparison)** sets it against KubeAI, llm-d, Ollama and the NVIDIA NIM Operator capability by capability, and says when each of them is the better pick.
@@ -329,7 +329,7 @@ One machine with two RTX 5060 Ti GPUs, 10 iterations of 256 max tokens per model
 **Inference:**
 - Kubernetes-native CRDs, all `v1alpha1`: `Model` and `InferenceService` at the core; the Helm chart also installs `ModelRouter`, `ModelPool`, `GPUQuota`, `LoRAAdapter`, `MetalNode` and `FederatedCluster`
 - In-cluster runtimes: llama.cpp (GGUF, plus a router mode that serves several models from one server), vLLM, SGLang, PersonaPlex (Moshi speech-to-speech; bring your own image), and any container (`generic`). TGI is still accepted as a legacy runtime: upstream archived it, and the operator pins its final release, 3.3.7
-- On Apple Silicon through the Metal Agent: llama-server, mlx-server, oMLX, vllm-swift, Ollama and TensorFold, as native processes
+- Host-agent runtimes (`hardware.accelerator: metal`): llama-server, mlx-server, oMLX, vllm-swift, Ollama and TensorFold via the Metal Agent (LLMKube's mlx-server, oMLX, vllm-swift and TensorFold executors target Apple Silicon on macOS; llama-server and Ollama also run experimentally on Linux host agents)
 - Model sources: `http(s)://`, `hf://`, `s3://` (S3-compatible stores), `pvc://`, `oci://` (image volumes, Kubernetes 1.36+), and `file://` or absolute paths under allowlisted host roots
 - Persistent model cache, download once, deploy instantly ([guide](docs/MODEL-CACHE.md))
 - OpenAI-compatible `/v1/chat/completions` API

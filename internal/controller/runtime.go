@@ -184,7 +184,7 @@ func validateRuntimePlacement(isvc *inferencev1alpha1.InferenceService, model *i
 		accel = fmt.Sprintf("accelerator %q", model.Spec.Hardware.Accelerator)
 	}
 	return fmt.Errorf(
-		"spec.runtime %q is served only by the metal-agent on Apple Silicon, but Model %q has "+
+		"spec.runtime %q is served only by the metal-agent, but Model %q has "+
 			"hardware.%s; set the Model's hardware.accelerator to metal, or choose an in-cluster "+
 			"runtime (llamacpp, llamacpp-router, vllm, sglang, tgi, personaplex, generic)",
 		runtime, model.Name, accel)
