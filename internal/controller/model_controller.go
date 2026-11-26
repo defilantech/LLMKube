@@ -1468,6 +1468,7 @@ func ggufMetadataFromParsed(parsed *gguf.GGUFFile) *inferencev1alpha1.GGUFMetada
 		TensorCount:   parsed.Header.TensorCount,
 		FileVersion:   parsed.Header.Version,
 		License:       license.Normalize(parsed.License()),
+		PoolingType:   parsed.PoolingType(),
 	}
 	// A hybrid keeps a KV cache only on some of its layers, and whether the
 	// header said so is exactly what a first start of a remote source cannot

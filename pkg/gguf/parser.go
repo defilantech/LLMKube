@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 )
 
 // Magic number: bytes [G, G, U, F] = [0x47, 0x47, 0x55, 0x46] read as little-endian u32.
@@ -658,6 +659,93 @@ func (f *GGUFFile) HeadCount() uint64 {
 		return 0
 	}
 	return n
+}
+
+// PoolingTypeUnspecified is what PoolingType reports for a GGUF that has no
+// {arch}.pooling_type key, after llama.cpp's LLAMA_POOLING_TYPE_UNSPECIFIED.
+// llama.cpp then loads the model with pooling none, which llama-server's
+// /v1/embeddings rejects.
+const PoolingTypeUnspecified = "unspecified"
+
+// poolingTypeNames maps llama.cpp's enum llama_pooling_type values, as a
+// GGUF stores them, to the names llama-server's --pooling flag takes.
+var poolingTypeNames = map[uint64]string{
+	0: "none",
+	1: "mean",
+	2: "cls",
+	3: "last",
+	4: "rank",
+}
+
+// PoolingType returns the {arch}.pooling_type key as llama-server's --pooling
+// name (none, mean, cls, last or rank), or PoolingTypeUnspecified when the key
+// is absent. It returns "" when that cannot be told: no architecture, or a
+// value that is not one of llama.cpp's pooling types.
+func (f *GGUFFile) PoolingType() string {
+	arch := f.Architecture()
+	if arch == "" {
+		return ""
+	}
+	v, ok := f.GetMetadata(arch + ".pooling_type")
+	if !ok {
+		return PoolingTypeUnspecified
+	}
+	n, ok := AsU64(v)
+	if !ok {
+		return ""
+	}
+	return poolingTypeNames[n]
+}
+
+// DefaultEmbeddingPooling is the --pooling an embedding-mode llama-server
+// gets when its GGUF records no pooling type. The converter writes the key for
+// every checkpoint that ships a sentence-transformers pooling config, so a GGUF
+// without it is most often a decoder-only model, where the last token's state
+// is the one that has seen the whole input. It was LLMKube's default for every
+// embedding service before #2549.
+const DefaultEmbeddingPooling = "last"
+
+// EmbeddingPoolingDefault returns the --pooling value LLMKube adds for an
+// embedding-mode llama-server, or "" for none: DefaultEmbeddingPooling when the
+// Model's GGUF records no pooling type (poolingType PoolingTypeUnspecified)
+// and the service's --override-kv values (spec.metadataOverrides) do not set
+// it. arch is the GGUF's general.architecture. A --pooling in the service's
+// own extra arguments is the caller's to honor.
+func EmbeddingPoolingDefault(poolingType, arch string, overrides []string) string {
+	if poolingType != PoolingTypeUnspecified || OverridesPoolingType(arch, overrides) {
+		return ""
+	}
+	return DefaultEmbeddingPooling
+}
+
+// OverridesPoolingType reports whether llama-server --override-kv values, as
+// spec.metadataOverrides holds them (KEY=TYPE:VALUE, and llama.cpp also splits
+// one value on commas), set the {arch}.pooling_type that llama.cpp reads for a
+// model of architecture arch. llama.cpp applies an override even to a key the
+// GGUF lacks, and --pooling beats the model's pooling type, so adding --pooling
+// would replace such an override.
+//
+// The match is exact, as llama.cpp's is: it copies the key up to the first '='
+// verbatim and looks it up by the architecture's own key name, so a key with
+// spaces, another architecture's key or the classifier head's
+// {arch}.classifier.pooling_type is not applied as the pooling type, and does
+// not count here. With no architecture nothing can match.
+func OverridesPoolingType(arch string, overrides []string) bool {
+	if arch == "" {
+		return false
+	}
+	want := arch + ".pooling_type"
+	for _, o := range overrides {
+		// llama.cpp splits with parse_csv_row (common/arg.cpp), which keeps a
+		// comma inside double quotes in one item; a plain split differs only
+		// for an override hand-written with quotes inside the value.
+		for _, item := range strings.Split(o, ",") {
+			if key, _, ok := strings.Cut(item, "="); ok && key == want {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // attentionScalar reads {arch}.attention.<name> as a scalar unsigned integer.

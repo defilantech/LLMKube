@@ -106,6 +106,9 @@ func runStatus(opts *statusOptions) error {
 		fmt.Printf("  Layers:         %d\n", model.Status.GGUF.LayerCount)
 		fmt.Printf("  Attn Heads:     %d\n", model.Status.GGUF.HeadCount)
 		fmt.Printf("  Tensors:        %d\n", model.Status.GGUF.TensorCount)
+		if pt := model.Status.GGUF.PoolingType; pt != "" {
+			fmt.Printf("  Pooling Type:   %s\n", pt)
+		}
 	}
 
 	fmt.Printf("\nINFERENCE SERVICE STATUS:\n")

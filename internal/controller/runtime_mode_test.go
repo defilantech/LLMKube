@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	inferencev1alpha1 "github.com/defilantech/llmkube/api/v1alpha1"
+	"github.com/defilantech/llmkube/pkg/gguf"
 )
 
 func TestResolveServingMode(t *testing.T) {
@@ -51,46 +52,103 @@ func TestResolveServingMode(t *testing.T) {
 
 func TestAppendModeArgs(t *testing.T) {
 	t.Run("embedding leaves pooling to model metadata", func(t *testing.T) {
-		args := appendModeArgs(nil, servingModeEmbedding, nil)
+		args := appendModeArgs(nil, servingModeEmbedding, nil, "")
 		if !containsArg(args, "--embedding", "") || slices.Contains(args, "--pooling") {
 			t.Fatalf("expected --embedding without --pooling: %v", args)
 		}
 	})
+	t.Run("embedding adds the default pooling it is given (#2580)", func(t *testing.T) {
+		args := appendModeArgs(nil, servingModeEmbedding, nil, gguf.DefaultEmbeddingPooling)
+		if !containsArg(args, "--pooling", "last") {
+			t.Fatalf("expected --pooling last: %v", args)
+		}
+	})
+	t.Run("extraArgs pooling wins over the default", func(t *testing.T) {
+		for _, extra := range [][]string{{"--pooling", "mean"}, {"--pooling=cls"}} {
+			if args := appendModeArgs(nil, servingModeEmbedding, extra, gguf.DefaultEmbeddingPooling); slices.Contains(args, "--pooling") {
+				t.Fatalf("extraArgs %v: expected no appended --pooling, got %v", extra, args)
+			}
+		}
+	})
+	t.Run("rerank keeps rank pooling whatever the default", func(t *testing.T) {
+		args := appendModeArgs(nil, servingModeRerank, nil, gguf.DefaultEmbeddingPooling)
+		if !containsArg(args, "--pooling", "rank") || containsArg(args, "--pooling", "last") {
+			t.Fatalf("expected only --pooling rank: %v", args)
+		}
+	})
+	t.Run("chat adds nothing whatever the default", func(t *testing.T) {
+		if args := appendModeArgs(nil, servingModeChat, nil, gguf.DefaultEmbeddingPooling); len(args) != 0 {
+			t.Fatalf("chat mode should append nothing, got %v", args)
+		}
+	})
 	t.Run("rerank adds --reranking, --embedding and rank pooling", func(t *testing.T) {
-		args := appendModeArgs(nil, servingModeRerank, nil)
+		args := appendModeArgs(nil, servingModeRerank, nil, "")
 		if !containsArg(args, "--reranking", "") || !containsArg(args, "--embedding", "") || !containsArg(args, "--pooling", "rank") {
 			t.Fatalf("missing rerank flags: %v", args)
 		}
 	})
 	t.Run("does not duplicate flags already in extraArgs", func(t *testing.T) {
 		extra := []string{"--embedding", "--pooling", "cls", "--cache-ram", "0"}
-		args := appendModeArgs(nil, servingModeEmbedding, extra)
+		args := appendModeArgs(nil, servingModeEmbedding, extra, "")
 		if len(args) != 0 {
 			t.Fatalf("expected no appended flags when extraArgs already set them, got %v", args)
 		}
 	})
 	t.Run("chat adds nothing", func(t *testing.T) {
-		if args := appendModeArgs(nil, servingModeChat, nil); len(args) != 0 {
+		if args := appendModeArgs(nil, servingModeChat, nil, ""); len(args) != 0 {
 			t.Fatalf("chat mode should append nothing, got %v", args)
 		}
 	})
 	t.Run("embedding sets --cache-ram 0", func(t *testing.T) {
-		args := appendModeArgs(nil, servingModeEmbedding, nil)
+		args := appendModeArgs(nil, servingModeEmbedding, nil, "")
 		if !containsArg(args, "--cache-ram", "0") {
 			t.Fatalf("embedding mode should set --cache-ram 0, got %v", args)
 		}
 	})
 	t.Run("rerank sets --cache-ram 0", func(t *testing.T) {
-		args := appendModeArgs(nil, servingModeRerank, nil)
+		args := appendModeArgs(nil, servingModeRerank, nil, "")
 		if !containsArg(args, "--cache-ram", "0") {
 			t.Fatalf("rerank mode should set --cache-ram 0, got %v", args)
 		}
 	})
 	t.Run("does not override user --cache-ram in extraArgs", func(t *testing.T) {
 		extra := []string{"--cache-ram", "512"}
-		args := appendModeArgs(nil, servingModeEmbedding, extra)
+		args := appendModeArgs(nil, servingModeEmbedding, extra, "")
 		if containsArg(args, "--cache-ram", "0") {
 			t.Fatalf("should not override user --cache-ram, got %v", args)
 		}
 	})
+}
+
+func TestEmbeddingPoolingDefault(t *testing.T) {
+	model := func(pooling, arch string) *inferencev1alpha1.Model {
+		m := &inferencev1alpha1.Model{}
+		m.Status.GGUF = &inferencev1alpha1.GGUFMetadata{PoolingType: pooling, Architecture: arch}
+		return m
+	}
+	for _, tc := range []struct {
+		name      string
+		model     *inferencev1alpha1.Model
+		overrides []string
+		want      string
+	}{
+		{"GGUF without pooling_type", model(gguf.PoolingTypeUnspecified, "qwen3"), nil, "last"},
+		{"recorded mean", model("mean", "bert"), nil, ""},
+		{"recorded none", model("none", "llama"), nil, ""},
+		{"metadata from an older controller", model("", "llama"), nil, ""},
+		{"no GGUF metadata", &inferencev1alpha1.Model{}, nil, ""},
+		{"no Model", nil, nil, ""},
+		{"an override sets this architecture's pooling_type", model(gguf.PoolingTypeUnspecified, "bert"),
+			[]string{"bert.pooling_type=int:1"}, ""},
+		{"an override names another architecture", model(gguf.PoolingTypeUnspecified, "bert"),
+			[]string{"llama.pooling_type=int:1"}, "last"},
+		{"an override only sets the classifier's pooling", model(gguf.PoolingTypeUnspecified, "bert"),
+			[]string{"bert.classifier.pooling_type=int:2"}, "last"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := embeddingPoolingDefault(tc.model, tc.overrides); got != tc.want {
+				t.Errorf("embeddingPoolingDefault = %q, want %q", got, tc.want)
+			}
+		})
+	}
 }

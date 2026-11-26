@@ -22,6 +22,7 @@ import (
 	"strconv"
 
 	inferencev1alpha1 "github.com/defilantech/llmkube/api/v1alpha1"
+	"github.com/defilantech/llmkube/pkg/gguf"
 )
 
 // Argument builders for the llama.cpp runtime. Each helper takes the current
@@ -179,7 +180,12 @@ func appendNoWarmupArgs(args []string, noWarmup *bool) []string {
 // fills its host prompt cache up to --cache-ram (default 8 GiB) and never
 // releases it, while the cache read path is gated to completion tasks.
 // (#1406)
-func appendModeArgs(args []string, mode string, extraArgs []string) []string {
+//
+// Embedding pooling follows the GGUF's pooling_type. defaultPooling is the
+// --pooling to add when the GGUF has none (embeddingPoolingDefault): llama.cpp
+// would load it with pooling none, which /v1/embeddings rejects (#2580).
+// A --pooling in extraArgs still wins.
+func appendModeArgs(args []string, mode string, extraArgs []string, defaultPooling string) []string {
 	switch mode {
 	case servingModeRerank:
 		if !hasMatchingExtraArg(extraArgs, "reranking") {
@@ -198,12 +204,28 @@ func appendModeArgs(args []string, mode string, extraArgs []string) []string {
 		if !hasMatchingExtraArg(extraArgs, "embedding") {
 			args = append(args, "--embedding")
 		}
-		// Leave pooling to GGUF metadata, matching the other runtime arg builder.
+		// Leave pooling to GGUF metadata, matching the other runtime arg
+		// builder, unless the GGUF has none.
+		if defaultPooling != "" && !hasMatchingExtraArg(extraArgs, "pooling") {
+			args = append(args, "--pooling", defaultPooling)
+		}
 		if !hasMatchingExtraArg(extraArgs, "cache-ram") {
 			args = append(args, "--cache-ram", "0")
 		}
 	}
 	return args
+}
+
+// embeddingPoolingDefault returns the --pooling an embedding service gets
+// from its Model's GGUF metadata and its own metadataOverrides
+// (gguf.EmbeddingPoolingDefault), or "" when the Model records no GGUF
+// metadata (not a GGUF, not parsed yet, or a source the controller never
+// reads).
+func embeddingPoolingDefault(model *inferencev1alpha1.Model, metadataOverrides []string) string {
+	if model == nil || model.Status.GGUF == nil {
+		return ""
+	}
+	return gguf.EmbeddingPoolingDefault(model.Status.GGUF.PoolingType, model.Status.GGUF.Architecture, metadataOverrides)
 }
 
 // specTypeAliases maps the pre-#1528 friendly names onto llama.cpp's own

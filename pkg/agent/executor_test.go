@@ -854,7 +854,10 @@ func TestBuildLlamaServerArgsAlias(t *testing.T) {
 // buildExecutorConfigForTest mirrors buildExecutorConfig for the parity test.
 // It lives in the test file so the parity test does not reach into unexported
 // agent internals; the production path goes through the real
-// buildExecutorConfig in agent.go.
+// buildExecutorConfig in agent.go. It takes no Model, so it leaves out the
+// fields buildExecutorConfig reads from Model status (ModelPoolingType,
+// ModelArchitecture); pooling coverage goes through the real function in
+// executor_mode_test.go.
 func buildExecutorConfigForTest(isvc *inferencev1alpha1.InferenceService) ExecutorConfig {
 	cacheTypeK, cacheTypeV := resolveCacheTypes(isvc)
 

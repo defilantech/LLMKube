@@ -565,10 +565,14 @@ type InferenceServiceSpec struct {
 	// For the llamacpp runtime it auto-appends the required flags (embedding ->
 	// --embedding; rerank -> --reranking --embedding --pooling rank); any flag
 	// already set in spec.extraArgs wins. Embedding pooling follows the GGUF's
-	// pooling_type metadata instead of defaulting to last-token pooling.
-	// For GGUFs without pooling_type, set extraArgs: ["--pooling", "<value>"]
-	// to the model-appropriate value; otherwise /v1/embeddings fails with
-	// "Pooling type 'none' is not OAI compatible".
+	// pooling_type metadata. When the Model's status.gguf.poolingType is
+	// "unspecified" (the GGUF has no pooling_type), embedding also gets
+	// --pooling last, since llama.cpp would otherwise use pooling none and
+	// /v1/embeddings would fail with "Pooling type 'none' is not OAI
+	// compatible". Set extraArgs: ["--pooling", "<value>"] to choose another
+	// value, or for a Model whose status has no poolingType: its metadata was
+	// read before the field existed, or its source is one whose header the
+	// controller never reads (pvc://, oci://).
 	// When unset, the mode is inferred from spec.extraArgs / spec.endpoint.path.
 	// The resolved value is always reported in status.mode.
 	// +kubebuilder:validation:Enum=chat;embedding;rerank
