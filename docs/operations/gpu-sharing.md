@@ -395,7 +395,10 @@ cancels the reclaim. The resident keeps the slot, and its idle clock starts over
 If the resident's Pod from the drain is still terminating, the pool holds the
 resident at zero until that Pod is gone, then scales it up, so its new Pod never
 starts beside the old one. The same wait applies to any member the pool drained
-and a request brings back, including after a `reclaim-down` release.
+and a request brings back, including after a `reclaim-down` release. Like the
+wait for an incumbent's Pods, it has no timeout: a Pod that never finishes
+terminating holds the member, while the router gives up on the request at
+`spec.swapBudget`.
 
 A request for another member can arrive while the pool is loading the default,
 after a reclaim or to warm a cold pool. That member takes the slot: the default

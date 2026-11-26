@@ -29,6 +29,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	inferencev1alpha1 "github.com/defilantech/llmkube/api/v1alpha1"
+	"github.com/defilantech/llmkube/internal/router"
 )
 
 // #2578: a member that just left the slot is re-activated while its own Pod
@@ -106,10 +107,12 @@ var _ = Describe("ModelPool #2578", func() {
 			return k8sClient.Get(ctx, types.NamespacedName{Name: podB, Namespace: "default"}, &corev1.Pod{}) != nil
 		}).Should(BeTrue())
 	}
+	// reactivateB scales B up the way the router-proxy does, through its own
+	// member controller, so the pool reads the activation from the router's
+	// field manager (routerTarget) as it does in a cluster.
 	reactivateB := func() {
-		b := member(memberB)
-		b.Spec.Replicas = ptr.To(int32(1))
-		Expect(k8sClient.Update(ctx, b)).To(Succeed())
+		Expect(router.NewKubeMemberController(k8sClient, time.Millisecond).Activate(ctx, "default", memberB)).To(Succeed())
+		Expect(replicasOf(member(memberB))).To(Equal(int32(1)))
 	}
 
 	// makeBResident builds the pool (reclaim after 5m; default A under reclaim,
@@ -194,7 +197,10 @@ var _ = Describe("ModelPool #2578", func() {
 
 			By("re-activating B from the router while its old Pod terminates")
 			reactivateB()
-			reconcileOnce()
+			res, err := r().Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: poolName, Namespace: "default"}})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res.RequeueAfter).To(Equal(modelPoolSwapRequeue),
+				"no Pod event wakes the pool, so its swap requeue is what ends the hold")
 			Expect(replicasOf(member(memberB))).To(Equal(int32(0)),
 				"B's previous Pod still holds its memory; a new Pod must not start beside it")
 			Expect(drainedByPool(member(memberB))).To(BeTrue(), "a hold is not a scale-up: the mark stays")
@@ -240,6 +246,30 @@ var _ = Describe("ModelPool #2578", func() {
 			"B's previous Pod still holds its memory; a new Pod must not start beside it")
 
 		By("scaling B up once its old Pod is gone")
+		releasePodB()
+		reconcileOnce()
+		Expect(replicasOf(member(memberB))).To(Equal(int32(1)))
+	})
+
+	// #2240: the hold zeroes the replica count that records the router's
+	// activation, so the activation must be in status first. A failed status
+	// write leaves B at one, and the retried pass holds it.
+	It("records the activation before it holds a re-activated member", func() {
+		makeBResident(inferencev1alpha1.ModelPoolSwapPolicyReclaimDown)
+		reclaimB(true)
+		reactivateB()
+
+		failing := r()
+		failing.Client = statusFailsAfterClient{Client: k8sClient, allowed: ptr.To(0)}
+		_, err := failing.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: poolName, Namespace: "default"}})
+		Expect(err).To(HaveOccurred())
+		Expect(replicasOf(member(memberB))).To(Equal(int32(1)),
+			"without the recorded activation, zeroing B would lose the router's request")
+
+		reconcileOnce()
+		Expect(replicasOf(member(memberB))).To(Equal(int32(0)))
+		Expect(pool().Status.PendingMember).To(Equal(memberB))
+
 		releasePodB()
 		reconcileOnce()
 		Expect(replicasOf(member(memberB))).To(Equal(int32(1)))
