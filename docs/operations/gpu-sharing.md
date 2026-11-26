@@ -392,6 +392,10 @@ reclaimed. Reclaims are counted in `llmkube_modelpool_reclaims_total`.
 A request for the resident can arrive after the reclaim has started draining it,
 before the default is up. The router then scales the resident back up, and that
 cancels the reclaim. The resident keeps the slot, and its idle clock starts over.
+If the resident's Pod from the drain is still terminating, the pool holds the
+resident at zero until that Pod is gone, then scales it up, so its new Pod never
+starts beside the old one. The same wait applies to any member the pool drained
+and a request brings back, including after a `reclaim-down` release.
 
 A request for another member can arrive while the pool is loading the default,
 after a reclaim or to warm a cold pool. That member takes the slot: the default

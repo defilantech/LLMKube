@@ -239,24 +239,17 @@ func (r *ModelPoolReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	// controller-side gate rather than pure scheduler delegation, because on a
 	// unified-memory node the device plugin can admit the owner in the
 	// reclaim-lag window between the incumbent Pod terminating and its process
-	// exiting.
+	// exiting. An owner the pool drained waits for its own Pods from before
+	// the drain the same way (#2578).
 	swapping := deferReason != ""
+	ownerHeld := false
 	if owner != "" {
-		desired := int32(0)
-		if othersClear {
-			desired = 1
-		} else {
-			swapping = true
-		}
-		if desired == 0 && replicasOf(members[owner]) >= 1 {
-			if err := r.recordPendingOwner(ctx, pool, owner); err != nil {
-				return ctrl.Result{}, err
-			}
-		}
-		if err := r.scaleOwner(ctx, statusBefore, members, owner, desired); err != nil {
+		held, err := r.settleOwner(ctx, pool, statusBefore, members, owner, othersClear)
+		if err != nil {
 			return ctrl.Result{}, err
 		}
-		if !memberReady(members[owner]) {
+		ownerHeld = held
+		if held || !memberReady(members[owner]) {
 			swapping = true
 		}
 	}
@@ -272,7 +265,7 @@ func (r *ModelPoolReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	}
 	result.RequeueAfter = soonerRequeue(result.RequeueAfter, externalScaleRequeue)
 	statusOwner := reportedOwner(owner, unreclaimedOwner, deferReason)
-	if err := r.updateStatus(ctx, pool, statusBefore, members, statusOwner, swapping, deferReason); err != nil {
+	if err := r.updateStatus(ctx, pool, statusBefore, members, statusOwner, ownerHeld, swapping, deferReason); err != nil {
 		if apierrors.IsConflict(err) {
 			//nolint:staticcheck // SA1019: keep the rate-limited retry on a write conflict; RequeueAfter would swap backoff for a fixed delay.
 			return ctrl.Result{Requeue: true}, nil
@@ -936,20 +929,25 @@ func (r *ModelPoolReconciler) markMetalUnsupported(ctx context.Context, pool *in
 // status.ResidentIdleSince, and a baseline taken after that mutation diffs the
 // idle clock out of the patch, so it never persists and the reclaim never fires
 // (the clock resets every reconcile). See the Reconcile call site.
-func (r *ModelPoolReconciler) updateStatus(ctx context.Context, pool, before *inferencev1alpha1.ModelPool, members map[string]*inferencev1alpha1.InferenceService, owner string, swapping bool, deferReason string) error {
+//
+// ownerHeld says this pass held the owner at zero replicas: it is not serving,
+// whatever its own status still reports from before a drain, so the pool
+// reports it pending rather than resident, and the activation the hold
+// deferred stays recorded (#2578).
+func (r *ModelPoolReconciler) updateStatus(ctx context.Context, pool, before *inferencev1alpha1.ModelPool, members map[string]*inferencev1alpha1.InferenceService, owner string, ownerHeld, swapping bool, deferReason string) error {
 	memberStatuses := make([]inferencev1alpha1.ModelPoolMemberStatus, 0, len(pool.Spec.Members))
 	for _, m := range pool.Spec.Members {
 		name := m.InferenceServiceRef.Name
 		ms := inferencev1alpha1.ModelPoolMemberStatus{Name: name}
 		if isvc, ok := members[name]; ok {
 			ms.Phase = isvc.Status.Phase
-			ms.Resident = name == owner && memberReady(isvc)
+			ms.Resident = name == owner && !ownerHeld && memberReady(isvc)
 		}
 		memberStatuses = append(memberStatuses, ms)
 	}
 	pool.Status.Members = memberStatuses
 
-	ownerReady := owner != "" && memberReady(members[owner])
+	ownerReady := owner != "" && !ownerHeld && memberReady(members[owner])
 	switch {
 	case ownerReady:
 		pool.Status.Phase = inferencev1alpha1.ModelPoolPhaseReady
@@ -1122,12 +1120,72 @@ func (r *ModelPoolReconciler) holdOwnerUntilOthersClear(
 		}
 	}
 
+	if desired == 1 {
+		ownClear, err := r.drainedPodsGone(ctx, isvc)
+		if err != nil {
+			return err
+		}
+		if !ownClear {
+			desired = 0
+		}
+	}
+
 	if desired == 0 && replicasOf(isvc) > 0 {
 		if err := r.recordPendingOwner(ctx, pool, owner); err != nil {
 			return err
 		}
 	}
 	return r.scaleOwner(ctx, pool, members, owner, desired)
+}
+
+// settleOwner scales the slot owner to one, or holds it at zero while an
+// incumbent's Pods (othersClear false) or its own Pods from a drain are still
+// present, and reports whether it held. A held owner that something already
+// scaled up is recorded as status.pendingMember first, so the activation the
+// hold erases is not lost (#2240).
+func (r *ModelPoolReconciler) settleOwner(
+	ctx context.Context,
+	pool, statusBefore *inferencev1alpha1.ModelPool,
+	members map[string]*inferencev1alpha1.InferenceService,
+	owner string,
+	othersClear bool,
+) (bool, error) {
+	ownClear, err := r.drainedPodsGone(ctx, members[owner])
+	if err != nil {
+		return false, err
+	}
+	if othersClear && ownClear {
+		return false, r.scaleOwner(ctx, statusBefore, members, owner, 1)
+	}
+	if replicasOf(members[owner]) >= 1 {
+		if err := r.recordPendingOwner(ctx, pool, owner); err != nil {
+			return false, err
+		}
+	}
+	return true, r.scaleOwner(ctx, statusBefore, members, owner, 0)
+}
+
+// drainedPodsGone reports whether a member the pool drained has no Pod left
+// terminating. Re-activated before its old Pod is gone, the member's
+// Deployment would start a second Pod beside one whose process can still hold
+// the memory, the co-residence the drain gate exists to prevent (#2578). The
+// drained mark limits the wait to a member coming back from a drain: a
+// resident the pool never released is not held for its own rollout or an
+// evicted Pod, so it keeps serving through them.
+func (r *ModelPoolReconciler) drainedPodsGone(ctx context.Context, isvc *inferencev1alpha1.InferenceService) (bool, error) {
+	if !drainedByPool(isvc) {
+		return true, nil
+	}
+	pods, err := r.memberPods(ctx, isvc)
+	if err != nil {
+		return false, err
+	}
+	for i := range pods {
+		if pods[i].DeletionTimestamp != nil {
+			return false, nil
+		}
+	}
+	return true, nil
 }
 
 func (r *ModelPoolReconciler) observeResidency(pool *inferencev1alpha1.ModelPool, owner string) {
