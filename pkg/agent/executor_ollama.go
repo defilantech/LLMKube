@@ -58,26 +58,6 @@ func NewOllamaExecutor(port int, logger *zap.SugaredLogger) *OllamaExecutor {
 	}
 }
 
-// ollamaModelMap maps LLMKube model names to Ollama model tags.
-var ollamaModelMap = map[string]string{
-	"llama-3.2-3b":       "llama3.2:3b",
-	"llama-3.1-8b":       "llama3.1:8b",
-	"llama-3.3-70b":      "llama3.3:70b",
-	"qwen-2.5-14b":       "qwen2.5:14b",
-	"qwen-2.5-32b":       "qwen2.5:32b",
-	"qwen-2.5-coder-7b":  "qwen2.5-coder:7b",
-	"qwen-2.5-coder-32b": "qwen2.5-coder:32b",
-	"qwen-3-32b":         "qwen3:32b",
-	"mistral-7b":         "mistral:7b",
-	"mistral-small-24b":  "mistral-small:24b",
-	"gemma-3-4b":         "gemma3:4b",
-	"gemma-3-12b":        "gemma3:12b",
-	"phi-4-mini":         "phi4-mini:latest",
-	"deepseek-r1-7b":     "deepseek-r1:7b",
-	"deepseek-r1-14b":    "deepseek-r1:14b",
-	"deepseek-r1-32b":    "deepseek-r1:32b",
-}
-
 // ollamaPsResponse is the response from GET /api/ps.
 type ollamaPsResponse struct {
 	Models []ollamaPsModel `json:"models"`
@@ -101,13 +81,10 @@ type ollamaGenerateRequest struct {
 	KeepAlive *int   `json:"keep_alive,omitempty"`
 }
 
-// ollamaTag is the tag StartProcess pulls: the tag of a hailo:// source
-// (hailo is then true), else the Model name mapped through ollamaModelMap.
+// ollamaTag is the tag StartProcess pulls: inferencev1alpha1.OllamaModelTag,
+// which the ModelRouter also compiles as the backend's served model (#2586).
 func ollamaTag(config ExecutorConfig) (tag string, hailo bool, err error) {
-	if tag, ok, err := inferencev1alpha1.HailoSourceTag(config.ModelSource); ok {
-		return tag, true, err
-	}
-	return resolveOllamaModel(config.ModelName), false, nil
+	return inferencev1alpha1.OllamaModelTag(config.ModelName, config.ModelSource)
 }
 
 // hailoListResponse is GET /hailo/v1/list, which only hailo-ollama serves.
@@ -145,16 +122,6 @@ func (e *OllamaExecutor) requireHailoModel(ctx context.Context, tag string) erro
 	}
 	return fmt.Errorf("hailo-ollama on port %d does not list %q; it lists %s",
 		e.port, tag, strings.Join(list.Models, ", "))
-}
-
-// resolveOllamaModel maps a LLMKube model name to an Ollama model tag.
-// If no mapping exists, the original name is returned as-is (allowing users
-// to specify arbitrary Ollama model names in their Model CRD).
-func resolveOllamaModel(modelName string) string {
-	if mapped, ok := ollamaModelMap[modelName]; ok {
-		return mapped
-	}
-	return modelName
 }
 
 // StartProcess ensures the Ollama daemon is running, pulls the model, and

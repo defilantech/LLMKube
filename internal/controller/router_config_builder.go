@@ -396,10 +396,13 @@ func (r *ModelRouterReconciler) resolveInferenceServiceAddress(
 // --served-model-name, else the modelRef (#1988). oMLX serves the model-store
 // directory basename, mirroring the agent's model-id derivation in
 // pkg/agent/executor_omlx.go (filepath.Base(ModelSource)); the two sides must
-// agree or the router rewrites to a name oMLX rejects. llama.cpp ignores the
-// field. A missing InferenceService or Model, or an empty ModelRef, degrades
-// to "" (the InferenceService name fallback) rather than failing the compile;
-// the address path already reports the backend unhealthy.
+// agree or the router rewrites to a name oMLX rejects. Ollama serves
+// inferencev1alpha1.OllamaModelTag, the one function the agent's executor
+// also pulls by: the tag of a hailo:// source, else the Model name mapped
+// through the catalog table (#2586). llama.cpp ignores the field. A missing
+// InferenceService or Model, or an empty ModelRef, degrades to "" (the
+// InferenceService name fallback) rather than failing the compile; the
+// address path already reports the backend unhealthy.
 func (r *ModelRouterReconciler) localBackendServedModel(
 	ctx context.Context,
 	namespace string,
@@ -408,13 +411,14 @@ func (r *ModelRouterReconciler) localBackendServedModel(
 	if isvc == nil {
 		return ""
 	}
-	switch runtimeNameLabel(isvc) {
+	runtimeName := runtimeNameLabel(isvc)
+	switch runtimeName {
 	case RuntimeVLLM, RuntimeSGLANG:
 		if names := servedModelNames(isvc); len(names) > 0 {
 			return names[0]
 		}
 		return ""
-	case inferencev1alpha1.RuntimeOMLX:
+	case inferencev1alpha1.RuntimeOMLX, inferencev1alpha1.RuntimeOllama:
 	default:
 		return ""
 	}
@@ -424,6 +428,15 @@ func (r *ModelRouterReconciler) localBackendServedModel(
 	model := &inferencev1alpha1.Model{}
 	if err := r.Get(ctx, types.NamespacedName{Name: isvc.Spec.ModelRef, Namespace: namespace}, model); err != nil {
 		return ""
+	}
+	if runtimeName == inferencev1alpha1.RuntimeOllama {
+		// An invalid hailo:// tag degrades like a missing Model: the agent
+		// refuses that source, so no daemon serves a name to rewrite to.
+		tag, _, err := inferencev1alpha1.OllamaModelTag(model.Name, model.Spec.Source)
+		if err != nil {
+			return ""
+		}
+		return tag
 	}
 	if model.Spec.Source != "" {
 		return filepath.Base(model.Spec.Source)

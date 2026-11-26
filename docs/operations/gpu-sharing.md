@@ -512,9 +512,12 @@ is already in flight is waited on in both modes, because the incumbent is
 unloading and cannot serve anyway. The fall-through backend receives its own
 served model name in the outbound request (its `--served-model-name`, by
 default `spec.modelRef`, for vLLM and SGLang; the model-store directory
-basename for oMLX; otherwise the InferenceService name) rather than the alias
-the client asked for, so a runtime that validates the field accepts it instead
-of answering `404 The model ... does not exist`.
+basename for oMLX; for an InferenceService with `spec.runtime: ollama`, the
+tag its executor serves for the Model, e.g. `phi4-mini:latest` for a Model
+named `phi-4-mini`, or the tag in a `hailo://` source; otherwise the
+InferenceService name) rather than the alias the client asked for, so a runtime
+that validates the field accepts it instead of answering
+`404 The model ... does not exist`.
 
 "Busy" means requests the proxy itself is tracking: in flight on the member, or
 waiting for it, as right after a swap made it resident. Traffic that reaches a
