@@ -26,6 +26,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"unicode"
 )
 
 // failure is one failing test in one job attempt: a top-level Go test, a
@@ -35,6 +36,35 @@ type failure struct {
 	Name    string
 	Package string // module-relative directory, such as internal/controller
 	Excerpt []string
+}
+
+// maxNameLen caps a test or package name the ledger writes into an issue
+// title, an issue body or a comment.
+const maxNameLen = 200
+
+// inert returns f with its name and package made safe to render: control
+// characters, newlines included, become spaces and each is capped at
+// maxNameLen runes. Both come from a test report or log that a fork's pull
+// request can shape (its workflow file and test names run on a pull_request
+// run), and a newline inside an inline code span ends the span, letting the
+// rest render as markdown: links, @-mentions in the bot's name.
+func (f failure) inert() failure {
+	f.Name = inertText(f.Name)
+	f.Package = inertText(f.Package)
+	return f
+}
+
+func inertText(s string) string {
+	s = strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) || r == ' ' || r == ' ' {
+			return ' '
+		}
+		return r
+	}, strings.ToValidUTF8(s, "�"))
+	if r := []rune(s); len(r) > maxNameLen {
+		s = string(r[:maxNameLen-3]) + "..."
+	}
+	return s
 }
 
 // key names the flaky test across runs. The package is part of it because
@@ -112,7 +142,8 @@ func clip(lines []string, keepLast bool) []string {
 	for _, l := range lines {
 		l = strings.TrimRight(l, " \t")
 		if len(l) > maxLineLen {
-			l = l[:maxLineLen] + " ..."
+			// Cut at a byte offset, then drop a rune the cut split.
+			l = strings.ToValidUTF8(l[:maxLineLen], "") + " ..."
 		}
 		out = append(out, l)
 	}

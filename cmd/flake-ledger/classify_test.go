@@ -22,7 +22,9 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 // The runs and jobs below are Actions API responses recorded from
@@ -223,4 +225,62 @@ func equalIDs(a, b []int64) bool {
 		}
 	}
 	return true
+}
+
+// TestHostileNamesFromAForkRenderInert drives names a fork's pull request
+// controls through the collect path (a pull_request run's name comes from the
+// workflow file on the PR's merge ref; its test names from its own code) and
+// renders everything the ledger posts. A line break inside an inline code
+// span ends it, so a name carrying one could otherwise post a live
+// @-mention or link as the bot.
+func TestHostileNamesFromAForkRenderInert(t *testing.T) {
+	r := loadRun(t, "runs-test.yml.json", 41570133041) // pass-on-rerun
+	r.Name = "Tests](https://example.com) @octocat [x"
+	hostile := func(_ context.Context, _ workflow, _ run, _ job) ([]failure, string, error) {
+		return []failure{{
+			Name:    "TestA\n\n@octocat pwned [here](https://example.com)",
+			Package: "internal/x\r\n\n@octocat",
+		}}, "stub", nil
+	}
+	var st stats
+	occ, err := occurrencesForRun(context.Background(), defaultWorkflows[0], r, loadJobs(t, 41570133041), "main",
+		hostile, &st)
+	if err != nil || len(occ) != 1 {
+		t.Fatalf("occurrencesForRun = %d occurrences, %v; want 1", len(occ), err)
+	}
+	o := occ[0]
+	if strings.ContainsAny(o.key(), "\r\n") {
+		t.Errorf("key keeps a line break: %q", o.key())
+	}
+	title := issueTitle(o.key())
+	if strings.ContainsAny(title, "\r\n") {
+		t.Errorf("title keeps a line break: %q", title)
+	}
+	e := &entry{key: o.key(), occs: []occurrence{o}}
+	for name, md := range map[string]string{
+		"issue body": issueBody(e),
+		"comment":    commentBody(o, fakeRepo),
+	} {
+		for _, line := range strings.Split(md, "\n") {
+			for _, live := range []string{"@octocat", "](https://example.com)"} {
+				if i := strings.Index(line, live); i >= 0 && strings.Count(line[:i], "`")%2 == 0 {
+					t.Errorf("%s renders %q outside a code span: %q", name, live, line)
+				}
+			}
+		}
+	}
+}
+
+func TestInertTextCapsAndKeepsValidUTF8(t *testing.T) {
+	long := strings.Repeat("é", maxNameLen+50)
+	got := inertText(long)
+	if n := utf8.RuneCountInString(got); n != maxNameLen || !utf8.ValidString(got) || !strings.HasSuffix(got, "...") {
+		t.Errorf("inertText(%d runes) = %d runes, valid=%v", maxNameLen+50, n, utf8.ValidString(got))
+	}
+	if got := inertText("a b\tc\x00d"); got != "a b c d" {
+		t.Errorf("inertText = %q, want separators and controls as spaces", got)
+	}
+	if got := clip([]string{strings.Repeat("é", maxLineLen)}, false); !utf8.ValidString(got[0]) {
+		t.Errorf("clip split a rune: %q", got[0])
+	}
 }

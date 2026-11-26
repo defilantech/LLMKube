@@ -193,6 +193,9 @@ func occurrencesForRun(ctx context.Context, wf workflow, r run, jobs []job, main
 		}
 		seen := map[string]bool{}
 		for _, f := range failures {
+			// Every parser's names pass here before they become a key, an
+			// issue title or markdown.
+			f = f.inert()
 			if seen[f.key()] {
 				continue
 			}
