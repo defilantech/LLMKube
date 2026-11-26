@@ -1055,9 +1055,9 @@ spec:
 
   For a `multiNode` service, wait on `-l inference.llmkube.dev/multinode-group=<name>`
   instead: only rank 0 carries the service label.
-  The pod runs as root, which the directory needs: `runtime-cache-prep` hands
-  it to the pod's group, not to any one user. The first start afterwards
-  compiles from scratch.
+  The pod runs as root, so it can delete the directory whichever user and
+  group `runtime-cache-prep` gave it. The first start afterwards compiles from
+  scratch.
 
 ## CLI Commands
 
