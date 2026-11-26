@@ -158,8 +158,9 @@ Two replicas of one service share that one directory. On a node-local locking
 filesystem such as BlobFuse, locks do not exclude across nodes (the downloader
 documents the same hazard), so two replicas on different nodes can compile the
 same kernel at once. torch.compile's Inductor cache writes each entry to a
-temporary file and renames it into place, but vLLM rewrites its own index of
-compiled graphs, `vllm_compile_cache.py` under `/runtime-cache/vllm`, in place.
+temporary file and renames it into place, but vLLM writes its own compile
+cache files under `/runtime-cache/vllm` in place, among them
+`vllm_compile_cache.py`, its index of compiled graphs.
 A pod killed while writing it can leave the file truncated, and vLLM then
 fails every start that reads it until the file is removed (see below). A
 `ReadWriteOnce` claim limits the cache to a single node's pods in any case,
@@ -172,20 +173,27 @@ cache-key directories the operator writes and reports `_runtime-cache` as
 ### Resetting a service's runtime cache
 
 The operator never deletes the directory. To start a service's caches over (a
-truncated file, or stale entries after a runtime upgrade), stop the service,
-delete its directory from the claim, and start it again. `<claim>` is
+truncated file, or stale entries after a runtime upgrade), suspend the
+service, wait for its Pods to be gone, delete its directory from the claim, and
+resume it. Suspend, not `replicas: 0`: it scales the workload to zero even when
+an HPA (`spec.autoscaling`) or a ModelPool manages the replica count, and
+resuming restores the service's own count. `<claim>` is
 `llmkube-model-cache` in `shared` mode, `<name>-model-cache` in `perService`
 mode, or the service's `spec.modelCache.claimName`:
 
 ```bash
-kubectl -n <namespace> patch inferenceservice <name> --type merge -p '{"spec":{"replicas":0}}'
+kubectl -n <namespace> patch inferenceservice <name> --type merge -p '{"spec":{"suspend":true}}'
+kubectl -n <namespace> wait --for=delete pod -l inference.llmkube.dev/service=<name> --timeout=10m
 kubectl -n <namespace> run runtime-cache-reset --rm -i --restart=Never --image=busybox:1.37.0 \
   --overrides='{"spec":{"containers":[{"name":"runtime-cache-reset","image":"busybox:1.37.0","command":["rm","-rf","/cache/_runtime-cache/<namespace>/<name>"],"volumeMounts":[{"name":"cache","mountPath":"/cache"}]}],"volumes":[{"name":"cache","persistentVolumeClaim":{"claimName":"<claim>"}}]}}'
-kubectl -n <namespace> patch inferenceservice <name> --type merge -p '{"spec":{"replicas":1}}'
+kubectl -n <namespace> patch inferenceservice <name> --type merge -p '{"spec":{"suspend":false}}'
 ```
 
-Scale back to the service's own replica count. The first start afterwards
-compiles from scratch.
+For a `multiNode` service, wait on `-l inference.llmkube.dev/multinode-group=<name>`
+instead: only rank 0 carries the service label.
+The pod runs as root, which the directory needs: `runtime-cache-prep` hands it
+to the pod's group, not to any one user. The first start afterwards compiles
+from scratch.
 
 ## Strictly tainted GPU nodes
 
