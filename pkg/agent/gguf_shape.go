@@ -242,3 +242,12 @@ func modelPoolingType(model *inferencev1alpha1.Model) string {
 	}
 	return model.Status.GGUF.PoolingType
 }
+
+// modelArchitecture returns the GGUF architecture the Model's metadata
+// records, or "" when it records none.
+func modelArchitecture(model *inferencev1alpha1.Model) string {
+	if model == nil || model.Status.GGUF == nil {
+		return ""
+	}
+	return model.Status.GGUF.Architecture
+}

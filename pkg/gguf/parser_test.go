@@ -1161,19 +1161,42 @@ func TestPoolingType(t *testing.T) {
 
 func TestOverridesPoolingType(t *testing.T) {
 	for _, tc := range []struct {
+		arch      string
 		overrides []string
 		want      bool
 	}{
-		{nil, false},
-		{[]string{"llama.pooling_type=int:3"}, true},
-		{[]string{"tokenizer.ggml.add_bos_token=bool:false", "bert.pooling_type=int:1"}, true},
-		{[]string{" qwen3.pooling_type =int:3"}, true},
-		{[]string{"bert.classifier.pooling_type=int:2"}, false},
-		{[]string{"llama.context_length=int:8192"}, false},
-		{[]string{"pooling_type=int:1"}, false},
+		{"llama", nil, false},
+		{"llama", []string{"llama.pooling_type=int:3"}, true},
+		{"bert", []string{"tokenizer.ggml.add_bos_token=bool:false", "bert.pooling_type=int:1"}, true},
+		// llama.cpp splits one --override-kv value on commas.
+		{"llama", []string{"llama.context_length=int:8192,llama.pooling_type=int:3"}, true},
+		// llama.cpp copies the key verbatim up to '=' (common/common.cpp), so a
+		// padded key is a different key and is not applied as the pooling type.
+		{"qwen3", []string{" qwen3.pooling_type =int:3"}, false},
+		// llama.cpp looks the key up by the model's own architecture.
+		{"bert", []string{"llama.pooling_type=int:1"}, false},
+		{"bert", []string{"bert.classifier.pooling_type=int:2"}, false},
+		{"llama", []string{"llama.context_length=int:8192"}, false},
+		{"llama", []string{"pooling_type=int:1"}, false},
+		{"llama", []string{"llama.pooling_type"}, false},
+		{"", []string{".pooling_type=int:1"}, false},
 	} {
-		if got := OverridesPoolingType(tc.overrides); got != tc.want {
-			t.Errorf("OverridesPoolingType(%q) = %v, want %v", tc.overrides, got, tc.want)
+		if got := OverridesPoolingType(tc.arch, tc.overrides); got != tc.want {
+			t.Errorf("OverridesPoolingType(%q, %q) = %v, want %v", tc.arch, tc.overrides, got, tc.want)
 		}
+	}
+}
+
+func TestEmbeddingPoolingDefault(t *testing.T) {
+	if got := EmbeddingPoolingDefault(PoolingTypeUnspecified, "qwen3", nil); got != DefaultEmbeddingPooling {
+		t.Errorf("unspecified: got %q, want %q", got, DefaultEmbeddingPooling)
+	}
+	for _, pooling := range []string{"", "none", "mean", "cls", "last", "rank"} {
+		if got := EmbeddingPoolingDefault(pooling, "qwen3", nil); got != "" {
+			t.Errorf("pooling %q: got %q, want none", pooling, got)
+		}
+	}
+	if got := EmbeddingPoolingDefault(PoolingTypeUnspecified, "qwen3", []string{"qwen3.pooling_type=int:1"}); got != "" {
+		t.Errorf("an override sets it: got %q, want none", got)
 	}
 }

@@ -181,14 +181,11 @@ func appendNoWarmupArgs(args []string, noWarmup *bool) []string {
 // releases it, while the cache read path is gated to completion tasks.
 // (#1406)
 //
-// Embedding pooling follows the GGUF's pooling_type. modelPoolingType is that
-// key as the Model's status records it; when the GGUF has none
-// (gguf.PoolingTypeUnspecified) llama.cpp would load it with pooling none,
-// which /v1/embeddings rejects, so --pooling last is added (#2580), unless
-// metadataOverrides sets the pooling_type key itself.
-func appendModeArgs(
-	args []string, mode string, extraArgs []string, modelPoolingType string, metadataOverrides []string,
-) []string {
+// Embedding pooling follows the GGUF's pooling_type. defaultPooling is the
+// --pooling to add when the GGUF has none (embeddingPoolingDefault): llama.cpp
+// would load it with pooling none, which /v1/embeddings rejects (#2580).
+// A --pooling in extraArgs still wins.
+func appendModeArgs(args []string, mode string, extraArgs []string, defaultPooling string) []string {
 	switch mode {
 	case servingModeRerank:
 		if !hasMatchingExtraArg(extraArgs, "reranking") {
@@ -209,9 +206,8 @@ func appendModeArgs(
 		}
 		// Leave pooling to GGUF metadata, matching the other runtime arg
 		// builder, unless the GGUF has none.
-		if modelPoolingType == gguf.PoolingTypeUnspecified && !hasMatchingExtraArg(extraArgs, "pooling") &&
-			!gguf.OverridesPoolingType(metadataOverrides) {
-			args = append(args, "--pooling", defaultEmbeddingPooling)
+		if defaultPooling != "" && !hasMatchingExtraArg(extraArgs, "pooling") {
+			args = append(args, "--pooling", defaultPooling)
 		}
 		if !hasMatchingExtraArg(extraArgs, "cache-ram") {
 			args = append(args, "--cache-ram", "0")
@@ -220,22 +216,16 @@ func appendModeArgs(
 	return args
 }
 
-// defaultEmbeddingPooling is the --pooling an embedding service gets when its
-// GGUF records no pooling type. The converter writes the key for every
-// checkpoint that ships a sentence-transformers pooling config, so a GGUF
-// without it is most often a decoder-only model, where the last token's state
-// is the one that has seen the whole input. It was the default for every
-// embedding service before #2549.
-const defaultEmbeddingPooling = "last"
-
-// modelPoolingType returns the pooling type the Model's GGUF metadata records,
-// or "" when it records none (not a GGUF, not parsed yet, or parsed by an
-// older controller).
-func modelPoolingType(model *inferencev1alpha1.Model) string {
+// embeddingPoolingDefault returns the --pooling an embedding service gets
+// from its Model's GGUF metadata and its own metadataOverrides
+// (gguf.EmbeddingPoolingDefault), or "" when the Model records no GGUF
+// metadata (not a GGUF, not parsed yet, or a source the controller never
+// reads).
+func embeddingPoolingDefault(model *inferencev1alpha1.Model, metadataOverrides []string) string {
 	if model == nil || model.Status.GGUF == nil {
 		return ""
 	}
-	return model.Status.GGUF.PoolingType
+	return gguf.EmbeddingPoolingDefault(model.Status.GGUF.PoolingType, model.Status.GGUF.Architecture, metadataOverrides)
 }
 
 // specTypeAliases maps the pre-#1528 friendly names onto llama.cpp's own

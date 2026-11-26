@@ -169,6 +169,9 @@ func TestBuildLlamaServerArgsModeParity(t *testing.T) {
 // spec.metadataOverrides, which llama.cpp applies even to a key the GGUF
 // lacks (#2580).
 func TestBuildLlamaServerArgsPoolingDefaultParity(t *testing.T) {
+	unspecified := func(arch string) *inferencev1alpha1.GGUFMetadata {
+		return &inferencev1alpha1.GGUFMetadata{PoolingType: gguf.PoolingTypeUnspecified, Architecture: arch}
+	}
 	for _, tc := range []struct {
 		name      string
 		gguf      *inferencev1alpha1.GGUFMetadata
@@ -177,10 +180,11 @@ func TestBuildLlamaServerArgsPoolingDefaultParity(t *testing.T) {
 	}{
 		{"metadata from an older controller", &inferencev1alpha1.GGUFMetadata{Architecture: "llama"}, nil, ""},
 		{"no GGUF metadata", nil, nil, ""},
-		{"an override sets pooling_type", &inferencev1alpha1.GGUFMetadata{PoolingType: gguf.PoolingTypeUnspecified},
+		{"an override sets this architecture's pooling_type", unspecified("llama"),
 			[]string{"llama.pooling_type=int:1"}, ""},
-		{"an override sets only the classifier's pooling_type",
-			&inferencev1alpha1.GGUFMetadata{PoolingType: gguf.PoolingTypeUnspecified},
+		{"an override names another architecture", unspecified("bert"),
+			[]string{"llama.pooling_type=int:1"}, "last"},
+		{"an override sets only the classifier's pooling_type", unspecified("llama"),
 			[]string{"llama.classifier.pooling_type=int:2"}, "last"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

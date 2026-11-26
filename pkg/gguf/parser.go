@@ -697,18 +697,49 @@ func (f *GGUFFile) PoolingType() string {
 	return poolingTypeNames[n]
 }
 
-// OverridesPoolingType reports whether llama-server --override-kv values
-// (KEY=TYPE:VALUE, as spec.metadataOverrides holds them) set an
-// {arch}.pooling_type. llama.cpp applies an override even to a key the GGUF
-// lacks, so such an override chooses the pooling a GGUF without the key loads
-// with, and an added --pooling flag would silently replace it. The classifier
-// head's {arch}.classifier.pooling_type is a different key.
-func OverridesPoolingType(overrides []string) bool {
+// DefaultEmbeddingPooling is the --pooling an embedding-mode llama-server
+// gets when its GGUF records no pooling type. The converter writes the key for
+// every checkpoint that ships a sentence-transformers pooling config, so a GGUF
+// without it is most often a decoder-only model, where the last token's state
+// is the one that has seen the whole input. It was LLMKube's default for every
+// embedding service before #2549.
+const DefaultEmbeddingPooling = "last"
+
+// EmbeddingPoolingDefault returns the --pooling value LLMKube adds for an
+// embedding-mode llama-server, or "" for none: DefaultEmbeddingPooling when the
+// Model's GGUF records no pooling type (poolingType PoolingTypeUnspecified)
+// and the service's --override-kv values (spec.metadataOverrides) do not set
+// it. arch is the GGUF's general.architecture. A --pooling in the service's
+// own extra arguments is the caller's to honor.
+func EmbeddingPoolingDefault(poolingType, arch string, overrides []string) string {
+	if poolingType != PoolingTypeUnspecified || OverridesPoolingType(arch, overrides) {
+		return ""
+	}
+	return DefaultEmbeddingPooling
+}
+
+// OverridesPoolingType reports whether llama-server --override-kv values, as
+// spec.metadataOverrides holds them (KEY=TYPE:VALUE, and llama.cpp also splits
+// one value on commas), set the {arch}.pooling_type that llama.cpp reads for a
+// model of architecture arch. llama.cpp applies an override even to a key the
+// GGUF lacks, and --pooling beats the model's pooling type, so adding --pooling
+// would replace such an override.
+//
+// The match is exact, as llama.cpp's is: it copies the key up to the first '='
+// verbatim and looks it up by the architecture's own key name, so a key with
+// spaces, another architecture's key or the classifier head's
+// {arch}.classifier.pooling_type is not applied as the pooling type, and does
+// not count here. With no architecture nothing can match.
+func OverridesPoolingType(arch string, overrides []string) bool {
+	if arch == "" {
+		return false
+	}
+	want := arch + ".pooling_type"
 	for _, o := range overrides {
-		key, _, _ := strings.Cut(o, "=")
-		key = strings.TrimSpace(key)
-		if strings.HasSuffix(key, ".pooling_type") && !strings.HasSuffix(key, ".classifier.pooling_type") {
-			return true
+		for _, item := range strings.Split(o, ",") {
+			if key, _, ok := strings.Cut(item, "="); ok && key == want {
+				return true
+			}
 		}
 	}
 	return false
