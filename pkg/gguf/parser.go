@@ -660,6 +660,42 @@ func (f *GGUFFile) HeadCount() uint64 {
 	return n
 }
 
+// PoolingTypeUnspecified is what PoolingType reports for a GGUF that has no
+// {arch}.pooling_type key, after llama.cpp's LLAMA_POOLING_TYPE_UNSPECIFIED.
+// llama.cpp then loads the model with pooling none, which llama-server's
+// /v1/embeddings rejects.
+const PoolingTypeUnspecified = "unspecified"
+
+// poolingTypeNames maps llama.cpp's enum llama_pooling_type values, as a
+// GGUF stores them, to the names llama-server's --pooling flag takes.
+var poolingTypeNames = map[uint64]string{
+	0: "none",
+	1: "mean",
+	2: "cls",
+	3: "last",
+	4: "rank",
+}
+
+// PoolingType returns the {arch}.pooling_type key as llama-server's --pooling
+// name (none, mean, cls, last or rank), or PoolingTypeUnspecified when the key
+// is absent. It returns "" when that cannot be told: no architecture, or a
+// value that is not one of llama.cpp's pooling types.
+func (f *GGUFFile) PoolingType() string {
+	arch := f.Architecture()
+	if arch == "" {
+		return ""
+	}
+	v, ok := f.GetMetadata(arch + ".pooling_type")
+	if !ok {
+		return PoolingTypeUnspecified
+	}
+	n, ok := AsU64(v)
+	if !ok {
+		return ""
+	}
+	return poolingTypeNames[n]
+}
+
 // attentionScalar reads {arch}.attention.<name> as a scalar unsigned integer.
 // Returns 0 when the key is absent, the architecture is empty, or the value
 // is not a scalar unsigned integer: array-valued keys (per-layer counts on

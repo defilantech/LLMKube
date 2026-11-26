@@ -23,6 +23,7 @@ import (
 
 	inferencev1alpha1 "github.com/defilantech/llmkube/api/v1alpha1"
 	"github.com/defilantech/llmkube/internal/controller"
+	"github.com/defilantech/llmkube/pkg/gguf"
 )
 
 func TestBuildLlamaServerArgs_EmbeddingMode(t *testing.T) {
@@ -92,32 +93,46 @@ func TestBuildLlamaServerArgs_CacheRamNotOverriddenByExtraArgs(t *testing.T) {
 	}
 }
 
-// Both runtimes must leave embedding pooling to GGUF metadata unless explicitly overridden.
+// Both runtimes must leave embedding pooling to GGUF metadata unless explicitly
+// overridden, and add last pooling when the GGUF records none (#2580).
 func TestBuildLlamaServerArgsModeParity(t *testing.T) {
 	for _, tc := range []struct {
 		name, mode  string
 		extra, want []string
+		pooling     string // the Model's status.gguf.poolingType
 	}{
-		{"embedding", "embedding", nil, []string{"--embedding", "--cache-ram", "0"}},
+		{"embedding", "embedding", nil, []string{"--embedding", "--cache-ram", "0"}, ""},
 		{"embedding mean", "embedding", []string{"--pooling", "mean"},
-			[]string{"--embedding", "--cache-ram", "0", "--pooling", "mean"}},
+			[]string{"--embedding", "--cache-ram", "0", "--pooling", "mean"}, ""},
 		{"embedding last", "embedding", []string{"--pooling", "last"},
-			[]string{"--embedding", "--cache-ram", "0", "--pooling", "last"}},
+			[]string{"--embedding", "--cache-ram", "0", "--pooling", "last"}, ""},
 		{"embedding equals override", "embedding", []string{"--pooling=cls"},
-			[]string{"--embedding", "--cache-ram", "0", "--pooling=cls"}},
+			[]string{"--embedding", "--cache-ram", "0", "--pooling=cls"}, ""},
 		{"embedding cache override", "embedding", []string{"--cache-ram", "512"},
-			[]string{"--embedding", "--cache-ram", "512"}},
-		{"rerank", "rerank", nil, []string{"--reranking", "--embedding", "--pooling", "rank", "--cache-ram", "0"}},
+			[]string{"--embedding", "--cache-ram", "512"}, ""},
+		{"rerank", "rerank", nil, []string{"--reranking", "--embedding", "--pooling", "rank", "--cache-ram", "0"}, ""},
 		{"rerank override", "rerank", []string{"--pooling", "cls"},
-			[]string{"--reranking", "--embedding", "--cache-ram", "0", "--pooling", "cls"}},
-		{"chat", "chat", nil, nil},
-		{"unset", "", nil, nil},
+			[]string{"--reranking", "--embedding", "--cache-ram", "0", "--pooling", "cls"}, ""},
+		{"chat", "chat", nil, nil, ""},
+		{"unset", "", nil, nil, ""},
+		{"embedding, GGUF without pooling_type", "embedding", nil,
+			[]string{"--embedding", "--pooling", "last", "--cache-ram", "0"}, gguf.PoolingTypeUnspecified},
+		{"embedding, GGUF without pooling_type, extraArgs override", "embedding", []string{"--pooling", "mean"},
+			[]string{"--embedding", "--cache-ram", "0", "--pooling", "mean"}, gguf.PoolingTypeUnspecified},
+		{"embedding, GGUF with mean pooling", "embedding", nil,
+			[]string{"--embedding", "--cache-ram", "0"}, "mean"},
+		{"rerank, GGUF without pooling_type", "rerank", nil,
+			[]string{"--reranking", "--embedding", "--pooling", "rank", "--cache-ram", "0"}, gguf.PoolingTypeUnspecified},
+		{"chat, GGUF without pooling_type", "chat", nil, nil, gguf.PoolingTypeUnspecified},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			isvc := &inferencev1alpha1.InferenceService{
 				Spec: inferencev1alpha1.InferenceServiceSpec{Mode: tc.mode, ExtraArgs: tc.extra},
 			}
 			model := &inferencev1alpha1.Model{}
+			if tc.pooling != "" {
+				model.Status.GGUF = &inferencev1alpha1.GGUFMetadata{PoolingType: tc.pooling}
+			}
 			cfg := buildExecutorConfig(isvc, model, executorBaseConfig{})
 			backend := &controller.LlamaCppBackend{}
 			for name, args := range map[string][]string{

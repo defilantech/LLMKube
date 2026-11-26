@@ -22,6 +22,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/defilantech/llmkube/pkg/gguf"
 )
 
 type layoutKey struct {
@@ -119,5 +121,34 @@ func TestParseGGUFMetadataRecordsKVLayout(t *testing.T) {
 	}
 	if meta.KVHeadLayers != 0 || meta.RecurrentStatePerSeq != 0 {
 		t.Errorf("dense layout = (%d, %d), want (0, 0)", meta.KVHeadLayers, meta.RecurrentStatePerSeq)
+	}
+}
+
+// TestParseGGUFMetadataRecordsPoolingType pins the status carrying the GGUF's
+// pooling type (#2580), and telling a GGUF without one apart from metadata an
+// older controller wrote: the llamacpp argument builders default --pooling
+// only for the first.
+func TestParseGGUFMetadataRecordsPoolingType(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		keys []layoutKey
+		want string
+	}{
+		{"mean", []layoutKey{{"block_count", 12}, {"pooling_type", 1}}, "mean"},
+		{"absent", []layoutKey{{"block_count", 12}}, gguf.PoolingTypeUnspecified},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "model.gguf")
+			if err := os.WriteFile(path, buildTestLayoutGGUF("bert", tc.keys), 0o600); err != nil {
+				t.Fatalf("write fixture: %v", err)
+			}
+			meta, err := (&ModelReconciler{}).parseGGUFMetadata(path)
+			if err != nil {
+				t.Fatalf("parseGGUFMetadata: %v", err)
+			}
+			if meta.PoolingType != tc.want {
+				t.Errorf("PoolingType = %q, want %q", meta.PoolingType, tc.want)
+			}
+		})
 	}
 }

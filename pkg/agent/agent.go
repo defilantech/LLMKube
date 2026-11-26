@@ -1089,6 +1089,7 @@ func buildExecutorConfig(
 		ReasoningBudget:        derefInt32(isvc.Spec.ReasoningBudget),
 		ReasoningBudgetMessage: isvc.Spec.ReasoningBudgetMessage,
 		Mode:                   isvc.Spec.Mode,
+		ModelPoolingType:       modelPoolingType(model),
 		ExtraArgs:              isvc.Spec.ExtraArgs,
 		TurboQuantBits:         derefInt32(isvc.Spec.TurboQuantBits),
 		PagedSSDCacheDir:       derefString(isvc.Spec.PagedSSDCacheDir),

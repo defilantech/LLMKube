@@ -550,6 +550,18 @@ type GGUFMetadata struct {
 	// License is the license identifier extracted from the GGUF file metadata
 	// +optional
 	License string `json:"license,omitempty"`
+
+	// PoolingType is the GGUF's <arch>.pooling_type as a llama-server
+	// --pooling value (none, mean, cls, last or rank), or "unspecified" when
+	// the GGUF has no such key. llama.cpp loads a GGUF without the key with
+	// pooling none, which /v1/embeddings rejects, so an embedding-mode
+	// llamacpp InferenceService on such a Model gets --pooling last unless
+	// spec.extraArgs sets --pooling. Empty means unknown (an unrecognized
+	// value, or metadata written by an older controller), and pooling is left
+	// to llama.cpp.
+	// +kubebuilder:validation:Enum=none;mean;cls;last;rank;unspecified
+	// +optional
+	PoolingType string `json:"poolingType,omitempty"`
 }
 
 // OCIPrefetchSpec selects the registry destination for Model prefetch.

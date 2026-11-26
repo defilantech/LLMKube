@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	inferencev1alpha1 "github.com/defilantech/llmkube/api/v1alpha1"
+	"github.com/defilantech/llmkube/pkg/gguf"
 )
 
 func TestResolveServingMode(t *testing.T) {
@@ -51,44 +52,75 @@ func TestResolveServingMode(t *testing.T) {
 
 func TestAppendModeArgs(t *testing.T) {
 	t.Run("embedding leaves pooling to model metadata", func(t *testing.T) {
-		args := appendModeArgs(nil, servingModeEmbedding, nil)
+		args := appendModeArgs(nil, servingModeEmbedding, nil, "")
 		if !containsArg(args, "--embedding", "") || slices.Contains(args, "--pooling") {
 			t.Fatalf("expected --embedding without --pooling: %v", args)
 		}
 	})
+	t.Run("embedding adds last pooling when the GGUF records none (#2580)", func(t *testing.T) {
+		args := appendModeArgs(nil, servingModeEmbedding, nil, gguf.PoolingTypeUnspecified)
+		if !containsArg(args, "--pooling", "last") {
+			t.Fatalf("expected --pooling last for a GGUF without pooling_type: %v", args)
+		}
+	})
+	t.Run("embedding leaves a recorded pooling type to llama.cpp", func(t *testing.T) {
+		for _, pooling := range []string{"mean", "cls", "last", "none"} {
+			if args := appendModeArgs(nil, servingModeEmbedding, nil, pooling); slices.Contains(args, "--pooling") {
+				t.Fatalf("pooling %q: expected no --pooling, got %v", pooling, args)
+			}
+		}
+	})
+	t.Run("extraArgs pooling wins over the default for a GGUF without one", func(t *testing.T) {
+		for _, extra := range [][]string{{"--pooling", "mean"}, {"--pooling=cls"}} {
+			if args := appendModeArgs(nil, servingModeEmbedding, extra, gguf.PoolingTypeUnspecified); slices.Contains(args, "--pooling") {
+				t.Fatalf("extraArgs %v: expected no appended --pooling, got %v", extra, args)
+			}
+		}
+	})
+	t.Run("rerank keeps rank pooling for a GGUF without pooling_type", func(t *testing.T) {
+		args := appendModeArgs(nil, servingModeRerank, nil, gguf.PoolingTypeUnspecified)
+		if !containsArg(args, "--pooling", "rank") || containsArg(args, "--pooling", "last") {
+			t.Fatalf("expected only --pooling rank: %v", args)
+		}
+	})
+	t.Run("chat adds nothing for a GGUF without pooling_type", func(t *testing.T) {
+		if args := appendModeArgs(nil, servingModeChat, nil, gguf.PoolingTypeUnspecified); len(args) != 0 {
+			t.Fatalf("chat mode should append nothing, got %v", args)
+		}
+	})
 	t.Run("rerank adds --reranking, --embedding and rank pooling", func(t *testing.T) {
-		args := appendModeArgs(nil, servingModeRerank, nil)
+		args := appendModeArgs(nil, servingModeRerank, nil, "")
 		if !containsArg(args, "--reranking", "") || !containsArg(args, "--embedding", "") || !containsArg(args, "--pooling", "rank") {
 			t.Fatalf("missing rerank flags: %v", args)
 		}
 	})
 	t.Run("does not duplicate flags already in extraArgs", func(t *testing.T) {
 		extra := []string{"--embedding", "--pooling", "cls", "--cache-ram", "0"}
-		args := appendModeArgs(nil, servingModeEmbedding, extra)
+		args := appendModeArgs(nil, servingModeEmbedding, extra, "")
 		if len(args) != 0 {
 			t.Fatalf("expected no appended flags when extraArgs already set them, got %v", args)
 		}
 	})
 	t.Run("chat adds nothing", func(t *testing.T) {
-		if args := appendModeArgs(nil, servingModeChat, nil); len(args) != 0 {
+		if args := appendModeArgs(nil, servingModeChat, nil, ""); len(args) != 0 {
 			t.Fatalf("chat mode should append nothing, got %v", args)
 		}
 	})
 	t.Run("embedding sets --cache-ram 0", func(t *testing.T) {
-		args := appendModeArgs(nil, servingModeEmbedding, nil)
+		args := appendModeArgs(nil, servingModeEmbedding, nil, "")
 		if !containsArg(args, "--cache-ram", "0") {
 			t.Fatalf("embedding mode should set --cache-ram 0, got %v", args)
 		}
 	})
 	t.Run("rerank sets --cache-ram 0", func(t *testing.T) {
-		args := appendModeArgs(nil, servingModeRerank, nil)
+		args := appendModeArgs(nil, servingModeRerank, nil, "")
 		if !containsArg(args, "--cache-ram", "0") {
 			t.Fatalf("rerank mode should set --cache-ram 0, got %v", args)
 		}
 	})
 	t.Run("does not override user --cache-ram in extraArgs", func(t *testing.T) {
 		extra := []string{"--cache-ram", "512"}
-		args := appendModeArgs(nil, servingModeEmbedding, extra)
+		args := appendModeArgs(nil, servingModeEmbedding, extra, "")
 		if containsArg(args, "--cache-ram", "0") {
 			t.Fatalf("should not override user --cache-ram, got %v", args)
 		}

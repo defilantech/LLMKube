@@ -39,6 +39,7 @@ import (
 
 	inferencev1alpha1 "github.com/defilantech/llmkube/api/v1alpha1"
 	"github.com/defilantech/llmkube/internal/safehttp"
+	"github.com/defilantech/llmkube/pkg/gguf"
 	"github.com/defilantech/llmkube/pkg/hfsource"
 )
 
@@ -146,6 +147,11 @@ type ExecutorConfig struct {
 	// Mode is the serving mode (chat, embedding, rerank) resolved from
 	// InferenceService.spec.mode. Empty defaults to chat (no extra flags).
 	Mode string
+
+	// ModelPoolingType is the GGUF pooling type the Model's status records
+	// (status.gguf.poolingType); "" when it records none. Embedding mode adds
+	// --pooling last when it is gguf.PoolingTypeUnspecified (#2580).
+	ModelPoolingType string
 
 	// ExtraArgs are appended to the command line as-is, last, so they can
 	// override any earlier flag llama-server emitted (last-wins).
@@ -1436,7 +1442,11 @@ func hasLoadModeExtraArg(extraArgs []string) bool {
 // fills its host prompt cache up to --cache-ram (default 8 GiB) and never
 // releases it, while the cache read path is gated to completion tasks.
 // (#1406)
-func appendModeArgs(args []string, mode string, extraArgs []string) []string {
+//
+// Embedding pooling follows the GGUF's pooling_type, and a GGUF without one
+// (modelPoolingType gguf.PoolingTypeUnspecified) gets --pooling last, as in
+// the controller's builder (#2580).
+func appendModeArgs(args []string, mode string, extraArgs []string, modelPoolingType string) []string {
 	switch mode {
 	case inferencev1alpha1.ServingModeRerank:
 		if !hasMatchingExtraArg(extraArgs, "reranking") {
@@ -1455,7 +1465,11 @@ func appendModeArgs(args []string, mode string, extraArgs []string) []string {
 		if !hasMatchingExtraArg(extraArgs, "embedding") {
 			args = append(args, "--embedding")
 		}
-		// Leave pooling to GGUF metadata, matching the other runtime arg builder.
+		// Leave pooling to GGUF metadata, matching the other runtime arg
+		// builder, unless the GGUF has none.
+		if modelPoolingType == gguf.PoolingTypeUnspecified && !hasMatchingExtraArg(extraArgs, "pooling") {
+			args = append(args, "--pooling", "last")
+		}
 		if !hasMatchingExtraArg(extraArgs, "cache-ram") {
 			args = append(args, "--cache-ram", "0")
 		}
@@ -1581,7 +1595,7 @@ func buildLlamaServerArgs(modelPath string, port int, config ExecutorConfig) []s
 		args = append(args, "--jinja")
 	}
 
-	args = appendModeArgs(args, config.Mode, config.ExtraArgs)
+	args = appendModeArgs(args, config.Mode, config.ExtraArgs, config.ModelPoolingType)
 
 	// ExtraArgs comes last so user-provided overrides actually override.
 	if len(config.ExtraArgs) > 0 {

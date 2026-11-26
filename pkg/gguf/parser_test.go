@@ -1081,3 +1081,80 @@ func TestUnsignedAccessors(t *testing.T) {
 		}
 	}
 }
+
+func TestPoolingType(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		metadata []metadataEntry
+		want     string
+	}{
+		{
+			name: "mean, as a sentence-transformers conversion writes it",
+			metadata: []metadataEntry{
+				{key: "general.architecture", value: testString{s: "bert"}},
+				{key: "bert.pooling_type", value: testUint32{v: 1}},
+			},
+			want: "mean",
+		},
+		{
+			name: "last",
+			metadata: []metadataEntry{
+				{key: "general.architecture", value: testString{s: "qwen3"}},
+				{key: "qwen3.pooling_type", value: testUint32{v: 3}},
+			},
+			want: "last",
+		},
+		{
+			name: "none, written explicitly",
+			metadata: []metadataEntry{
+				{key: "general.architecture", value: testString{s: "llama"}},
+				{key: "llama.pooling_type", value: testUint32{v: 0}},
+			},
+			want: "none",
+		},
+		{
+			name:     "absent",
+			metadata: []metadataEntry{{key: "general.architecture", value: testString{s: "llama"}}},
+			want:     PoolingTypeUnspecified,
+		},
+		{
+			name: "another architecture's key does not count",
+			metadata: []metadataEntry{
+				{key: "general.architecture", value: testString{s: "llama"}},
+				{key: "bert.pooling_type", value: testUint32{v: 1}},
+			},
+			want: PoolingTypeUnspecified,
+		},
+		{
+			name: "not a llama.cpp pooling type",
+			metadata: []metadataEntry{
+				{key: "general.architecture", value: testString{s: "llama"}},
+				{key: "llama.pooling_type", value: testUint32{v: 9}},
+			},
+			want: "",
+		},
+		{
+			name: "not an integer",
+			metadata: []metadataEntry{
+				{key: "general.architecture", value: testString{s: "llama"}},
+				{key: "llama.pooling_type", value: testString{s: "mean"}},
+			},
+			want: "",
+		},
+		{
+			name:     "no architecture",
+			metadata: nil,
+			want:     "",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f, err := Parse(bytes.NewReader(buildGGUF(tc.metadata, 0)))
+			if err != nil {
+				t.Fatalf("parse: %v", err)
+			}
+			if got := f.PoolingType(); got != tc.want {
+				t.Errorf("PoolingType() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
