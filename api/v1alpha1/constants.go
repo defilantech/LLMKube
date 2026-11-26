@@ -244,20 +244,26 @@ const (
 	DefaultIdleCheckInterval = 5 * time.Second
 )
 
-// Metal-agent refusal reasons: the Status.SchedulingStatus (and matching
-// Kubernetes Event reason) values the metal-agent writes when it declines to
-// start a service on a Metal InferenceService. These are exported here, and
-// pkg/agent's EventReason constants equal them, so both the agent (which
-// writes them) and the controller's determinePhase (internal/controller/
-// scheduling.go, which must not overwrite a refusal with "WaitingForMetalAgent"
-// on the next reconcile) share one list instead of two hand-maintained ones
-// that silently drift out of sync. They did once: ServiceNameTooLong was
-// added to the agent in 0.10.0 without a matching controller-side entry, so
-// the controller cleared the refusal every poll and the agent re-refused
-// every poll, in a loop.
+// Metal-agent status reasons: the Status.SchedulingStatus (and matching
+// Kubernetes Event reason) values the metal-agent writes and clears itself on
+// a Metal InferenceService. Most are refusals to start a service, but two are
+// not only that: ReasonStartFailed covers a start that failed after it was not
+// refused, and ReasonInsufficientMemory also covers an adopted engine that
+// keeps serving over its re-estimated budget (pkg/agent/admission.go). These
+// are exported here, and pkg/agent's EventReason constants equal them, so both
+// the agent (which writes them) and the controller's determinePhase
+// (internal/controller/scheduling.go, which must not overwrite one with
+// "WaitingForMetalAgent" on the next reconcile) share one list instead of two
+// hand-maintained ones that silently drift out of sync. They did once:
+// ServiceNameTooLong was added to the agent in 0.10.0 without a matching
+// controller-side entry, so the controller cleared the refusal every poll and
+// the agent re-refused every poll, in a loop.
 const (
-	// ReasonInsufficientMemory is set when a Model does not fit the host's
-	// memory budget (memory admission, pkg/agent/agent.go).
+	// ReasonInsufficientMemory is set in two cases. A start the agent refuses
+	// because the Model does not fit the host's memory budget (memory
+	// admission, pkg/agent/agent.go), where the service is not running. And an
+	// adopted engine whose re-estimated charge does not fit, where the engine
+	// keeps serving (pkg/agent/admission.go).
 	ReasonInsufficientMemory string = "InsufficientMemory"
 
 	// ReasonMemoryCheckFailed is set when the memory admission check itself
@@ -331,8 +337,10 @@ const (
 const ReasonModelAttestationRejected = "ModelAttestationRejected"
 
 // MetalAgentRefusalReasons lists every SchedulingStatus value the metal agent
-// writes when it refuses to start a service, plus ReasonStartFailed for a start
-// that failed after it was not refused. internal/controller/scheduling.go
+// writes and clears itself, most of them when it refuses to start a service.
+// Two are not only refusals: ReasonStartFailed for a start that failed after it
+// was not refused, and ReasonInsufficientMemory for an adopted engine that keeps
+// serving over its re-estimated budget. internal/controller/scheduling.go
 // builds its agentRefusalReasons set from this list rather than maintaining a
 // second, independent copy; pkg/agent/refusal.go and pkg/agent/pressure.go's
 // EventReason constants for these reasons are defined equal to the constants

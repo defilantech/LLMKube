@@ -59,10 +59,12 @@ var priorityValues = map[string]int32{
 
 // agentRefusalReasons are the SchedulingStatus values the metal agent writes
 // and clears itself: its refusals to start a service (memory admission in
-// pkg/agent/agent.go, start refusals in pkg/agent/refusal.go) and StartFailed,
-// for a start that failed and is being retried on the restart backoff
-// (pkg/agent/start_failure.go). The agent clears them itself once an engine
-// runs (#777).
+// pkg/agent/agent.go, start refusals in pkg/agent/refusal.go), StartFailed, for
+// a start that failed and is being retried on the restart backoff
+// (pkg/agent/start_failure.go), and the report on an adopted engine that keeps
+// serving over its re-estimated memory budget (pkg/agent/admission.go). The
+// agent clears a refusal itself once an engine runs, and the report once the
+// charge fits (#777).
 //
 // A stale or unparseable slice heartbeat does not replace them while the
 // Mac's MetalNode does not say HeartbeatStale (#2457). A refusal
@@ -178,10 +180,10 @@ func (r *InferenceServiceReconciler) determinePhase(ctx context.Context, isvc *i
 // clearControllerMetalScheduling drops the metal scheduling diagnosis this
 // controller writes (WaitingForMetalAgent, AgentHeartbeatStale) once the agent
 // has registered and the service is Ready. Reasons the agent writes (memory
-// admission, start refusals) are cleared by the agent itself (#777) and are
-// deliberately preserved. The deployment path clears its own markers in the
-// reconcile write path; see the !isMetal && phase == PhaseReady block in
-// inferenceservice_controller.go.
+// admission, start refusals, the adopted engine's over-budget report) are
+// cleared by the agent itself (#777) and are deliberately preserved. The
+// deployment path clears its own markers in the reconcile write path; see the
+// !isMetal && phase == PhaseReady block in inferenceservice_controller.go.
 func clearControllerMetalScheduling(isvc *inferencev1alpha1.InferenceService) {
 	switch isvc.Status.SchedulingStatus {
 	case "WaitingForMetalAgent", "AgentHeartbeatStale":
