@@ -33,7 +33,6 @@ import (
 
 	inferencev1alpha1 "github.com/defilantech/llmkube/api/v1alpha1"
 	"github.com/defilantech/llmkube/internal/router"
-	metalagent "github.com/defilantech/llmkube/pkg/agent"
 )
 
 // routerProxyConfigKey is the file name inside the controller-managed
@@ -397,9 +396,10 @@ func (r *ModelRouterReconciler) resolveInferenceServiceAddress(
 // --served-model-name, else the modelRef (#1988). oMLX serves the model-store
 // directory basename, mirroring the agent's model-id derivation in
 // pkg/agent/executor_omlx.go (filepath.Base(ModelSource)); the two sides must
-// agree or the router rewrites to a name oMLX rejects. Ollama serves the tag
-// its executor pulls for the Model name; OllamaModelTag is the same function
-// exported for this side. llama.cpp ignores the field. A missing
+// agree or the router rewrites to a name oMLX rejects. Ollama serves
+// inferencev1alpha1.OllamaModelTag, the one function the agent's executor
+// also pulls by: the tag of a hailo:// source, else the Model name mapped
+// through the catalog table (#2586). llama.cpp ignores the field. A missing
 // InferenceService or Model, or an empty ModelRef, degrades to "" (the
 // InferenceService name fallback) rather than failing the compile; the
 // address path already reports the backend unhealthy.
@@ -430,7 +430,13 @@ func (r *ModelRouterReconciler) localBackendServedModel(
 		return ""
 	}
 	if runtimeName == inferencev1alpha1.RuntimeOllama {
-		return metalagent.OllamaModelTag(model.Name)
+		// An invalid hailo:// tag degrades like a missing Model: the agent
+		// refuses that source, so no daemon serves a name to rewrite to.
+		tag, _, err := inferencev1alpha1.OllamaModelTag(model.Name, model.Spec.Source)
+		if err != nil {
+			return ""
+		}
+		return tag
 	}
 	if model.Spec.Source != "" {
 		return filepath.Base(model.Spec.Source)

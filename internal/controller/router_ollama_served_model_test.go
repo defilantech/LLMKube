@@ -41,22 +41,27 @@ import (
 
 // fakeOllamaDaemon answers the routes the agent's OllamaExecutor drives and
 // the OpenAI chat route the router proxy forwards to. It serves only the tag
-// the executor pulled, the way a real daemon answers an unpulled name.
+// the executor pulled, the way a real daemon answers an unpulled name. With
+// hailoModels set it also answers GET /hailo/v1/list, as hailo-ollama does.
 type fakeOllamaDaemon struct {
 	srv *httptest.Server
+
+	hailoModels []string
 
 	mu   sync.Mutex
 	tag  string
 	seen []string
 }
 
-func newFakeOllamaDaemon(t *testing.T) *fakeOllamaDaemon {
+func newFakeOllamaDaemon(t *testing.T, hailoModels ...string) *fakeOllamaDaemon {
 	t.Helper()
-	d := &fakeOllamaDaemon{}
+	d := &fakeOllamaDaemon{hailoModels: hailoModels}
 	d.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/":
 			w.WriteHeader(http.StatusOK)
+		case r.Method == http.MethodGet && r.URL.Path == "/hailo/v1/list" && len(d.hailoModels) > 0:
+			_ = json.NewEncoder(w).Encode(map[string][]string{"models": d.hailoModels})
 		case r.Method == http.MethodPost && r.URL.Path == "/api/pull":
 			var req struct {
 				Model string `json:"model"`
@@ -126,19 +131,40 @@ func (d *fakeOllamaDaemon) port(t *testing.T) int {
 // TestRouterSendsTheTagTheOllamaAgentServes is the #2586 contract end to end:
 // a ModelRouter in front of an Ollama InferenceService. The tag the request
 // must carry is the one the agent's Ollama executor pulled for the Model, not
-// the InferenceService name.
+// the InferenceService name. The executor gets the Model's source the way the
+// agent passes it (pkg/agent/agent.go, ModelSource: model.Spec.Source), so a
+// hailo:// source is served by the tag inside it, whatever the Model is named.
 func TestRouterSendsTheTagTheOllamaAgentServes(t *testing.T) {
-	for _, modelName := range []string{"phi-4-mini", "llama-3.1-8b", "my-custom-model"} {
-		t.Run(modelName, func(t *testing.T) {
-			daemon := newFakeOllamaDaemon(t)
+	cases := []struct {
+		name, modelName, source string
+		hailoModels             []string
+	}{
+		{name: "catalog name", modelName: "phi-4-mini", source: "hf://org/phi-4-mini"},
+		{name: "another catalog name", modelName: "llama-3.1-8b", source: "hf://org/llama-3.1-8b"},
+		{name: "unmapped name", modelName: "my-custom-model", source: "hf://org/my-custom-model"},
+		{
+			name: "hailo source", modelName: "qwen-hailo", source: "hailo://qwen2.5-instruct:1.5b",
+			hailoModels: []string{"qwen2.5-instruct:1.5b"},
+		},
+		{
+			// The source's tag wins over the catalog mapping of the Model name.
+			name: "hailo source on a catalog name", modelName: "phi-4-mini", source: "HAILO://llama3.2:3b",
+			hailoModels: []string{"llama3.2:3b"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			modelName := tc.modelName
+			daemon := newFakeOllamaDaemon(t, tc.hailoModels...)
 			executor := metalagent.NewOllamaExecutor(daemon.port(t), zap.NewNop().Sugar())
 			proc, err := executor.StartProcess(context.Background(), metalagent.ExecutorConfig{
-				Name:      "chat-svc",
-				Namespace: testBuilderNs,
-				ModelName: modelName,
+				Name:        "chat-svc",
+				Namespace:   testBuilderNs,
+				ModelName:   modelName,
+				ModelSource: tc.source,
 			})
 			if err != nil {
-				t.Fatalf("OllamaExecutor.StartProcess(%q): %v", modelName, err)
+				t.Fatalf("OllamaExecutor.StartProcess(%q, %q): %v", modelName, tc.source, err)
 			}
 			wantModel := daemon.pulledTag()
 			if wantModel == "" {
@@ -158,7 +184,7 @@ func TestRouterSendsTheTagTheOllamaAgentServes(t *testing.T) {
 			model := &inferencev1alpha1.Model{
 				ObjectMeta: metav1.ObjectMeta{Name: modelName, Namespace: testBuilderNs},
 				Spec: inferencev1alpha1.ModelSpec{
-					Source:   "hf://org/" + modelName,
+					Source:   tc.source,
 					Hardware: &inferencev1alpha1.HardwareSpec{Accelerator: "metal"},
 				},
 			}
