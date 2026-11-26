@@ -240,6 +240,7 @@ func TestHostileNamesFromAForkRenderInert(t *testing.T) {
 		return []failure{{
 			Name:    "TestA\n\n@octocat pwned [here](https://example.com)",
 			Package: "internal/x\r\n\n@octocat",
+			Excerpt: []string{"got ``` fail @octocat [here](https://example.com)", strings.Repeat("\u00e9", 300)},
 		}}, "stub", nil
 	}
 	var st stats
@@ -271,16 +272,29 @@ func TestHostileNamesFromAForkRenderInert(t *testing.T) {
 	}
 }
 
-func TestInertTextCapsAndKeepsValidUTF8(t *testing.T) {
-	long := strings.Repeat("é", maxNameLen+50)
-	got := inertText(long)
-	if n := utf8.RuneCountInString(got); n != maxNameLen || !utf8.ValidString(got) || !strings.HasSuffix(got, "...") {
-		t.Errorf("inertText(%d runes) = %d runes, valid=%v", maxNameLen+50, n, utf8.ValidString(got))
-	}
-	if got := inertText("a b\tc\x00d"); got != "a b c d" {
+func TestInertTextAndCaps(t *testing.T) {
+	if got := inertText("a\u2028b\u2029c\td\x00e\r\nf"); got != "a b c d e  f" {
 		t.Errorf("inertText = %q, want separators and controls as spaces", got)
 	}
-	if got := clip([]string{strings.Repeat("é", maxLineLen)}, false); !utf8.ValidString(got[0]) {
+	if got := inertText("ok\xffok"); !utf8.ValidString(got) {
+		t.Errorf("inertText kept invalid UTF-8: %q", got)
+	}
+	long := strings.Repeat("\u00e9", maxNameLen+50)
+	got := code(long)
+	if n := utf8.RuneCountInString(got) - 2; n != maxNameLen || !utf8.ValidString(got) || !strings.HasSuffix(got, "...`") {
+		t.Errorf("code(%d runes) renders %d runes, valid=%v", maxNameLen+50, n, utf8.ValidString(got))
+	}
+	// The key keeps whole names: two long names that differ only past the
+	// render cap are two flaky tests, not one issue.
+	a := failure{Name: strings.Repeat("x", maxNameLen) + "A", Package: "p"}.inert()
+	b := failure{Name: strings.Repeat("x", maxNameLen) + "B", Package: "p"}.inert()
+	if a.key() == b.key() {
+		t.Errorf("two names that differ past the cap share key %q", a.key())
+	}
+	// Byte maxLineLen falls inside a two-byte rune, so a plain byte cut
+	// would leave a dangling lead byte.
+	line := strings.Repeat("a", maxLineLen-1) + strings.Repeat("\u00e9", 4)
+	if got := clip([]string{line}, false); !utf8.ValidString(got[0]) {
 		t.Errorf("clip split a rune: %q", got[0])
 	}
 }

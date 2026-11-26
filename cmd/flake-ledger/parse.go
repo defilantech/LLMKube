@@ -38,31 +38,39 @@ type failure struct {
 	Excerpt []string
 }
 
-// maxNameLen caps a test or package name the ledger writes into an issue
-// title, an issue body or a comment.
+// maxNameLen caps a test or package name where the ledger renders it, in an
+// inline code span (code) or an issue title; the issue key keeps the whole
+// name, so two long names that share a prefix stay two issues.
 const maxNameLen = 200
 
 // inert returns f with its name and package made safe to render: control
-// characters, newlines included, become spaces and each is capped at
-// maxNameLen runes. Both come from a test report or log that a fork's pull
-// request can shape (its workflow file and test names run on a pull_request
-// run), and a newline inside an inline code span ends the span, letting the
-// rest render as markdown: links, @-mentions in the bot's name.
+// characters, line breaks included, become spaces. Both come from a test
+// report or log that a fork's pull request can shape (its workflow file and
+// test names run on a pull_request run). In CommonMark a single line ending
+// inside an inline code span is only a space, but a blank line closes the
+// paragraph before inline parsing runs, so the span cannot cross it and the
+// rest of the name renders as markdown: links, @-mentions in the bot's name.
 func (f failure) inert() failure {
 	f.Name = inertText(f.Name)
 	f.Package = inertText(f.Package)
 	return f
 }
 
+// inertText maps control characters and the Unicode line and paragraph
+// separators to spaces, after replacing invalid UTF-8.
 func inertText(s string) string {
-	s = strings.Map(func(r rune) rune {
-		if unicode.IsControl(r) || r == ' ' || r == ' ' {
+	return strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) || r == '\u2028' || r == '\u2029' {
 			return ' '
 		}
 		return r
-	}, strings.ToValidUTF8(s, "�"))
-	if r := []rune(s); len(r) > maxNameLen {
-		s = string(r[:maxNameLen-3]) + "..."
+	}, strings.ToValidUTF8(s, "\uFFFD"))
+}
+
+// capRunes shortens s to at most n runes, marking a cut with "...".
+func capRunes(s string, n int) string {
+	if r := []rune(s); len(r) > n {
+		return string(r[:n-3]) + "..."
 	}
 	return s
 }

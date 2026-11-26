@@ -340,9 +340,11 @@ func commentBody(o occurrence, repo string) string {
 	}
 	b.WriteString("\n\n")
 	// A pull_request run's name comes from the workflow file on the PR's
-	// merge ref, so a fork sets it: render it as code, never as markdown.
-	fmt.Fprintf(&b, "- Run: [%s run %d, attempt %d](%s)\n", code(o.Run.Name), o.Run.ID, o.Job.RunAttempt,
-		jobURL(o, repo))
+	// merge ref, so a fork sets it: render it as code, never as markdown, and
+	// after the link rather than inside its label, so no fork text sits
+	// between the link's brackets.
+	fmt.Fprintf(&b, "- Run: [run %d, attempt %d](%s) %s\n", o.Run.ID, o.Job.RunAttempt, jobURL(o, repo),
+		code(o.Run.Name))
 	fmt.Fprintf(&b, "- Commit: [%s](https://github.com/%s/commit/%s)\n", code(short(o.Run.HeadSHA)), repo, o.Run.HeadSHA)
 	fmt.Fprintf(&b, "- Branch: %s (%s)\n", code(branch(o.Run, repo)), o.Run.Event)
 	fmt.Fprintf(&b, "- Started: %s\n", o.Job.StartedAt.UTC().Format("2006-01-02 15:04 UTC"))
@@ -385,12 +387,13 @@ func orDot(pkg string) string {
 	return pkg
 }
 
-// code renders inline code. Branch names, run names and Ginkgo spec text come
-// from pull requests, so neither a backtick nor a line break (which ends an
-// inline code span) in them may end the span and let the rest render as
-// markdown.
+// code renders inline code, capped at maxNameLen runes. Branch names, run
+// names and Ginkgo spec text come from pull requests, so a backtick in them
+// is replaced (it would end the span), and so are line breaks (a blank line
+// closes the paragraph, which ends the span too); either way the rest would
+// render as markdown.
 func code(s string) string {
-	return "`" + strings.ReplaceAll(inertText(s), "`", "'") + "`"
+	return "`" + strings.ReplaceAll(capRunes(inertText(s), maxNameLen), "`", "'") + "`"
 }
 
 func longestRun(s string, c byte) int {
