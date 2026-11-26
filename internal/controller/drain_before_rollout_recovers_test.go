@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -193,9 +194,11 @@ func runningState() corev1.ContainerState {
 	return corev1.ContainerState{Running: &corev1.ContainerStateRunning{}}
 }
 
-// endpointSlice publishes an address for the service, so checkServiceIdle
-// probes it instead of taking the no-EndpointSlice fallback.
-func (f *rolloutFixture) endpointSlice(t *testing.T, addr string) {
+// endpointSliceForPod publishes an address for the service, so checkServiceIdle
+// probes it instead of taking the no-EndpointSlice fallback. A non-empty
+// podName becomes the endpoint's targetRef, the way the EndpointSlice
+// controller publishes a pod-backed endpoint.
+func (f *rolloutFixture) endpointSliceForPod(t *testing.T, addr, podName string) {
 	t.Helper()
 	ready := false
 	ep := &discoveryv1.EndpointSlice{
@@ -209,6 +212,9 @@ func (f *rolloutFixture) endpointSlice(t *testing.T, addr string) {
 			Addresses:  []string{addr},
 			Conditions: discoveryv1.EndpointConditions{Ready: &ready},
 		}},
+	}
+	if podName != "" {
+		ep.Endpoints[0].TargetRef = &corev1.ObjectReference{Kind: "Pod", Namespace: f.key.Namespace, Name: podName}
 	}
 	if err := f.c.Create(f.ctx, ep); err != nil {
 		t.Fatalf("create endpointslice: %v", err)
@@ -270,7 +276,7 @@ func (f *rolloutFixture) rolloutCondition(t *testing.T) *metav1.Condition {
 func TestRolloutProceedsWhenServingContainerIsCrashLooping(t *testing.T) {
 	f := newRolloutFixture(t, "rollout-crashloop", "")
 	f.pod(t, "old", crashLoopState())
-	f.endpointSlice(t, "10.0.0.51")
+	f.endpointSliceForPod(t, "10.0.0.51", "")
 
 	if _, err, _ := f.reconcileAfterEdit(t); err != nil {
 		t.Fatalf("reconcile: %v", err)
@@ -287,7 +293,7 @@ func TestRolloutProceedsWhenServingContainerIsCrashLooping(t *testing.T) {
 func TestRolloutProceedsWhenPodIsContainerCreating(t *testing.T) {
 	f := newRolloutFixture(t, "rollout-container-creating", "")
 	f.pod(t, "old", containerCreatingState())
-	f.endpointSlice(t, "10.0.0.52")
+	f.endpointSliceForPod(t, "10.0.0.52", "")
 
 	if _, err, _ := f.reconcileAfterEdit(t); err != nil {
 		t.Fatalf("reconcile: %v", err)
@@ -304,7 +310,7 @@ func TestRolloutProceedsWhenPodIsContainerCreating(t *testing.T) {
 func TestRolloutProceedsForUnsupportedRuntimeWhenContainerNotRunning(t *testing.T) {
 	f := newRolloutFixture(t, "rollout-unsupported-crashloop", "generic")
 	f.pod(t, "old", crashLoopState())
-	f.endpointSlice(t, "10.0.0.53")
+	f.endpointSliceForPod(t, "10.0.0.53", "")
 
 	if _, err, _ := f.reconcileAfterEdit(t); err != nil {
 		t.Fatalf("reconcile: %v", err)
@@ -315,18 +321,55 @@ func TestRolloutProceedsForUnsupportedRuntimeWhenContainerNotRunning(t *testing.
 	}
 }
 
-// One running replica answers idle, the other is not running: the idle answer
-// is the only evidence there is to weigh, so the rollout goes.
-// One old pod runs and answers idle; another is crash-looping and still
-// holds a not-ready endpoint address, so checkServiceIdle probes it too and
-// its refused probe returns first. The rollout is held with IdleCheckFailed
-// on base and on the branch: the not-running shortcut needs runningPods == 0.
-func TestRolloutStillDefersWhenOneRunningIdlePodSitsBesideANotRunningPod(t *testing.T) {
+// The issue's configuration: one running replica answers idle, another is
+// crash-looping beside it. Both endpoints carry their pod's targetRef, so only
+// the running replica holds a process that could hold a request. Its idle
+// answer is the whole decision, so the rollout goes.
+func TestRolloutProceedsWhenOneRunningIdlePodSitsBesideANotRunningPod(t *testing.T) {
+	f := newRolloutFixture(t, "rollout-mixed-targetref", "")
+	running := f.pod(t, "running", runningState())
+	crashloop := f.pod(t, "crashloop", crashLoopState())
+	f.endpointSliceForPod(t, "10.0.0.71", running.Name)
+	f.endpointSliceForPod(t, "10.0.0.72", crashloop.Name)
+	f.r.HTTPClient = &http.Client{
+		Transport: &addressAwareRoundTripper{responses: map[string]string{
+			// The running replica answers idle; 10.0.0.72 (the crash-looping
+			// one) is absent, so its probe gets a 404 and fails.
+			"10.0.0.71:" + strconv.Itoa(int(resolveIdlePort(f.isvc, resolveBackend(f.isvc)))): `[{"id":0,"is_processing":false}]`,
+		}},
+		Timeout: 5 * time.Second,
+	}
+	isvc := &inferencev1alpha1.InferenceService{}
+	if err := f.c.Get(f.ctx, f.key, isvc); err != nil {
+		t.Fatalf("get isvc: %v", err)
+	}
+	isvc.Spec.Replicas = ptrInt32(2)
+	if err := f.c.Update(f.ctx, isvc); err != nil {
+		t.Fatalf("set replicas: %v", err)
+	}
+
+	if _, err, _ := f.reconcileAfterEdit(t); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+
+	if got := f.deploymentImage(t); got != rolloutTestImageV2 {
+		t.Fatalf("deployment image is %q, want %q: a not-running replica's endpoint still holds the rollout", got, rolloutTestImageV2)
+	}
+	if cond := f.rolloutCondition(t); cond != nil && cond.Status == metav1.ConditionTrue {
+		t.Fatalf("RolloutDeferred=True (%s) for a not-running replica beside an idle one: %s", cond.Reason, cond.Message)
+	}
+}
+
+// The same two replicas, published without a targetRef: nothing says which pod
+// an address belongs to, so every endpoint is probed and the crash-looping
+// one's refused probe holds the rollout with IdleCheckFailed on base and on the
+// branch.
+func TestRolloutStillDefersWhenEndpointsCarryNoTargetRef(t *testing.T) {
 	f := newRolloutFixture(t, "rollout-mixed-idle", "")
 	f.pod(t, "running", runningState())
 	f.pod(t, "crashloop", crashLoopState())
-	f.endpointSlice(t, "10.0.0.71")
-	f.endpointSlice(t, "10.0.0.72")
+	f.endpointSliceForPod(t, "10.0.0.71", "")
+	f.endpointSliceForPod(t, "10.0.0.72", "")
 	f.r.HTTPClient = &http.Client{
 		Transport: &addressAwareRoundTripper{responses: map[string]string{
 			// The running replica answers idle; 10.0.0.72 (the crash-looping
@@ -341,7 +384,7 @@ func TestRolloutStillDefersWhenOneRunningIdlePodSitsBesideANotRunningPod(t *test
 	}
 
 	if got := f.deploymentImage(t); got != rolloutTestImage {
-		t.Fatalf("deployment image is %q, want %q: a not-running replica's refused probe still holds the rollout", got, rolloutTestImage)
+		t.Fatalf("deployment image is %q, want %q: an endpoint with no targetRef must still be probed", got, rolloutTestImage)
 	}
 	cond := f.rolloutCondition(t)
 	if cond == nil || cond.Status != metav1.ConditionTrue || cond.Reason != ReasonIdleCheckFailed {
@@ -375,11 +418,11 @@ func TestRolloutStillDefersWhenRunningPodAnswersBusy(t *testing.T) {
 func TestRolloutStillDefersWhenRunningPodProbeFails(t *testing.T) {
 	f := newRolloutFixture(t, "rollout-running-probe-error", "")
 	f.useIdleStub(t, http.StatusInternalServerError, "boom")
-	f.pod(t, "old", runningState())
+	pod := f.pod(t, "old", runningState())
 	// Publish the pod's address so the failing probe is a per-endpoint error
 	// rather than the no-EndpointSlice fallback, which reports a different
 	// reason.
-	f.endpointSlice(t, "10.0.0.81")
+	f.endpointSliceForPod(t, "10.0.0.81", pod.Name)
 	if _, err, _ := f.reconcileAfterEdit(t); err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
@@ -466,7 +509,7 @@ func TestRolloutProceedsWithOnlyATerminatingPod(t *testing.T) {
 func TestRolloutStillDefersWithNoPodsAndAnEndpointSlice(t *testing.T) {
 	f := newRolloutFixture(t, "rollout-no-pods-slice", "generic")
 	setIdleEndpoint(t, f, "/idle")
-	f.endpointSlice(t, "10.0.0.21")
+	f.endpointSliceForPod(t, "10.0.0.21", "")
 
 	if _, err, _ := f.reconcileAfterEdit(t); err != nil {
 		t.Fatalf("reconcile: %v", err)
@@ -484,7 +527,7 @@ func TestRolloutStillDefersWithNoPodsAndAnEndpointSlice(t *testing.T) {
 func TestRolloutDefersWhileATerminatingRunningPodRemains(t *testing.T) {
 	f := newRolloutFixture(t, "rollout-term-running", "generic")
 	f.useIdleStub(t, http.StatusOK, "ok")
-	f.endpointSlice(t, "10.0.0.31")
+	f.endpointSliceForPod(t, "10.0.0.31", "")
 	pod := f.podWithFinalizer(t, "terminating", runningState(), true)
 	if err := f.c.Delete(f.ctx, pod); err != nil {
 		t.Fatalf("delete pod: %v", err)
@@ -517,4 +560,90 @@ func TestRolloutDefersWhileATerminatingRunningPodRemains(t *testing.T) {
 	if cond := f.rolloutCondition(t); cond == nil || cond.Status != metav1.ConditionTrue {
 		t.Fatalf("RolloutDeferred = %+v, want True", cond)
 	}
+}
+
+// The running replica published no address and the crash-looping one's
+// endpoint is skipped: nothing was probed, so the pod count decides, and one
+// running pod keeps the rollout deferred on both trees.
+func TestRolloutDefersWhenARunningReplicaHasNoEndpointAddress(t *testing.T) {
+	f := newRolloutFixture(t, "rollout-running-no-address", "")
+	f.pod(t, "running", runningState())
+	crashloop := f.pod(t, "crashloop", crashLoopState())
+	f.endpointSliceForPod(t, "10.0.0.92", crashloop.Name)
+	f.r.HTTPClient = &http.Client{
+		Transport: &addressAwareRoundTripper{responses: map[string]string{}},
+		Timeout:   5 * time.Second,
+	}
+
+	if _, err, _ := f.reconcileAfterEdit(t); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+
+	if got := f.deploymentImage(t); got != rolloutTestImage {
+		t.Fatalf("deployment image is %q, want %q: a running replica with no address answered nothing", got, rolloutTestImage)
+	}
+	if cond := f.rolloutCondition(t); cond == nil || cond.Status != metav1.ConditionTrue {
+		t.Fatalf("RolloutDeferred = %+v, want True", cond)
+	}
+}
+
+// The pod list fails, so nothing proves the endpoint's pod stopped: the
+// endpoint is still probed and its idle answer rolls the rollout.
+func TestRolloutStillProbesEveryEndpointWhenThePodListFails(t *testing.T) {
+	f := newRolloutFixture(t, "rollout-pod-list-fails", "")
+	running := f.pod(t, "running", runningState())
+	f.endpointSliceForPod(t, "10.0.0.93", running.Name)
+	f.r.HTTPClient = &http.Client{
+		Transport: &addressAwareRoundTripper{responses: map[string]string{
+			"10.0.0.93:" + strconv.Itoa(int(resolveIdlePort(f.isvc, resolveBackend(f.isvc)))): `[{"id":0,"is_processing":false}]`,
+		}},
+		Timeout: 5 * time.Second,
+	}
+	f.r.Client = &failingPodListClient{Client: f.c}
+
+	if _, err, _ := f.reconcileAfterEdit(t); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+
+	if got := f.deploymentImage(t); got != rolloutTestImageV2 {
+		t.Fatalf("deployment image is %q, want %q: a failed pod list must still probe the endpoint", got, rolloutTestImageV2)
+	}
+}
+
+// The endpoint's targetRef names a pod the Deployment's selector does not
+// carry, so the list proves nothing about it and it is probed: its refused
+// probe holds the rollout on both trees.
+func TestRolloutStillDefersWhenTheEndpointNamesAnUnknownPod(t *testing.T) {
+	f := newRolloutFixture(t, "rollout-unknown-pod", "")
+	pod := f.pod(t, "outside", runningState())
+	delete(pod.Labels, "inference.llmkube.dev/service")
+	if err := f.c.Update(f.ctx, pod); err != nil {
+		t.Fatalf("drop the service label: %v", err)
+	}
+	f.endpointSliceForPod(t, "10.0.0.94", pod.Name)
+	f.r.HTTPClient = &http.Client{
+		Transport: &addressAwareRoundTripper{responses: map[string]string{}},
+		Timeout:   5 * time.Second,
+	}
+
+	if _, err, _ := f.reconcileAfterEdit(t); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+
+	if got := f.deploymentImage(t); got != rolloutTestImage {
+		t.Fatalf("deployment image is %q, want %q: an endpoint whose pod the list does not carry was skipped", got, rolloutTestImage)
+	}
+}
+
+// failingPodListClient fails every Pod list so a test can pin what the idle
+// check does when it cannot map an endpoint to its pod.
+type failingPodListClient struct {
+	client.Client
+}
+
+func (c *failingPodListClient) List(ctx context.Context, list client.ObjectList, opts ...client.ListOption) error {
+	if _, ok := list.(*corev1.PodList); ok {
+		return errors.New("pod list unavailable")
+	}
+	return c.Client.List(ctx, list, opts...)
 }
