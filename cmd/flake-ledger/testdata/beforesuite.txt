@@ -1,0 +1,33 @@
+2026-11-03T07:10:49.9463026Z Running Suite: e2e suite - /home/runner/work/LLMKube/LLMKube/test/e2e
+2026-11-03T07:10:49.9472406Z   running: "make docker-build IMG=example.com/llmkube:v0.0.1"
+2026-11-03T07:11:00.5164424Z   [38;5;9m[FAILED][0m in [BeforeSuite] - /home/runner/go/pkg/mod/github.com/onsi/ginkgo/v2@v2.33.1/internal/node.go:585 [38;5;243m@ 11/03/26 07:11:00.515[0m
+2026-11-03T07:11:00.5165266Z [38;5;9m[BeforeSuite] [FAILED] [10.570 seconds][0m
+2026-11-03T07:11:00.5165818Z [38;5;9m[1m[BeforeSuite] [0m
+2026-11-03T07:11:00.5166783Z [38;5;243m/home/runner/work/LLMKube/LLMKube/test/e2e/e2e_suite_test.go:96[0m
+2026-11-03T07:11:00.5167278Z 
+2026-11-03T07:11:00.5169848Z   [38;5;9m[FAILED] Failed to build the manager(Operator) image
+2026-11-03T07:11:00.5170905Z   Unexpected error:
+2026-11-03T07:11:00.5171677Z       <*fmt.wrapError | 0x2829fba5e0c0>: 
+2026-11-03T07:11:00.5184372Z       "make docker-build IMG=example.com/llmkube:v0.0.1" failed with error "make[1]: Entering directory '/home/runner/work/LLMKube/LLMKube'\ndocker build -t example.com/llmkube:v0.0.1 .\n#0 building with \"default\" instance using docker driver\n\n#1 [internal] load build definition from Dockerfile\n#1 transferring dockerfile: 1.27kB 0.0s done\n#1 DONE 0.1s\n\n#2 [auth] library/golang:pull token for registry-1.docker.io\n#2 DONE 0.0s\n\n#3 [internal] load metadata for docker.io/library/golang:1.27.3\n#3 DONE 0.7s\n\n#4 [internal] load metadata for gcr.io/distroless/static:nonroot\n#4 ERROR: failed to do request: Head \"https://gcr.io/v2/distroless/static/manifests/nonroot\": net/http: TLS handshake timeout\n------\n > [internal] load metadata for gcr.io/distroless/static:nonroot:\n------\nDockerfile:26\n--------------------\n  24 |     # Use distroless as minimal base image to package the manager binary\n  25 |     # Refer to https://github.com/GoogleContainerTools/distroless for more details\n  26 | >>> FROM gcr.io/distroless/static:nonroot\n  27 |     WORKDIR /\n  28 |     COPY --from=builder /workspace/manager .\n--------------------\nERROR: failed to build: failed to solve: gcr.io/distroless/static:nonroot: failed to resolve source metadata for gcr.io/distroless/static:nonroot: failed to do request: Head \"https://gcr.io/v2/distroless/static/manifests/nonroot\": net/http: TLS handshake timeout\nmake[1]: *** [Makefile:603: docker-build] Error 1\nmake[1]: Leaving directory '/home/runner/work/LLMKube/LLMKube'\n": exit status 2
+2026-11-03T07:11:00.5190855Z       {
+2026-11-03T07:11:00.5200031Z           msg: "\"make docker-build IMG=example.com/llmkube:v0.0.1\" failed with error \"make[1]: Entering directory '/home/runner/work/LLMKube/LLMKube'\\ndocker build -t example.com/llmkube:v0.0.1 .\\n#0 building with \\\"default\\\" instance using docker driver\\n\\n#1 [internal] load build definition from Dockerfile\\n#1 transferring dockerfile: 1.27kB 0.0s done\\n#1 DONE 0.1s\\n\\n#2 [auth] library/golang:pull token for registry-1.docker.io\\n#2 DONE 0.0s\\n\\n#3 [internal] load metadata for docker.io/library/golang:1.27.3\\n#3 DONE 0.7s\\n\\n#4 [internal] load metadata for gcr.io/distroless/static:nonroot\\n#4 ERROR: failed to do request: Head \\\"https://gcr.io/v2/distroless/static/manifests/nonroot\\\": net/http: TLS handshake timeout\\n------\\n > [internal] load metadata for gcr.io/distroless/static:nonroot:\\n------\\nDockerfile:26\\n--------------------\\n  24 |     # Use distroless as minimal base image to package the manager binary\\n  25 |     # Refer to https://github.com/GoogleContainerTools/distroless for more details\\n  26 | >>> FROM gcr.io/distroless/static:nonroot\\n  27 |     WORKDIR /\\n  28 |     COPY --from=builder /workspace/manager .\\n--------------------\\nERROR: failed to build: failed to solve: gcr.io/distroless/static:nonroot: failed to resolve source metadata for gcr.io/distroless/static:nonroot: failed to do request: Head \\\"https://gcr.io/v2/distroless/static/manifests/nonroot\\\": net/http: TLS handshake timeout\\nmake[1]: *** [Makefile:603: docker-build] Error 1\\nmake[1]: Leaving directory '/home/runner/work/LLMKube/LLMKube'\\n\": exit status 2",
+2026-11-03T07:11:00.5205799Z           err: <*exec.ExitError | 0x2829fba5e0a0>{
+2026-11-03T07:11:00.5206187Z               ProcessState: {
+2026-11-03T07:11:00.5206523Z                   pid: 23403,
+2026-11-03T07:11:00.5215131Z   occurred[0m
+2026-11-03T07:11:00.5216013Z   [38;5;9mIn [1m[BeforeSuite][0m[38;5;9m at: [1m/home/runner/go/pkg/mod/github.com/onsi/ginkgo/v2@v2.33.1/internal/node.go:585[0m [38;5;243m@ 11/03/26 07:11:00.515[0m
+2026-11-03T07:11:00.5216749Z [38;5;243m------------------------------[0m
+2026-11-03T07:11:04.9444456Z 
+2026-11-03T07:11:04.9444613Z [38;5;9m[1mSummarizing 1 Failure:[0m
+2026-11-03T07:11:04.9445035Z   [38;5;9m[FAIL][0m [38;5;9m[1m[BeforeSuite] [0m
+2026-11-03T07:11:04.9446079Z   [38;5;243m/home/runner/go/pkg/mod/github.com/onsi/ginkgo/v2@v2.33.1/internal/node.go:585[0m
+2026-11-03T07:11:04.9446650Z 
+2026-11-03T07:11:04.9447003Z [38;5;9m[1mRan 0 of 62 Specs in 14.998 seconds[0m
+2026-11-03T07:11:04.9448211Z [38;5;9m[1mFAIL![0m -- [38;5;14m[1mA BeforeSuite node failed so all tests were skipped.[0m
+2026-11-03T07:11:04.9448952Z --- FAIL: TestE2E (15.00s)
+2026-11-03T07:11:04.9449321Z FAIL
+2026-11-03T07:11:04.9458465Z FAIL	github.com/defilantech/llmkube/test/e2e	15.010s
+2026-11-03T07:11:04.9492641Z FAIL
+2026-11-03T07:11:04.9840716Z make: *** [Makefile:291: test-e2e-multinode] Error 1
+2026-11-03T07:11:04.9858700Z ##[error]Process completed with exit code 2.
+2026-11-03T07:11:04.9913061Z ##[group]Run kind delete cluster --name llmkube-test-e2e || true
