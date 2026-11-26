@@ -19,6 +19,17 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Full history and tags whenever the scan runs, like the release
+          # job's checkout. Go stamps the router-proxy binary's main module
+          # version from git: a shallow clone has no tag to describe from, so
+          # it stamps v0.0.0-<date>-<hash>, and Trivy then matches LLMKube's
+          # own fixed advisories against it (CVE-2026-68903, patched in 0.9.0,
+          # failed the 0.11.0 release PR #2590). With tags reachable the stamp
+          # is a pseudo-version above the latest release. Other PRs skip the
+          # scan and keep the shallow clone. The '0' is a string because a bare
+          # 0 is falsy in an expression and would fall through to the '1'.
+          fetch-depth: ${{ (github.event_name == 'workflow_dispatch' || startsWith(github.head_ref, 'release-please--branches--main')) && '0' || '1' }}
 
       - name: Self-test the scan harness
         run: ./scripts/scan-images_test.sh
