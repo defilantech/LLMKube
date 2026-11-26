@@ -198,6 +198,9 @@ Examples:
   # Clear a specific cached model by name
   llmkube cache clear --model llama-3.1-8b
 
+  # Show files no Model lists any more in multi-file entries
+  llmkube cache prune --dry-run
+
   # Pre-download a catalog model to the cache
   llmkube cache preload llama-3.1-8b
 ```
@@ -208,7 +211,7 @@ Examples:
 llmkube cache [command]
 ```
 
-**Subcommands:** [`clear`](#llmkube-cache-clear), [`list`](#llmkube-cache-list), [`preload`](#llmkube-cache-preload), [`prep`](#llmkube-cache-prep)
+**Subcommands:** [`clear`](#llmkube-cache-clear), [`list`](#llmkube-cache-list), [`preload`](#llmkube-cache-preload), [`prep`](#llmkube-cache-prep), [`prune`](#llmkube-cache-prune)
 
 See also [global flags](#global-flags).
 
@@ -357,6 +360,72 @@ llmkube cache prep DIR [flags]
 ```text
       --mode string    Octal permission mode (e.g. 0775)
       --owner string   Owner in uid:gid format (e.g. 0:102)
+```
+
+See also [global flags](#global-flags).
+
+### llmkube cache prune
+
+Remove files no Model lists from multi-file cache entries
+
+```text
+Remove files from multi-file cache entries that no Model lists any more.
+
+A Model with spec.files is cached in a directory keyed on its source, so
+editing spec.files keeps the directory and leaves files dropped from the list
+behind. prune removes a file only when no Model resolving to that cache entry
+lists it, after resolving each Model's spec.files (globs included) and
+spec.mmproj exactly as staging does. Files that a running pod's downloader
+lists, or that a Model's status.prefetch records, are kept too.
+
+It never removes what staging keeps for itself: SHA-256 stamps,
+.sha256-rejected markers, .llmkube-size records, resume partials (*.tmp),
+atomic-write temp files and the .llmkube-download.lock lockfile.
+
+Only multi-file entries are in scope. Entries of single-file Models, entries a
+single-file Model shares, and entries no Model uses are left alone (use
+`cache clear --orphaned` for those). An entry is skipped while a pod's
+downloader is staging into it or another process holds its download lock,
+and when a Model's file list cannot be resolved (a glob whose expansion the
+Model has not recorded for its current generation).
+
+prune always prints the files and bytes it would remove first. Without
+--dry-run it then asks for confirmation, unless --force is given.
+
+Entries are read and removed through a short-lived pod that mounts the cache
+claim read-write, the same pod `cache clear` uses. It runs busybox:1.37.0
+unless --cache-image or LLMKUBE_CACHE_IMAGE names another image, which needs
+sh, find, stat and flock.
+
+By default prune covers every cache claim in the namespace: the shared claim,
+perService claims and any spec.modelCache.claimName. --model narrows it to
+one Model's entry and the claims that Model uses.
+
+Examples:
+  # Show what would be removed
+  llmkube cache prune --dry-run -n default
+
+  # Prune one Model's entry, asking before removing anything
+  llmkube cache prune --model ltx-video -n default
+
+  # Prune every multi-file entry without confirmation
+  llmkube cache prune --force -n default
+```
+
+**Usage**
+
+```text
+llmkube cache prune [flags]
+```
+
+**Flags**
+
+```text
+      --cache-image string   Image for the short-lived pod that mounts the cache claim (default busybox:1.37.0, or $LLMKUBE_CACHE_IMAGE)
+      --dry-run              List the files prune would remove and exit
+      --force                Remove without confirmation
+      --model string         Prune only this Model's cache entry
+  -n, --namespace string     Kubernetes namespace (default "default")
 ```
 
 See also [global flags](#global-flags).
