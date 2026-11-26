@@ -5,6 +5,42 @@ All notable changes to LLMKube will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.11.0](https://github.com/defilantech/LLMKube/compare/v0.10.19...v0.11.0) (2026-11-26)
+
+
+### ⚠ BREAKING CHANGES
+
+* use model metadata for embedding pooling ([#2549](https://github.com/defilantech/LLMKube/issues/2549))
+* move Foreman to its own repository, Meitheal; see https://llmkube.com/docs/foreman to migrate
+
+### Features
+
+* add reclaim-down swap policy to release an idle pool's slot ([#2540](https://github.com/defilantech/LLMKube/issues/2540)) ([33111f6](https://github.com/defilantech/LLMKube/commit/33111f6d728f40a26efea425378c8e8577fd7ee7))
+* **api:** add spec.schedulerName to place inference Pods on a named scheduler ([#2588](https://github.com/defilantech/LLMKube/issues/2588)) ([a3492e1](https://github.com/defilantech/LLMKube/commit/a3492e1a09d63e8503cb316fc41239ddc4247a4e))
+* default embedding pooling to last when the GGUF records no pooling type ([#2608](https://github.com/defilantech/LLMKube/issues/2608)) ([b3a2972](https://github.com/defilantech/LLMKube/commit/b3a297202a5a2b40566ddd377baa5a80161f0dab))
+* keep vLLM and SGLang compile caches on the model cache across pod restarts ([#2571](https://github.com/defilantech/LLMKube/issues/2571)) ([2323285](https://github.com/defilantech/LLMKube/commit/23232856e6a337091ba02754f0d57750042bcd47))
+* **metal-agent:** serve and size hailo:// Model sources through hailo-ollama ([#2584](https://github.com/defilantech/LLMKube/issues/2584)) ([13a10f5](https://github.com/defilantech/LLMKube/commit/13a10f5673cf59d50e92e89e47029a9d29fefad6))
+* move Foreman to its own repository, Meitheal; see https://llmkube.com/docs/foreman to migrate ([9624317](https://github.com/defilantech/LLMKube/commit/9624317619ecf442339c66deead124f6f03b1c2c))
+* **multinode:** flush the page cache and guard MemFree while members serve ([#2570](https://github.com/defilantech/LLMKube/issues/2570)) ([795924e](https://github.com/defilantech/LLMKube/commit/795924e973f8d66b86ce7483bb36d560f41a43eb))
+* **release:** ship the metal-agent for linux/arm64 and linux/amd64 ([#2582](https://github.com/defilantech/LLMKube/issues/2582)) ([7450243](https://github.com/defilantech/LLMKube/commit/74502436cc4bc833e978da37d1563de4f8a75aab))
+
+
+### Bug Fixes
+
+* **agent:** charge an adopted engine the current estimate and clear its over-budget report ([#2595](https://github.com/defilantech/LLMKube/issues/2595)) ([60201d7](https://github.com/defilantech/LLMKube/commit/60201d74f84baf6e57cfefb1a4bbefc91f3e2ff4))
+* **metal:** apply ropeScaling, priority, evictionProtection and replicas edits on Metal ([#2545](https://github.com/defilantech/LLMKube/issues/2545)) ([20c001e](https://github.com/defilantech/LLMKube/commit/20c001e214a671a869644aab5e8d8911c37b867b))
+* **modelpool:** hold a re-activated member until its own terminating Pod is gone ([#2607](https://github.com/defilantech/LLMKube/issues/2607)) ([11ebd30](https://github.com/defilantech/LLMKube/commit/11ebd3017e060543c24b49a98c014e3634f1df11))
+* **router:** hold requests for a ModelPool member drained inside the resident-resync window ([#2589](https://github.com/defilantech/LLMKube/issues/2589)) ([956a9f9](https://github.com/defilantech/LLMKube/commit/956a9f992f0a75e471982d7169c4e5b33c30c150))
+* **router:** send an Ollama backend the tag its agent serves ([#2586](https://github.com/defilantech/LLMKube/issues/2586)) ([#2599](https://github.com/defilantech/LLMKube/issues/2599)) ([a04ac18](https://github.com/defilantech/LLMKube/commit/a04ac181e330c69fd90de0714bfc5f48706ab58b))
+* use model metadata for embedding pooling ([#2549](https://github.com/defilantech/LLMKube/issues/2549)) ([943755c](https://github.com/defilantech/LLMKube/commit/943755c383dc5ab80b7a93663d6f948a098e385e))
+
+
+### Documentation
+
+* **metal-agent:** describe runtime platforms by LLMKube integration ([#2606](https://github.com/defilantech/LLMKube/issues/2606)) ([7fb13ed](https://github.com/defilantech/LLMKube/commit/7fb13ed18a0fc28f5e2a6ef95ac42a9819ee7514))
+* **multinode:** follow-ups to the memory guard review ([#2601](https://github.com/defilantech/LLMKube/issues/2601)) ([b62fc2c](https://github.com/defilantech/LLMKube/commit/b62fc2c08444570780643ff86142d13af6662fd1))
+* point the three-Spark ring lab at spec.multiNode.memory and use placeholder host names ([#2598](https://github.com/defilantech/LLMKube/issues/2598)) ([93f843f](https://github.com/defilantech/LLMKube/commit/93f843fbde798930b1987bbe5fcd296ff1e1c763))
+
 ## [0.10.19](https://github.com/defilantech/LLMKube/compare/v0.10.18...v0.10.19) (2026-11-18)
 
 
