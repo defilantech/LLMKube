@@ -1099,12 +1099,17 @@ What it leaves alone, with the reason printed:
   and entries no Model uses are never touched (`cache clear --orphaned` is
   for the latter).
 
-The command prints every file and its size before it removes anything, asks
-for confirmation unless `--force` is given, and reads the Models and pods again
-after you confirm, so a file a Model started listing in the meantime is kept.
-It removes regular files only, never follows a symlink, removes a directory
-only when the prune emptied it, and fails if a file it reported is still
-there.
+The command prints every file and its size before it removes anything and
+asks for confirmation unless `--force` is given. For each claim it reads the
+Models and pods again once that claim's purge pod is running, immediately
+before the removal, so a file a Model started listing while you were at the
+prompt, or while an earlier claim was pruned, is kept. On a cache with the
+download lock, a download that starts after that read waits for the removal
+and then stages the file again. On a FUSE cache, which takes no lock, a file
+added back and staged in the second or so between that read and the removal
+is still removed; the next pod start that lists it downloads it again. It
+removes regular files only, never follows a symlink, removes a directory only
+when the prune emptied it, and fails if a file it reported is still there.
 
 It reads and removes through the same short-lived purge pod as `cache clear`,
 mounted read-write and placed like the `cache list` inspector: on the node of a
@@ -1115,6 +1120,12 @@ also needs `find`, `stat -c` and `flock`, which busybox has. Without `--model`
 it covers every cache claim in the namespace: the shared claim, labeled
 `<isvc>-model-cache` claims and every `spec.modelCache.claimName`; `--model`
 narrows it to that Model's entry on the claims `cache clear --model` would use.
+
+Like `cache clear`, it runs with your own permissions: list Models and pods,
+get the claims, and create, exec into and delete pods in the namespace. The
+chart's `tenant` and `tenant-admin` roles grant access to the LLMKube resources
+only, so a tenant cannot prune. On a `restricted`-profile namespace the purge
+pod is rejected, the same way `cache list` is.
 
 ### Preload Models
 

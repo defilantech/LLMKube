@@ -64,10 +64,12 @@ func b2s(name string, v bool) string {
 }
 
 var (
-	// A path variable followed by literal or variable dot segments:
+	// Any shell variable followed by literal or variable dot segments:
 	// "$dest.llmkube-size", "$1.$MODEL_SHA256.sha256-rejected",
-	// "$MODEL_PATH.$key.tmp", "$1.llmkube-tmp.XXXXXX".
-	stagedSuffixRe = regexp.MustCompile(`\$\{?(dest|1|2|MODEL_PATH|MODEL_PARTIAL|marker|stamp|partial)\}?((?:\.(?:\$\{?[A-Za-z_][A-Za-z0-9_]*\}?|[A-Za-z0-9_?-]+))+)`)
+	// "$MODEL_PATH.$key.tmp", "$_llmkube_dest.llmkube-size". Matching every
+	// variable, not a list of known path variables, catches a suffix written
+	// through a variable added later.
+	stagedSuffixRe = regexp.MustCompile(`\$\{?([A-Za-z_][A-Za-z0-9_]*|[0-9])\}?((?:\.(?:\$\{?[A-Za-z_][A-Za-z0-9_]*\}?|[A-Za-z0-9_?-]+))+)`)
 	// A literal name under the entry: "$CACHE_DIR/.llmkube-download.lock".
 	cacheDirNameRe = regexp.MustCompile(`\$\{?CACHE_DIR\}?/([^"'$\s;)]+)`)
 	// A find pattern the sweeps delete by: -name '*.llmkube-tmp.??????'.

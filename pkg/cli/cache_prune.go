@@ -514,8 +514,8 @@ func pruneDeleteScript(plans []entryPrunePlan) string {
 			`if [ -f "$lock" ]; then { command exec 9>>"$lock" && flock -n 9; } || exit 3; fi; ` +
 			`for p in ` + strings.Join(paths, " ") + `; do ` +
 			`if [ -f "$p" ] && [ ! -L "$p" ]; then rm -f "$p"; ` +
-			`if [ -e "$p" ]; then echo "still $p"; else echo "removed $p"; fi; ` +
-			`else echo "absent $p"; fi; done; `)
+			`if [ -e "$p" ]; then printf 'still %s\n' "$p"; else printf 'removed %s\n' "$p"; fi; ` +
+			`else printf 'absent %s\n' "$p"; fi; done; `)
 		if dirs := emptiedDirCandidates(dir, plan.Remove); len(dirs) > 0 {
 			quoted := make([]string, len(dirs))
 			for i, d := range dirs {
@@ -601,9 +601,10 @@ func (p claimPrunePlan) removals() (files int, bytes int64) {
 }
 
 // pruneCache plans every claim, shows the plan, and, after confirmation,
-// removes the planned files. The Models and pods are read again before the
-// removal, so a file a Model started listing, or an entry a download started
-// on, while the prompt waited is not removed.
+// removes the planned files. Each claim's removal reads the Models and pods
+// again once its purge pod is running, immediately before the delete runs, so
+// a file a Model started listing, or an entry a download started on, while the
+// prompt waited or an earlier claim's purge pod ran is not removed.
 func pruneCache(ctx context.Context, env pruneEnv, opts *cachePruneOptions) error {
 	owners, err := pruneOwners(ctx, env.client, opts)
 	if err != nil {
@@ -647,16 +648,12 @@ func pruneCache(ctx context.Context, env pruneEnv, opts *cachePruneOptions) erro
 		return errors.Join(errs...)
 	}
 
-	fresh, err := pruneOwners(ctx, env.client, opts)
-	if err != nil {
-		return errors.Join(append(errs, err)...)
-	}
 	var removed int
 	for _, plan := range plans {
 		if n, _ := plan.removals(); n == 0 {
 			continue
 		}
-		n, err := executeClaimPrune(ctx, env, opts.namespace, plan, fresh)
+		n, err := executeClaimPrune(ctx, env, opts, plan)
 		removed += n
 		if err != nil {
 			errs = append(errs, fmt.Errorf("pruning cache PVC %s: %w", plan.Target.Name, err))
@@ -796,43 +793,34 @@ func entrySkipReason(owners *entryOwners, staging *podStaging, lockState string)
 	return ""
 }
 
-// executeClaimPrune removes one claim's planned files, re-checking each entry
-// against fresh Models and pods first. It returns how many files it removed.
+// executeClaimPrune removes one claim's planned files. It re-checks each
+// entry against Models and pods read once the purge pod is running, right
+// before the delete script runs: reading them any earlier would leave the
+// purge pod's start (and, namespace-wide, every earlier claim's prune) as a
+// window in which a file added back to spec.files and staged is still
+// removed. The delete script then takes each entry's download lock, which
+// covers a download still running; on a FUSE cache, which takes no lock, the
+// exec round trip after this read is the remaining window. It returns how
+// many files it removed.
 func executeClaimPrune(
-	ctx context.Context, env pruneEnv, namespace string, plan claimPrunePlan, fresh map[string]*entryOwners,
+	ctx context.Context, env pruneEnv, opts *cachePruneOptions, plan claimPrunePlan,
 ) (int, error) {
-	pods := &corev1.PodList{}
-	if err := env.client.List(ctx, pods, client.InNamespace(namespace)); err != nil {
-		return 0, fmt.Errorf("failed to list pods: %w", err)
-	}
-	staging := stagingPodsOnClaim(pods.Items, plan.Target.Name)
-
 	out := env.out
 	_, _ = fmt.Fprintf(out, "\nCache PVC %s:\n", plan.Target.Name)
-	var todo []entryPrunePlan
-	for _, entry := range plan.Entries {
-		if len(entry.Remove) == 0 {
-			continue
-		}
-		if reason := entrySkipReason(fresh[entry.Key], staging[entry.Key], pruneLockFree); reason != "" {
-			_, _ = fmt.Fprintf(out, "  %s left alone: %s\n", entry.Key, reason)
-			continue
-		}
-		// Re-plan against the fresh keep set, removing only files that were
-		// shown and are still removable.
-		keep := entryKeepSet(fresh[entry.Key], staging[entry.Key])
-		recheck := planEntryPrune(entry.Key, keep, entry.Remove)
-		if len(recheck.Remove) > 0 {
-			todo = append(todo, recheck)
-		}
-	}
-	if len(todo) == 0 {
-		return 0, nil
-	}
 
+	var todo []entryPrunePlan
 	var deletion pruneDeletion
-	err := withPrunePod(ctx, env, namespace, plan.Target, func(ctx context.Context, podName string) error {
-		output, err := purgeExec(ctx, env.cfg, env.clientset, namespace, podName, purgePodKind.container,
+	err := withPrunePod(ctx, env, opts.namespace, plan.Target, func(ctx context.Context, podName string) error {
+		var skipped []string
+		var err error
+		todo, skipped, err = recheckClaimPrune(ctx, env, opts, plan)
+		for _, line := range skipped {
+			_, _ = fmt.Fprintln(out, line)
+		}
+		if err != nil || len(todo) == 0 {
+			return err
+		}
+		output, err := purgeExec(ctx, env.cfg, env.clientset, opts.namespace, podName, purgePodKind.container,
 			[]string{"sh", "-c", pruneDeleteScript(todo)})
 		if err != nil {
 			return fmt.Errorf("failed to remove files: %w", err)
@@ -842,6 +830,9 @@ func executeClaimPrune(
 	})
 	if err != nil {
 		return 0, err
+	}
+	if len(todo) == 0 {
+		return 0, nil
 	}
 
 	for _, p := range deletion.Removed {
@@ -862,6 +853,37 @@ func executeClaimPrune(
 		errs = append(errs, fmt.Errorf("no result for %s", strings.Join(missing, ", ")))
 	}
 	return len(deletion.Removed), errors.Join(errs...)
+}
+
+// recheckClaimPrune re-reads the Models and pods and re-plans each of plan's
+// entries against them, keeping only files that were shown and are still
+// removable. skipped holds an output line for each entry left alone.
+func recheckClaimPrune(
+	ctx context.Context, env pruneEnv, opts *cachePruneOptions, plan claimPrunePlan,
+) (todo []entryPrunePlan, skipped []string, err error) {
+	fresh, err := pruneOwners(ctx, env.client, opts)
+	if err != nil {
+		return nil, nil, err
+	}
+	pods := &corev1.PodList{}
+	if err := env.client.List(ctx, pods, client.InNamespace(opts.namespace)); err != nil {
+		return nil, nil, fmt.Errorf("failed to list pods: %w", err)
+	}
+	staging := stagingPodsOnClaim(pods.Items, plan.Target.Name)
+	for _, entry := range plan.Entries {
+		if len(entry.Remove) == 0 {
+			continue
+		}
+		if reason := entrySkipReason(fresh[entry.Key], staging[entry.Key], pruneLockFree); reason != "" {
+			skipped = append(skipped, fmt.Sprintf("  %s left alone: %s", entry.Key, reason))
+			continue
+		}
+		keep := entryKeepSet(fresh[entry.Key], staging[entry.Key])
+		if recheck := planEntryPrune(entry.Key, keep, entry.Remove); len(recheck.Remove) > 0 {
+			todo = append(todo, recheck)
+		}
+	}
+	return todo, skipped, nil
 }
 
 // unreportedPaths lists planned paths the script reported nothing for, other

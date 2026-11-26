@@ -17,6 +17,9 @@ limitations under the License.
 package cli
 
 import (
+	"os"
+	"os/exec"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -374,5 +377,42 @@ func TestParsePruneListing(t *testing.T) {
 	}
 	if other := got["fedcba9876543210"]; other == nil || other.State != "locked" || len(other.Files) != 1 {
 		t.Fatalf("second entry = %+v, want locked with one file", other)
+	}
+}
+
+// TestPruneDeleteScript_ReportsPathsVerbatimInSh runs the delete script under
+// /bin/sh against a temporary directory standing in for /models. dash (and
+// macOS sh) expand backslash escapes in echo's arguments, so a file named with
+// a literal "\n" must be reported through printf %s or the report splits it
+// into two lines and the path reads as unreported.
+func TestPruneDeleteScript_ReportsPathsVerbatimInSh(t *testing.T) {
+	root := t.TempDir()
+	key := "0123456789abcdef"
+	names := []string{`odd\nname.bin`, "it's here.bin", `back\\slash.bin`}
+	if err := os.MkdirAll(filepath.Join(root, key), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	plan := entryPrunePlan{Key: key}
+	for _, n := range names {
+		if err := os.WriteFile(filepath.Join(root, key, n), []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		plan.Remove = append(plan.Remove, cacheFile{Rel: n, Size: 1})
+	}
+	script := strings.ReplaceAll(pruneDeleteScript([]entryPrunePlan{plan}), defaultModelMountPath+"/", root+"/")
+
+	out, err := exec.Command("/bin/sh", "-c", script).CombinedOutput()
+	if err != nil {
+		t.Fatalf("delete script: %v\n%s", err, out)
+	}
+	got := parsePruneDeletion(string(out))
+	for _, n := range names {
+		p := root + "/" + key + "/" + n
+		if !slices.Contains(got.Removed, p) {
+			t.Errorf("Removed lacks %q; script printed:\n%s", p, out)
+		}
+		if _, err := os.Lstat(p); !os.IsNotExist(err) {
+			t.Errorf("%q still exists (err=%v)", p, err)
+		}
 	}
 }

@@ -26,7 +26,9 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	fakeclientset "k8s.io/client-go/kubernetes/fake"
+	k8stesting "k8s.io/client-go/testing"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
@@ -321,6 +323,51 @@ func TestPruneCache_RechecksModelsAfterConfirmation(t *testing.T) {
 	}
 	if strings.Contains(h.delCmds[0], "old-a.bin") {
 		t.Fatalf("prune removed a file a Model listed by the time it confirmed:\n%s", h.delCmds[0])
+	}
+	if !strings.Contains(h.delCmds[0], "old-b.bin") {
+		t.Fatalf("prune dropped a still-removable file:\n%s", h.delCmds[0])
+	}
+}
+
+// TestPruneCache_RechecksModelsOnceThePurgePodRuns pins where the re-read
+// happens: after the delete phase's purge pod is created, not before. A file
+// added back to spec.files while that pod starts (with --force there is no
+// prompt to hide behind) must be kept; a re-read taken before the pod was
+// created would still remove it.
+func TestPruneCache_RechecksModelsOnceThePurgePodRuns(t *testing.T) {
+	model := pruneModel("m", pruneTestSource, "keep.safetensors")
+	h := newPruneHarness(t, &model)
+	h.listing = listingFor(pruneKey, pruneLockFree, map[string]int64{
+		"keep.safetensors": 1, "old-a.bin": 1, "old-b.bin": 1,
+	})
+	creates := 0
+	h.clientset.PrependReactor("create", "pods", func(k8stesting.Action) (bool, runtime.Object, error) {
+		creates++
+		if creates != 2 { // the first pod lists the claim; the second deletes
+			return false, nil, nil
+		}
+		live := &inferencev1alpha1.Model{}
+		if err := h.client.Get(context.Background(), client.ObjectKeyFromObject(&model), live); err != nil {
+			t.Fatalf("get model: %v", err)
+		}
+		live.Spec.Files = append(live.Spec.Files, "old-a.bin")
+		if err := h.client.Update(context.Background(), live); err != nil {
+			t.Fatalf("update model: %v", err)
+		}
+		return false, nil, nil
+	})
+
+	if err := h.run(cachePruneOptions{force: true}); err != nil {
+		t.Fatalf("pruneCache: %v", err)
+	}
+	if creates != 2 {
+		t.Fatalf("purge pods created = %d, want 2 (list, then delete)", creates)
+	}
+	if len(h.delCmds) != 1 {
+		t.Fatalf("delete scripts = %d, want 1", len(h.delCmds))
+	}
+	if strings.Contains(h.delCmds[0], "old-a.bin") {
+		t.Fatalf("prune removed a file a Model listed by the time its purge pod ran:\n%s", h.delCmds[0])
 	}
 	if !strings.Contains(h.delCmds[0], "old-b.bin") {
 		t.Fatalf("prune dropped a still-removable file:\n%s", h.delCmds[0])
