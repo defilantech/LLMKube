@@ -61,7 +61,7 @@ func TestConstructMemberPodsMemoryGuard(t *testing.T) {
 		SuspendBelowMemFree:     "1536Mi",
 	}
 	r := &InferenceServiceReconciler{ModelCachePath: "/models", ModelCacheMode: ModelCacheModePerService, InitContainerImage: "mirror.example/curl:1"}
-	pods, _, err := r.constructMemberPods(isvc, model, resolveEffectiveModelCache(isvc, model), nil, "", "")
+	pods, _, err := r.memberPodsFor(isvc, model, resolveEffectiveModelCache(isvc, model), nil, "", "")
 	if err != nil {
 		t.Fatalf("constructMemberPods: %v", err)
 	}
@@ -101,7 +101,7 @@ func TestConstructMemberPodsMemoryGuard(t *testing.T) {
 
 	// Flush alone gives a guard that never suspends.
 	isvc.Spec.MultiNode.Memory.SuspendBelowMemFree = ""
-	pods, _, err = r.constructMemberPods(isvc, model, resolveEffectiveModelCache(isvc, model), nil, "", "")
+	pods, _, err = r.memberPodsFor(isvc, model, resolveEffectiveModelCache(isvc, model), nil, "", "")
 	if err != nil {
 		t.Fatalf("constructMemberPods: %v", err)
 	}
@@ -111,7 +111,7 @@ func TestConstructMemberPodsMemoryGuard(t *testing.T) {
 
 	// Neither threshold: no sidecar, so the boot-only block keeps its pods.
 	isvc.Spec.MultiNode.Memory.FlushBelowMemFree = ""
-	pods, _, err = r.constructMemberPods(isvc, model, resolveEffectiveModelCache(isvc, model), nil, "", "")
+	pods, _, err = r.memberPodsFor(isvc, model, resolveEffectiveModelCache(isvc, model), nil, "", "")
 	if err != nil {
 		t.Fatalf("constructMemberPods: %v", err)
 	}
@@ -598,7 +598,7 @@ func TestConstructMemberPodsMemoryGuardUnsetIsInert(t *testing.T) {
 	build := func(mem *inferencev1alpha1.MultiNodeMemory) ([]*corev1.Pod, string) {
 		t.Helper()
 		isvc.Spec.MultiNode.Memory = mem
-		pods, hash, err := r.constructMemberPods(isvc, model, resolveEffectiveModelCache(isvc, model), nil, "", "")
+		pods, hash, err := r.memberPodsFor(isvc, model, resolveEffectiveModelCache(isvc, model), nil, "", "")
 		if err != nil {
 			t.Fatalf("constructMemberPods(%+v): %v", mem, err)
 		}
