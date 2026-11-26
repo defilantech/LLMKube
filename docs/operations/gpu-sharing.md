@@ -512,9 +512,9 @@ is already in flight is waited on in both modes, because the incumbent is
 unloading and cannot serve anyway. The fall-through backend receives its own
 served model name in the outbound request (its `--served-model-name`, by
 default `spec.modelRef`, for vLLM and SGLang; the model-store directory
-basename for oMLX; for Ollama, the tag its executor serves for the Model,
-e.g. `phi4-mini:latest` for a Model named `phi-4-mini`, or the tag in a
-`hailo://` source; otherwise the
+basename for oMLX; for an InferenceService with `spec.runtime: ollama`, the
+tag its executor serves for the Model, e.g. `phi4-mini:latest` for a Model
+named `phi-4-mini`, or the tag in a `hailo://` source; otherwise the
 InferenceService name) rather than the alias the client asked for, so a runtime
 that validates the field accepts it instead of answering
 `404 The model ... does not exist`.

@@ -853,8 +853,9 @@ func (d *Dispatcher) applyCredentials(b *Backend, req *http.Request) error {
 // the request body. External backends declare it explicitly as Model. A
 // request that reached a local backend under a different alias (a rule
 // fall-through, an IfIdle skip past a busy pool member) must be rewritten to
-// the id its engine serves: llama.cpp ignores the field, but vLLM, SGLang and
-// Ollama answer an unknown name with 404 "The model X does not exist". The
+// the id its engine serves: llama.cpp ignores the field, but vLLM and SGLang
+// answer an unknown name with 404 "The model X does not exist", and Ollama
+// with 404 "model X not found". The
 // controller sets ServedModel to that id for vLLM, SGLang, oMLX and Ollama
 // (#1988, #1987, #2586); otherwise the InferenceService name is used. A
 // backend with none of the three set (a hand-written config, a backend whose

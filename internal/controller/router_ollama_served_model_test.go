@@ -33,6 +33,7 @@ import (
 	"go.uber.org/zap"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	inferencev1alpha1 "github.com/defilantech/llmkube/api/v1alpha1"
 	"github.com/defilantech/llmkube/internal/router"
@@ -235,17 +236,23 @@ func TestRouterSendsTheTagTheOllamaAgentServes(t *testing.T) {
 
 // TestOllamaBackendWithMissingModelKeepsTheInferenceServiceName pins the
 // degrade path of localBackendServedModel for Ollama: with no Model to read,
-// the backend keeps the InferenceService name the proxy already used.
+// or a Model whose hailo:// tag the agent refuses (so no daemon serves any
+// name for it), the backend keeps the InferenceService name the proxy
+// already used.
 func TestOllamaBackendWithMissingModelKeepsTheInferenceServiceName(t *testing.T) {
 	cases := []struct {
 		name     string
 		modelRef string
+		// source, when set, seeds a Model named modelRef with it.
+		source string
 	}{
 		{name: "modelRef set but the Model is absent", modelRef: "phi-4-mini"},
 		{name: "modelRef empty", modelRef: ""},
+		{name: "hailo source without a :tag", modelRef: "qwen-hailo", source: "hailo://qwen2.5"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			var objs []client.Object
 			isvc := &inferencev1alpha1.InferenceService{
 				ObjectMeta: metav1.ObjectMeta{Name: "chat-svc", Namespace: testBuilderNs},
 				Spec: inferencev1alpha1.InferenceServiceSpec{
@@ -264,7 +271,17 @@ func TestOllamaBackendWithMissingModelKeepsTheInferenceServiceName(t *testing.T)
 					DefaultRoute: "chat",
 				},
 			}
-			r := newRouterReconcilerForTest(t, mr, isvc)
+			objs = append(objs, isvc)
+			if tc.source != "" {
+				objs = append(objs, &inferencev1alpha1.Model{
+					ObjectMeta: metav1.ObjectMeta{Name: tc.modelRef, Namespace: testBuilderNs},
+					Spec: inferencev1alpha1.ModelSpec{
+						Source:   tc.source,
+						Hardware: &inferencev1alpha1.HardwareSpec{Accelerator: "metal"},
+					},
+				})
+			}
+			r := newRouterReconcilerForTest(t, mr, objs...)
 			compiled, err := r.compileRouterConfig(context.Background(), mr)
 			if err != nil {
 				t.Fatalf("compileRouterConfig: %v", err)
