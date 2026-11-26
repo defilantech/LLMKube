@@ -736,6 +736,9 @@ func OverridesPoolingType(arch string, overrides []string) bool {
 	}
 	want := arch + ".pooling_type"
 	for _, o := range overrides {
+		// llama.cpp splits with parse_csv_row (common/arg.cpp), which keeps a
+		// comma inside double quotes in one item; a plain split differs only
+		// for an override hand-written with quotes inside the value.
 		for _, item := range strings.Split(o, ",") {
 			if key, _, ok := strings.Cut(item, "="); ok && key == want {
 				return true
