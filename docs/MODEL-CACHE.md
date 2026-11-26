@@ -1105,9 +1105,13 @@ Models and pods again once that claim's purge pod is running, immediately
 before the removal, so a file a Model started listing while you were at the
 prompt, or while an earlier claim was pruned, is kept. On a cache with the
 download lock, a download that starts after that read waits for the removal
-and then stages the file again. On a FUSE cache, which takes no lock, a file
-added back and staged in the second or so between that read and the removal
-is still removed; the next pod start that lists it downloads it again. It
+and then stages the file again. A FUSE cache takes no lock, and its serving
+pods never download (they read only what the prefetch Job staged), so a file
+added back and staged by the prefetch Job in the second or so between that
+read and the removal is still removed. The serving pods then fail
+`model-verify` with `PrefetchedFilesMissing`, and the service deletes the
+prefetch Job so the Model stages the file again (see the prefetch section
+above). It
 removes regular files only, never follows a symlink, removes a directory only
 when the prune emptied it, and fails if a file it reported is still there.
 
@@ -1121,8 +1125,9 @@ it covers every cache claim in the namespace: the shared claim, labeled
 `<isvc>-model-cache` claims and every `spec.modelCache.claimName`; `--model`
 narrows it to that Model's entry on the claims `cache clear --model` would use.
 
-Like `cache clear`, it runs with your own permissions: list Models and pods,
-get the claims, and create, exec into and delete pods in the namespace. The
+Like `cache clear`, it runs with your own permissions: list Models,
+InferenceServices and pods, get the claims, and create, exec into and delete
+pods in the namespace. The
 chart's `tenant` and `tenant-admin` roles grant access to the LLMKube resources
 only, so a tenant cannot prune. On a `restricted`-profile namespace the purge
 pod is rejected, the same way `cache list` is.

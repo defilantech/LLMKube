@@ -523,7 +523,7 @@ func pruneDeleteScript(plans []entryPrunePlan) string {
 			}
 			b.WriteString(`for p in ` + strings.Join(quoted, " ") + `; do rmdir "$p" 2>/dev/null; done; `)
 		}
-		b.WriteString(`exit 0 ); [ $? -ne 3 ] || echo ` + shellQuote("busy "+plan.Key) + `; `)
+		b.WriteString(`exit 0 ); [ $? -ne 3 ] || printf 'busy %s\n' ` + shellQuote(plan.Key) + `; `)
 	}
 	b.WriteString(`exit 0`)
 	return b.String()
